@@ -13,6 +13,8 @@ From the source root, run `node ui/serve.mjs`, then open `http://127.0.0.1:7335/
 
 Run `node --test ui/tests/*.test.mjs`. Tests cover identity/scope, display formats, keyboard/focus behavior, serialized preference edits, reports/privacy, training/curves, observed assistance/character data, and calendar timing. They do not establish live capture accuracy or prove Windows window gestures.
 
+`/?demo=1&cubeDemo=1` also supplies an explicitly labelled, non-live Cube UI sample. It does not open an audio input or output device.
+
 ## Measurement and displays
 
 Personal is the default. Automatic server self identity, an exact unique saved-name match or an explicit session row selection can identify your character. Nearby players remain excluded. Party needs received membership or an explicitly selected session roster; Observed is a separately labelled view. Imported records never establish live identity.
@@ -44,6 +46,8 @@ Received cooldowns, windups, effects, HP and map-slot timers retain their source
 The game-report panel reads selected Combat Analyzer files up to 4 MB locally. Comparisons require matching personal identity, target, time window and capture health. Live ambiguous player-target healing/resource amounts remain unclassified; game-report healing totals do not create live HPS coverage.
 
 ## Native data and reports
+
+Hidden Cube has a dedicated settings section and an optional compact indicator. Listening starts off. Source, threshold and reference controls are disabled while active; imported references are limited to WAV/M4A, 8 MB and 30 seconds. Native `luma-cube-state` events and a bounded polling fallback are ordered by their separate revision. Stop, stale data, errors and non-stereo input clear directional cues. Left/right describes matched stereo weighting, while strength/trend remain relative; no metres, map position or front/back is displayed. Browser samples cannot enable native listening.
 
 The bridge uses `window.__TAURI__.core.invoke`. Live `luma-state` updates have a state-poll fallback. They carry lean current values, `history_revision`/`history_count`, `encounter_active` and observation revisions. Full history, current samples, assistance and character/boss snapshots are loaded on demand. Stale asynchronous responses are rejected. A failed read retains the last confirmed data.
 

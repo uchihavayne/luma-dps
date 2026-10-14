@@ -2,6 +2,17 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.10.0 preview · 2026-10-14
+
+- Add an opt-in Hidden Cube sound locator with an included spectral reference, sound similarity, matched stereo left/right balance and relative signal changes. No absolute distance, map position or front/back direction is inferred.
+- Capture only the AION2 process tree with Windows process loopback by default. A separate, explicitly selected system-output mode supports older Windows builds. No microphone or additional capture driver is used.
+- Add a compact Cube indicator and a dedicated Turkish/English settings section, with source/sensitivity controls, bounded local WAV/M4A reference import and restoration of the built-in reference. Listening starts off on every launch.
+- Clear stale directions after silence, gaps, device changes, stop or errors; preserve stop responsiveness and retry only the selected source. Serialize reference changes and retain only the spectral template locally.
+- Resolve AION2 parent/child processes as one game tree and preserve Rust ownership of borrowed Windows activation data. A bounded 10-second AION2-only stereo capture opened and stopped successfully after these corrections.
+- Validate the supplied Cube recording offline at normal/reduced volume and with left/right panning; add audio format, decoding, detector, lifecycle and UI regressions. Synthetic noise, silence and unrelated test tones do not produce detections in these checks.
+
+Live gate: real-game sound detection, false positives around other game sounds and camera-relative stereo guidance remain pending. The meter's synchronized solo, nearby-player, party and native window checks also remain pending on the final preview.
+
 ## 0.9.3 preview · 2026-10-14
 
 - Organize Settings into six keyboard-accessible sections with retained drafts and scroll positions; open the calendar directly from the timer.

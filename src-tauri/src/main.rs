@@ -1,5 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio_capture;
+mod audio_decode;
+mod cube_locator;
+mod cube_signal;
 mod event_schedule;
 mod local_history;
 mod native_capture;
@@ -660,6 +664,60 @@ fn persist(shared: &Shared, preferences: &Preferences) -> Result<(), String> {
 #[tauri::command]
 fn get_state(shared: State<Arc<Shared>>) -> Result<Value, String> {
     snapshot(&shared)
+}
+
+#[tauri::command]
+fn get_cube_state(
+    service: State<Arc<cube_locator::Service>>,
+) -> Result<cube_locator::CubeState, String> {
+    service.snapshot()
+}
+
+#[tauri::command]
+async fn start_cube_locator(
+    service: State<'_, Arc<cube_locator::Service>>,
+    source: String,
+    threshold: f32,
+) -> Result<cube_locator::CubeState, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.start(&source, threshold))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn stop_cube_locator(
+    service: State<'_, Arc<cube_locator::Service>>,
+) -> Result<cube_locator::CubeState, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.stop())
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn import_cube_reference(
+    service: State<'_, Arc<cube_locator::Service>>,
+    data: String,
+    start_seconds: f64,
+    end_seconds: Option<f64>,
+) -> Result<cube_locator::CubeState, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.import_reference(&data, start_seconds, end_seconds)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn reset_cube_reference(
+    service: State<'_, Arc<cube_locator::Service>>,
+) -> Result<cube_locator::CubeState, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.reset_reference())
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1425,6 +1483,11 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_state,
+            get_cube_state,
+            start_cube_locator,
+            stop_cube_locator,
+            import_cube_reference,
+            reset_cube_reference,
             get_app_info,
             get_event_schedule,
             refresh_event_schedule,
@@ -1460,6 +1523,8 @@ fn main() {
         ])
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
+            let cube = Arc::new(cube_locator::Service::new(data_dir.clone())?);
+            app.manage(cube.clone());
             let preferences_path = data_dir.join("preferences.json");
             let preferences = fs::metadata(&preferences_path)
                 .ok()
@@ -1523,6 +1588,7 @@ fn main() {
             std::thread::spawn(move || {
                 let mut history_retry_at = 0;
                 let mut calendar_revision = None;
+                let mut cube_revision = None;
                 while !shared.stopping.load(Ordering::Relaxed) {
                     let deadline = shared.geometry_save_due.load(Ordering::Relaxed);
                     if deadline != 0
@@ -1561,6 +1627,12 @@ fn main() {
                     });
                     if let Some(calendar) = calendar_update {
                         let _ = handle.emit("luma-calendar-state", calendar);
+                    }
+                    if let Ok(status) = cube.snapshot() {
+                        if Some(status.revision) != cube_revision {
+                            cube_revision = Some(status.revision);
+                            let _ = handle.emit("luma-cube-state", status);
+                        }
                     }
                     let history_revision = shared
                         .engine
@@ -1618,6 +1690,9 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let shared = handle.state::<Arc<Shared>>();
                 shared.stopping.store(true, Ordering::Relaxed);
+                if let Some(cube) = handle.try_state::<Arc<cube_locator::Service>>() {
+                    let _ = cube.stop();
+                }
                 if let Ok(mut calendar) = shared.calendar.lock() {
                     if let Some(mut calendar) = calendar.take() {
                         calendar.stop();

@@ -1,6 +1,6 @@
 [package]
 name = "luma-desktop"
-version = "0.9.3"
+version = "0.10.0"
 edition = "2021"
 description = "Independent Luma Windows meter shell"
 
@@ -20,6 +20,8 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["blocking
 luma-engine = { path = "../engine" }
 
 [target.'cfg(windows)'.dependencies]
+windows-core = "=0.61.2"
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_MediaFoundation", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]

@@ -1,4 +1,4 @@
-export const SETTINGS_SECTIONS = ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'about'];
+export const SETTINGS_SECTIONS = ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'hiddenCube', 'about'];
 export const ANALYSIS_SECTIONS = ['overview', 'skills', 'training', 'curves', 'effects', 'build', 'worldBosses', 'gameReport', 'history', 'planner', 'alerts'];
 
 export function settingsSection(value) {

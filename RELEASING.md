@@ -35,6 +35,7 @@ Automated tests and browser layout checks cover their specified cases. The final
 | Real party | Automatic/explicit roster, personal versus party totals, reconnect invalidation | Pending on final preview |
 | Window interaction | Drag settings, close/Escape, resize/lock, minimum size, DPI/multi-monitor placement | Final native check pending |
 | Observed telemetry | Own login names/build, supported boss windup/effects and map slots | Content-specific live coverage pending |
+| Hidden Cube sound | Real chime/other-sound negatives, stereo pan and camera turn, silence/stop/device change | Reference replay tested; live game check pending |
 
 Confirm no DEMO data enters a native session, calendar updates fail safely offline, reports preserve scope/unknown values and OBS remains off until requested. Preserve the known limitations in the release notes: ambiguous live healing/PvP, partial equipment/catalog names, native capture constraints, manual Odyle and absent public world rankings.
 

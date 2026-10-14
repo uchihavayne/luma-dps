@@ -11,6 +11,7 @@ import { createPreferenceCommitter } from './persistence.mjs';
 import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl } from './dom.mjs';
 import { createHistoryCache } from './history.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
+import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -41,6 +42,9 @@ let calendarHorizonDays = 7;
 let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true;
 let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, scheduledCacheKey = '', scheduledCache = [], scheduleTimingSecond = -1;
 const scheduleTimings = new Map();
+let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0;
+const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') === '1';
+if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
 const words = {
   tr: {
@@ -51,10 +55,14 @@ const words = {
   },
 };
 const t = key => words[prefs.locale][key] || key;
+Object.assign(words.tr, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube ses bulucu', cubeIntro: 'Oyunun çıkış sesindeki Küp örneğini yerel olarak eşleştirir. Dinleme her açılışta kapalıdır; mikrofon kullanılmaz ve canlı ses kaydedilmez.', cubeStart: 'Dinlemeyi başlat', cubeStop: 'Dinlemeyi durdur', cubeBusy: 'Hazırlanıyor…', cubeSource: 'Dinlenecek ses', cubeGame: 'Yalnızca AION2', cubeSystem: 'Bu cihazın ses çıkışı', cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Oyun açıldığında dinleme başlar. Kulaklık veya stereo çıkış ile sol/sağ gösterilebilir.', cubeSystemHelp: 'Sistem çıkışı seçildi: diğer uygulamalar ve Luma uyarıları da duyulur. Desteklenmeyen oyun ses yakalamasında bu seçeneği kendin kullanabilirsin.', cubeThreshold: 'Eşleşme eşiği', cubeThresholdHelp: 'Düşük eşik sessiz örnekleri daha kolay kabul eder, yanlış eşleşmeleri de artırabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.', cubeIndicator: 'Küçük barda Küp göstergesini göster', cubeSimilarity: 'Ses benzerliği', cubeSimilarityHelp: 'Yüzde, örnekle benzerlik puanıdır; kesinlik veya olasılık değildir.', cubeDirection: 'Stereo yön', cubeStrength: 'Eşleşen sinyal', cubeTrend: 'Sinyal değişimi', cubeLimit: 'Ses üzerinden kesin metre, harita konumu ve ön/arka hesaplanamaz. Stereo sol/sağ ve sinyal değişimi gösterilir; kamerayı döndürerek yönü karşılaştır.', cubeRelative: 'Sinyal güçlenmesi yalnızca göreli bir ipucudur. Oyun ses seviyesi, çevre sesleri ve kameranın yönü de değeri değiştirir.', cubeReference: 'Ses örneği', cubeBuiltin: 'Yerleşik Hidden Cube örneği', cubeImport: 'Kendi ses örneğini seç', cubeImportHelp: 'M4A veya WAV · en çok 8 MB ve 30 saniye. Örnek bu cihazda saklanır; internete gönderilmez. İçeriği yalnızca Küp sesi olan temiz bir kayıt kullan.', cubeReset: 'Yerleşik örneğe dön', cubeImported: 'Küp ses örneği kaydedildi', cubeImportInvalid: 'Ses örneği okunamadı. Desteklenen, en çok 8 MB bir ses dosyası seç.', cubePreview: 'Tarayıcı örneği · Canlı ses dinlenmiyor.', cubeAudioFormat: 'Ses biçimi', cubeUnknownFormat: 'Ses çıkışı bekleniyor', cubeNoDirection: 'Sol/sağ için stereo ses gerekir.', cubeReadFailed: 'Ses bulucunun durumu okunamadı', cubeActiveControls: 'Ses kaynağını veya örneği değiştirmek için önce dinlemeyi durdur.' });
+Object.assign(words.en, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube sound locator', cubeIntro: 'Locally matches the Cube reference against game output. Listening starts off each launch; no microphone is used and live audio is not saved.', cubeStart: 'Start listening', cubeStop: 'Stop listening', cubeBusy: 'Preparing…', cubeSource: 'Audio source', cubeGame: 'AION2 only', cubeSystem: 'This device’s audio output', cubeGameHelp: 'Separates AION2 audio from other apps. Listening begins when the game opens. Headphones or stereo output can provide left/right cues.', cubeSystemHelp: 'System output is selected: other apps and Luma alerts are included. Choose this explicitly if game-only audio capture is unavailable.', cubeThreshold: 'Match threshold', cubeThresholdHelp: 'A lower threshold can accept quieter samples and more false matches. A higher threshold is more selective. Stop listening before changing it.', cubeIndicator: 'Show Cube indicator in the compact bar', cubeSimilarity: 'Sound similarity', cubeSimilarityHelp: 'The percentage is a reference similarity score, not certainty or probability.', cubeDirection: 'Stereo direction', cubeStrength: 'Matched signal', cubeTrend: 'Signal change', cubeLimit: 'Audio cannot provide exact metres, map position or front/back. Stereo left/right and signal changes are shown; turn the camera to compare directions.', cubeRelative: 'A stronger signal is only a relative cue. Game volume, other sounds and camera direction also affect it.', cubeReference: 'Sound reference', cubeBuiltin: 'Built-in Hidden Cube reference', cubeImport: 'Choose your sound reference', cubeImportHelp: 'M4A or WAV · up to 8 MB and 30 seconds. The reference stays on this device and is never uploaded. Use a clean recording containing only the Cube sound.', cubeReset: 'Restore built-in reference', cubeImported: 'Cube reference saved', cubeImportInvalid: 'The audio reference could not be read. Choose a supported audio file up to 8 MB.', cubePreview: 'Browser sample · No live audio is being captured.', cubeAudioFormat: 'Audio format', cubeUnknownFormat: 'Waiting for audio output', cubeNoDirection: 'Left/right requires stereo audio.', cubeReadFailed: 'The sound locator state could not be read', cubeActiveControls: 'Stop listening before changing the source or reference.' });
 Object.assign(words.tr, { settingsSections: 'Ayar bölümleri', analysisSections: 'Analiz bölümleri', combatSettings: 'Savaş', about: 'Hakkında', autoSaveHelp: 'Görünüm değişiklikleri otomatik kaydedilir.', keyboardHelp: 'Bölümler arasında ← → ile geç. Esc ile kapat.', panelResizeFailed: 'Pencere boyutu değiştirilemedi. Ayarlarını kullanmaya devam edebilirsin.', bossAdvanced: 'Hedef kimlikleri', bossSettingsHelp: 'Boss olarak işaretlediğin hedefler Boss filtresinde görünür. Liste, bu oturumda görülen hedefleri içerir.' });
 Object.assign(words.en, { settingsSections: 'Settings sections', analysisSections: 'Analysis sections', combatSettings: 'Combat', about: 'About', autoSaveHelp: 'Appearance changes are saved automatically.', keyboardHelp: 'Use ← → between sections. Esc closes the panel.', panelResizeFailed: 'The window could not resize. You can continue using your settings.', bossAdvanced: 'Target IDs', bossSettingsHelp: 'Targets you mark as bosses appear in the Boss filter. This list contains targets observed in this session.' });
 Object.assign(words.tr, { historyReadFailed: 'Geçmiş okunamadı. Daha önce yüklenen kayıtlar korunuyor.', historyRetry: 'Yeniden dene', timingUnavailable: 'Süre kaydı yok; DPS hesaplanamaz.' });
 Object.assign(words.en, { historyReadFailed: 'History could not be read. Previously loaded records are preserved.', historyRetry: 'Retry', timingUnavailable: 'No recorded duration; DPS is unavailable.' });
+Object.assign(words.tr, { cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Windows 11 veya Windows build 20348+ gerekir; eski Windows sürümlerinde cihazın ses çıkışını kendin seçebilirsin. Stereo çıkış sol/sağ ipucu verir.' });
+Object.assign(words.en, { cubeGameHelp: 'Separates AION2 audio from other apps. Requires Windows 11 or build 20348+; on older Windows versions, choose system output explicitly. Stereo output provides left/right cues.' });
 Object.assign(words.tr, { typography: 'Yazı ve okunabilirlik', appearanceExtras: 'Özel renkler, görsel ve tema dosyası' });
 Object.assign(words.en, { typography: 'Text and readability', appearanceExtras: 'Custom colours, image and theme file' });
 Object.assign(words.tr, { bossSettings: 'Boss hedefleri', bossHelp: 'Boss hedeflerini elle seçersiniz. Bu seçim resmi bir ağ boss işareti değildir. Tümü modu bütün hedefleri içerir.', saveBoss: 'Boss seçimini kaydet', noTargets: 'Henüz alınan hedef yok.' });
@@ -261,6 +269,7 @@ function renderMeter() {
   if (drawer === 'character' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer();
   if (drawer === 'analysis' && tab === 'training') updateTrainingLive();
   renderCombatWarning();
+  renderCubeLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
@@ -360,7 +369,66 @@ function combatSettingsContent() {
 }
 
 function settingsContent(section = settingsTab) {
-  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}` }[settingsSection(section)])();
+  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}` }[settingsSection(section)])();
+}
+
+function cubeContent() {
+  const disabled = !native || cubePending || cubeState.enabled;
+  return `<h3 class="section-title">${t('cubeTitle')}</h3><p class="help">${t('cubeIntro')}</p>${!native ? `<p class="settings-hint">${t('cubePreview')}</p>` : ''}
+    <div class="cube-locator" id="cube-locator"><div class="cube-status-line"><span id="cube-status-dot" class="cube-status-dot" aria-hidden="true"></span><strong id="cube-status-label"></strong><span id="cube-source-label" class="tag"></span></div>
+    <div id="cube-direction-display" class="cube-direction-display" data-direction="unknown"><span class="cube-direction-arrow" id="cube-direction-arrow" aria-hidden="true">◇</span><div><strong id="cube-direction-label">—</strong><span id="cube-trend-label">—</span></div></div>
+    <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div></div><p class="help cube-detail" id="cube-detail" hidden></p></div>
+    <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button></div>
+    <div class="field-grid"><label class="field"><span>${t('cubeSource')}</span><select name="cubeSource" ${disabled ? 'disabled' : ''}><option value="game" ${prefs.cubeSource === 'game' ? 'selected' : ''}>${t('cubeGame')}</option><option value="system" ${prefs.cubeSource === 'system' ? 'selected' : ''}>${t('cubeSystem')}</option></select></label><label class="field cube-threshold"><span>${t('cubeThreshold')} <output id="cube-threshold-value">${Math.round(prefs.cubeThreshold * 100)}%</output></span><input name="cubeThreshold" type="range" min="0.6" max="0.97" step="0.01" value="${prefs.cubeThreshold}" ${disabled ? 'disabled' : ''} aria-describedby="cube-threshold-help"></label></div>
+    <p class="help" id="cube-source-help">${t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')}</p><p class="help" id="cube-threshold-help">${t('cubeThresholdHelp')} ${t('cubeSimilarityHelp')}</p><label class="check-field"><input name="showCubeLocator" type="checkbox" ${prefs.showCubeLocator ? 'checked' : ''}>${t('cubeIndicator')}</label>
+    <div class="cube-limits"><p>${t('cubeLimit')}</p><p>${t('cubeRelative')}</p></div>
+    <h3 class="section-title">${t('cubeReference')}</h3><div class="cube-reference-line"><strong id="cube-reference-name">${esc(cubeState.reference.name || t('cubeBuiltin'))}</strong><span id="cube-reference-duration">${cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : ''}</span></div><label class="field"><span>${t('cubeImport')}</span><input name="cubeReferenceFile" type="file" accept=".m4a,.wav,audio/mp4,audio/wav,audio/x-wav" ${disabled ? 'disabled' : ''}></label><p class="help">${t('cubeImportHelp')}</p><div class="button-row">${button('reset-cube-reference', 'cubeReset', disabled ? 'disabled' : '', true)}</div><p class="help" id="cube-format-label">${t('cubeUnknownFormat')}</p>`;
+}
+
+function renderCubeLive() {
+  const view = cubePresentation(cubeState, { now: cubeDemo ? cubeState.last_detection_ms : Date.now(), locale: prefs.locale, live: native, readError: cubeReadError });
+  const chip = $('#cube-chip'); chip.hidden = !prefs.showCubeLocator;
+  chip.dataset.status = view.status; chip.dataset.direction = view.direction;
+  setText($('#cube-chip-text'), view.short);
+  chip.title = `${t('cubeTitle')} · ${view.label}${view.matched ? ` · ${view.directionLabel} · ${t('cubeSimilarity')}: ${view.similarity}` : ''}${!native ? ` · ${t('cubePreview')}` : ''}`;
+  chip.setAttribute('aria-label', chip.title);
+  const panel = $('#cube-locator'); if (!panel) return;
+  panel.dataset.status = view.status;
+  setText($('#cube-status-label'), view.label); setText($('#cube-source-label'), view.sourceLabel);
+  const direction = $('#cube-direction-display'); direction.dataset.direction = view.direction; direction.dataset.matched = String(view.matched);
+  setText($('#cube-direction-arrow'), { left: '←', right: '→', center: '↔', unknown: '◇' }[view.direction]);
+  setText($('#cube-direction-label'), view.directionLabel); setText($('#cube-trend-label'), view.trendLabel);
+  setText($('#cube-similarity'), view.similarity); setText($('#cube-strength'), view.strength);
+  const detail = $('#cube-detail'); detail.hidden = !view.detail; setText(detail, view.detail);
+  const toggle = $('#cube-toggle'); toggle.disabled = !native || cubePending; setText(toggle, t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart'));
+  for (const control of $$('[name=cubeSource],[name=cubeThreshold],[name=cubeReferenceFile],[data-action=reset-cube-reference]')) control.disabled = !native || cubePending || cubeState.enabled;
+  setText($('#cube-reference-name'), cubeState.reference.name || t('cubeBuiltin')); setText($('#cube-reference-duration'), cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : '');
+  setText($('#cube-format-label'), cubeState.sample_rate ? `${t('cubeAudioFormat')}: ${cubeState.sample_rate.toLocaleString(prefs.locale)} Hz · ${cubeState.audio_channels} ${cubeState.audio_channels === 1 ? 'mono' : 'ch'}${cubeState.audio_channels === 1 ? ` · ${t('cubeNoDirection')}` : ''}` : t('cubeUnknownFormat'));
+}
+
+function applyCubeSnapshot(value) {
+  if (!acceptsCubeSnapshot(cubeState, value)) return false;
+  cubeState = normalizeCubeState(value); cubeReceivedCount++; cubeReadError = ''; renderCubeLive(); return true;
+}
+
+async function readCubeState() {
+  if (!native || cubePollPending) return;
+  const received = cubeReceivedCount; cubePollPending = true;
+  try {
+    const value = await invoke('get_cube_state');
+    if (Number.isSafeInteger(value?.revision) && (cubeState.revision === null || value.revision >= cubeState.revision)) { cubeReadError = ''; applyCubeSnapshot(value); renderCubeLive(); }
+  } catch (error) { if (received === cubeReceivedCount) { cubeReadError = `${t('cubeReadFailed')}: ${String(error).replace(/[\u0000-\u001f]/g, '').slice(0, 180)}`; renderCubeLive(); } }
+  finally { cubePollPending = false; }
+}
+
+async function cubeCommand(command, args, successMessage = '') {
+  if (!native) { toast(t('nativeOnly')); return; }
+  if (cubePending) return;
+  cubePending = true; renderCubeLive();
+  let invoked = false;
+  try { const payload = typeof args === 'function' ? await args() : args; invoked = true; const value = await action(command, payload); applyCubeSnapshot(value); await readCubeState(); if (successMessage) toast(t(successMessage)); }
+  catch (error) { if (!invoked) toast(t(command === 'import_cube_reference' ? 'cubeImportInvalid' : 'failed'), true); }
+  finally { cubePending = false; renderCubeLive(); }
 }
 
 function characterContent() {
@@ -679,6 +747,7 @@ function selectDrawerTab(name) {
     if (previous) previous.scroll = $('#drawer-content').scrollTop;
     settingsTab = settingsSection(name); renderDrawerContent();
     $('#drawer-content').scrollTop = settingsPanels.get(settingsTab)?.scroll || 0;
+    if (settingsTab === 'hiddenCube') readCubeState();
   } else if (drawer === 'analysis' && ANALYSIS_SECTIONS.includes(name)) {
     if (['training', 'effects'].includes(name)) snapshot = null;
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
@@ -712,7 +781,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
   if (kind === 'analysis' && requestedTab === 'build') readCharacterData();
   if (kind === 'analysis' && requestedTab === 'worldBosses') readWorldData();
-  if (kind === 'settings') { readObsState(); readEventSchedule(); }
+  if (kind === 'settings') { readObsState(); readEventSchedule(); if (settingsTab === 'hiddenCube') readCubeState(); }
   $('#close-drawer').focus();
   syncNativePanel(true);
 }
@@ -722,7 +791,7 @@ function closeDrawer() {
   drawer = ''; snapshot = null;
   $('#drawer').hidden = true; $('#drawer-backdrop').hidden = true;
   for (const element of [...$('#meter').children]) element.inert = false;
-  if (restoreFocus?.isConnected) restoreFocus.focus(); else $('#analysis-button').focus();
+  if (restoreFocus?.isConnected && restoreFocus.getClientRects().length && !restoreFocus.disabled) restoreFocus.focus(); else $('#analysis-button').focus();
   syncNativePanel(false);
 }
 
@@ -768,6 +837,7 @@ function tickTimers() {
   for (const element of $$('.field-boss-countdown')) { const timer = fieldBossTimers(worldData).find(timer => timer.key === element.dataset.bossTimer); if (timer) setText(element, timer.status === 'countdown' ? clockTime(timer.remaining, true) : t({ alive: 'bossAlive', awaiting: 'bossAwaiting', unknown: 'bossUnknown' }[timer.status])); }
   for (const element of $$('[data-scheduled-time]')) { const event = scheduledEvents().find(event => event.id === element.dataset.scheduledTime), timing = event ? scheduleTiming(event) : null; setText(element, timing?.status === 'open' ? `${t('calendarOpen')} ${clockTime(timing.remainingMs)}` : timing ? clockTime(timing.remainingMs, true) : '—'); const next = element.closest('.schedule-card')?.querySelector('[data-scheduled-next]'); if (next) setText(next, `${t(timing?.status === 'open' ? 'calendarCloses' : 'calendarNext')}: ${timing ? dateText(timing.status === 'open' ? timing.closesAt : timing.nextOpening) : '—'}`); }
   renderCombatWarning();
+  renderCubeLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
@@ -785,6 +855,7 @@ $('.drawer-header').addEventListener('pointerdown', event => {
 $('#analysis-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis'); });
 $('#training-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'training'); });
 $('#event-chip').addEventListener('click', () => { if (prefs.activeEventId.startsWith('boss:')) { snapshot = null; openDrawer('analysis', 'worldBosses'); } else openDrawer('settings', 'calendar'); });
+$('#cube-chip').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
 $('#combat-warning').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'effects'); });
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
 $('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; snapshot = null; openDrawer('analysis', 'skills'); } });
@@ -817,6 +888,15 @@ $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || eve
 $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
+  if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
+  if (name === 'cubeSource') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeSource: element.value }); setText($('#cube-source-help'), t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')); return; }
+  if (name === 'cubeThreshold') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeThreshold: Number(element.value) }); element.value = prefs.cubeThreshold; setText($('#cube-threshold-value'), `${Math.round(prefs.cubeThreshold * 100)}%`); return; }
+  if (name === 'cubeReferenceFile') {
+    const file = element.files?.[0]; if (!file || !native || cubeState.enabled || cubePending) return;
+    if (file.size <= 0 || file.size > CUBE_REFERENCE_MAX_BYTES) { toast(t('cubeImportInvalid'), true); element.value = ''; return; }
+    await cubeCommand('import_cube_reference', async () => ({ data: await cubeReferenceBase64(file), start_seconds: 0, end_seconds: null }), 'cubeImported');
+    element.value = ''; return;
+  }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
   if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
   if (['showClass', 'showShares'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
@@ -854,6 +934,7 @@ $('#drawer-content').addEventListener('change', async event => {
 $('#drawer-content').addEventListener('input', event => {
   const element = event.target;
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
+  if (element.name === 'cubeThreshold') { setText($('#cube-threshold-value'), `${Math.round(Number(element.value) * 100)}%`); return; }
   if (['targetFontSize', 'numberPrecision'].includes(element.name)) { preferenceCommitter?.invalidate(); const patch = numericPreferenceEdit(element.name, element.value); if (patch) savePreferences(patch); return; }
   if (['textScale', 'opacity'].includes(element.name)) { preferenceCommitter?.invalidate(); prefs[element.name] = Number(element.value); applyAppearance(); }
 });
@@ -868,6 +949,8 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
+  if (actionName === 'toggle-cube') { await cubeCommand(cubeState.enabled ? 'stop_cube_locator' : 'start_cube_locator', cubeState.enabled ? {} : { source: prefs.cubeSource, threshold: prefs.cubeThreshold }); return; }
+  if (actionName === 'reset-cube-reference') { if (!cubeState.enabled) await cubeCommand('reset_cube_reference', {}); return; }
   if (actionName === 'open-alerts' || actionName === 'open-training') { snapshot = null; openDrawer('analysis', actionName === 'open-alerts' ? 'alerts' : 'training'); }
   if (actionName === 'retry-history') { const pending = historyCache?.retry(); refreshDrawer(); await pending; if (drawer === 'analysis' && tab === 'history') refreshDrawer(); }
   if (actionName === 'select-calendar-event') { savePreferences({ activeEventId: id }); syncCalendarSelection(); }
@@ -961,11 +1044,14 @@ if (native) {
   try { const loaded = await initialPreferences; if (loaded.untouched) prefs = loaded.preferences; applyAppearance(); renderMeter(); } catch {}
   try { await window.__TAURI__.event?.listen('luma-state', event => receiveState(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-calendar-state', event => applyScheduleSnapshot(event.payload)); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-cube-state', event => applyCubeSnapshot(event.payload)); } catch {}
   await refreshState();
   readWorldData();
   readEventSchedule();
+  readCubeState();
   setInterval(refreshState, 1500);
   setInterval(() => { if (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses') readWorldData(); }, 15000);
   setInterval(() => { if (drawer === 'settings') readEventSchedule(); }, 30000);
+  setInterval(() => { if (cubeState.enabled || drawer === 'settings' && settingsTab === 'hiddenCube') readCubeState(); }, 500);
 }
 setInterval(tickTimers, 1000);

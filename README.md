@@ -8,6 +8,7 @@ Luma is an independent Windows encounter meter for AION2 with personal, party an
 2. Otomatik karakter adı ve ekipman kaydı için Luma açıkken karaktere giriş yap. Ölçüm varsayılan olarak **Kişisel** kapsamındadır. Adın alınmazsa **Karakterim** bölümünde kendi satırını seç veya tam karakter adını kaydet. Yakındaki oyuncular kişisel hasarına eklenmez.
 3. **Etkinlik takvimi** bölümünden hazır EU etkinliklerini seç. Rift, Shugo ve diğer hazır saatlerde aralık veya başlangıç girmen gerekmez. Üst çubuktaki saati değiştirebilir veya kapatabilirsin; hatırlatıcıları ayrı ayrı açabilirsin.
 4. Ayarlardan dili, tasarımı, renkleri, yazıyı ve satır bilgilerini seç. Analizden mevcut karşılaşmayı veya geçmişi HTML, CSV ya da JSON olarak dışa aktar. Paylaşmadan önce ad gizleme seçeneğini kullanabilirsin.
+5. Hidden Cube aramak için küçük bardaki **Cube** düğmesini veya **Ayarlar → Hidden Cube** bölümünü açıp **Dinlemeyi başlat** seçeneğini kullan. Hazır ses referansı dahildir. Stereo sol/sağ yönünü ve sinyalin değişimini izle; kamera yönünü değiştirerek karşılaştır. Kesin metre, harita konumu ve ön/arka bilgisi sesten hesaplanmaz.
 
 Bağlantı bekleniyorsa durum yazısının ayrıntısını kontrol et. Oyuna girişten sonra Luma'yı açmak bazı kimlik kayıtlarını kaçırabilir. Tarayıcı önizlemesi canlı oyun verisi okumaz. Bu sürümde yeni senkronize oyun testi hâlâ bekleniyor; kapsam sınırlamaları aşağıda açıklanıyor.
 
@@ -42,6 +43,19 @@ The default is **Personal**. An explicit server self record identifies the curre
 - Turkish/English UI, four original layouts, twelve palettes including white, editable colors/fonts/density/columns, local images and appearance import/export.
 - Native movement/resizing, keyboard resize, pause/reset, focus-safe updates and movable settings/analysis panels. Closing a panel restores the compact window's position and size.
 - Optional same-PC OBS browser source with per-session access token, explicit measurement scope and hidden names by default. It starts only when enabled for that session.
+- Optional Hidden Cube sound detection with a built-in spectral reference, stereo left/right indication, reference similarity and relative signal changes. Local WAV/M4A reference import accepts at most 8 MB and 30 seconds. Listening starts off; neither microphone capture nor automatic audio recording/upload is used.
+
+## Hidden Cube sound locator
+
+Open **Settings → Hidden Cube** or the small Cube button, then start listening. The default source is the AION2 process tree. This uses Windows' built-in [application loopback API](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/) and requires Windows build 20348 or later. On older Windows builds, system output can be selected explicitly; it also includes sounds from other applications. A device change retries the same selected source without changing to system output automatically.
+
+The supplied sound's spectral reference is included; its original recording is not distributed. The similarity percentage describes a signal match, not a probability. Direction uses the matched sound's stereo balance rather than the overall volume of the mixed audio. Mono and surround inputs do not provide a left/right arrow. An arrow is relative to the stereo audio render; turning the camera can help resolve front/back ambiguity.
+
+Signal strength and its change are relative audio cues. Music, similar chimes, game volume, headphone processing, occlusion and camera movement can affect them. The locator cannot calculate exact metres, absolute coordinates, elevation or an objective compass bearing from a mixed stereo recording. A centered signal alone does not establish that the Cube is in front of the player.
+
+You can replace the reference with a clean local WAV/M4A recording while listening is stopped. [Windows Media Foundation](https://learn.microsoft.com/en-us/windows/win32/api/mfreadwrite/nf-mfreadwrite-mfcreatesourcereaderfrombytestream) decodes it in memory; only a bounded spectral template is retained on this device. Silence and non-distinctive references are rejected. Stop listening before changing its source, sensitivity or reference.
+
+Offline checks recognize the supplied reference at reduced volume and with synthetic left/right panning, while rejecting the tested silence, noise and unrelated tones. A separate 10-second AION2-only stereo capture successfully opened and stopped on Windows. These checks do not establish detection accuracy or a false-positive rate in every game scene. Live Cube detection and stereo guidance still need validation in the game.
 
 ## Coverage
 
