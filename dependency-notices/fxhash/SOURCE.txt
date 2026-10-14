@@ -1,0 +1,14 @@
+Standard dependency license provenance
+
+Packages covered:
+fxhash: 0.2.1; declared license Apache-2.0 OR MIT; selected Apache-2.0
+
+The published package has no VCS metadata or license file. Pinned upstream manifest is version 0.2.1 and declares Apache-2.0/MIT; official canonical Apache text is selected. NOTICE preserves the actual copyright/license header from published lib.rs.
+
+Sources:
+https://raw.githubusercontent.com/cbreeden/fxhash/a03cbf42dde010250adef75908f109be197d982b/Cargo.toml
+https://raw.githubusercontent.com/cbreeden/fxhash/a03cbf42dde010250adef75908f109be197d982b/lib.rs
+https://www.apache.org/licenses/LICENSE-2.0.txt
+
+Package revision metadata was read from the published Cargo registry packages where available. License downloads preserve upstream bytes. No application or dependency source was modified as part of collecting these notices.
+

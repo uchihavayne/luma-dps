@@ -1,0 +1,12 @@
+Source availability for selectors 0.24.0
+
+This application uses the unmodified selectors 0.24.0 dependency, which is available under the Mozilla Public License, version 2.0. The license text is included in LICENSE.
+
+The exact published Source Code Form is publicly available without charge at:
+https://static.crates.io/crates/selectors/selectors-0.24.0.crate
+
+The upstream source revision recorded in the published package is e82d7868d999d84f6d59719e4c397e5252aecb85. The corresponding component source is available at:
+https://github.com/servo/servo/tree/e82d7868d999d84f6d59719e4c397e5252aecb85/components/selectors
+
+The MPL-2.0 source terms continue to apply to that dependency. This notice supplies its source locations and does not change the upstream license terms.
+

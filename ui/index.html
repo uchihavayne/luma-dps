@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'">
+  <title>Luma DPS</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="meter" class="meter" aria-label="Luma DPS">
+    <header class="topbar">
+      <div class="brand" id="drag-region"><span class="brand-mark" aria-hidden="true">◈</span><span>LUMA <small>DPS</small></span></div>
+      <button id="identity-button" class="identity-button" aria-label="Karakterini seç"><span aria-hidden="true">◎</span><span id="identity-name">Karakter</span></button>
+      <span id="connection" class="connection" role="status" aria-live="polite"><i aria-hidden="true"></i><span>—</span></span>
+      <button id="settings-button" class="icon-button" aria-label="Ayarlar" title="Ayarlar">⚙</button>
+      <button id="close-window" class="icon-button close-window" aria-label="Pencereyi kapat" title="Pencereyi kapat">×</button>
+    </header>
+    <section class="encounter-header">
+      <div class="target-label" id="target-label">HEDEF</div>
+      <div class="target-line"><h1 id="target-name">—</h1><span id="combat-time" class="combat-time">00:00</span></div>
+      <button id="event-chip" class="event-chip" hidden><span id="event-name"></span><time id="event-time"></time><span aria-hidden="true">↗</span></button>
+      <div id="target-vitals" class="target-vitals" hidden><span id="target-hp"></span><i id="target-hp-track" hidden><b></b></i></div>
+    </section>
+    <section class="metrics" aria-label="Hasar özeti">
+      <div class="primary-metric"><span class="metric-label" id="dps-label">KİŞİSEL DPS</span><strong id="dps-value">0/sn</strong><span id="mode-caption" class="metric-caption"></span></div>
+      <div class="secondary-metric"><span class="metric-label" id="damage-label">TOPLAM HASAR</span><strong id="damage-value">0</strong><div id="boss-summary" class="metric-caption" hidden></div></div>
+    </section>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <button id="combat-warning" class="combat-warning" hidden aria-live="polite"><span aria-hidden="true">◇</span><span id="combat-warning-text"></span><time id="combat-warning-time"></time></button>
+    <section class="roster-controls" aria-label="Liste kontrolleri">
+      <label class="scope-label"><span class="sr-only" id="scope-label">Ölçüm kapsamı</span><select id="damage-scope" aria-labelledby="scope-label"><option value="personal">Kişisel</option><option value="party">Grup</option><option value="observed">Gözlenen</option></select></label>
+      <div class="segmented" id="target-modes" role="group" aria-label="Hedef modu">
+        <button data-mode="all" aria-pressed="true">Tümü</button><button data-mode="boss" aria-pressed="false">Boss</button><button data-mode="both" aria-pressed="false">İkisi</button>
+      </div>
+      <label class="sort-label"><span class="sr-only" id="sort-label">Sıralama</span><select id="sort" aria-labelledby="sort-label"><option value="dps">DPS ↓</option><option value="damage">Hasar ↓</option><option value="name">A–Z</option></select></label>
+    </section>
+    <div class="list-heading"><span id="player-label">OYUNCU</span><span class="heading-total" id="heading-total">TOPLAM HASAR · DPS</span></div>
+    <section id="players" class="players" aria-label="Oyuncular"></section>
+    <footer class="footer">
+      <div class="footer-controls"><button id="pause-button" class="icon-button" aria-label="Duraklat" title="Duraklat">Ⅱ</button><button id="reset-button" class="icon-button" aria-label="Sıfırla" title="Sıfırla">↺</button><button id="lock-button" class="icon-button" aria-label="Kilitle" aria-pressed="false" title="Kilitle">◇</button><button id="training-button" class="icon-button" aria-label="Süreli antrenman" title="Süreli antrenman">◷</button></div>
+      <button id="analysis-button" class="text-button">Analiz ↗</button>
+      <button id="resize-button" class="resize-button" aria-label="Pencereyi yeniden boyutlandır" title="Pencereyi yeniden boyutlandır"><span aria-hidden="true">◢</span></button>
+    </footer>
+    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+    <section id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-header" id="drawer-drag-region"><div><span class="eyebrow">LUMA DPS</span><h2 id="drawer-title"></h2></div><button id="close-drawer" class="icon-button" aria-label="Kapat" title="Kapat">×</button></div>
+      <nav id="drawer-tabs" class="drawer-tabs" role="tablist" aria-label="Analiz bölümleri" hidden></nav>
+      <div id="drawer-content" class="drawer-content"></div>
+    </section>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </main>
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>

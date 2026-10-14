@@ -1,0 +1,327 @@
+{
+  "alloc-stdlib": {
+    "folder": "alloc",
+    "sources": [
+      "https://raw.githubusercontent.com/dropbox/rust-alloc-no-stdlib/6032b6a9b20e03737135c55a0270ccffcc1438ef/LICENSE"
+    ],
+    "license": "BSD-3-Clause",
+    "versions": [
+      "0.2.2"
+    ],
+    "revision": "6032b6a9b20e03737135c55a0270ccffcc1438ef"
+  },
+  "convert_case": {
+    "folder": "convert_case",
+    "sources": [
+      "https://raw.githubusercontent.com/rutrum/convert-case/637e1aec1717e3a4af07dff1c1dec7a4eb971b2a/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.4.0"
+    ],
+    "packageRevision": "300d9eef9e8c970e15f324afbc3df8b6a4ebbf71",
+    "noticeRevision": "637e1aec1717e3a4af07dff1c1dec7a4eb971b2a",
+    "provenance": "Current upstream license fallback. The exact 0.4.0 source revision and published package omitted a LICENSE file; Cargo metadata declares MIT. The saved file is the actual upstream 2025 copyright notice, not a reconstructed 0.4.0 notice."
+  },
+  "fxhash": {
+    "folder": "fxhash",
+    "sources": [
+      "https://raw.githubusercontent.com/cbreeden/fxhash/a03cbf42dde010250adef75908f109be197d982b/Cargo.toml",
+      "https://raw.githubusercontent.com/cbreeden/fxhash/a03cbf42dde010250adef75908f109be197d982b/lib.rs",
+      "https://www.apache.org/licenses/LICENSE-2.0.txt"
+    ],
+    "license": "Apache-2.0 OR MIT",
+    "selectedLicense": "Apache-2.0",
+    "versions": [
+      "0.2.1"
+    ],
+    "revision": "a03cbf42dde010250adef75908f109be197d982b",
+    "provenance": "The published package has no VCS metadata or license file. Pinned upstream manifest is version 0.2.1 and declares Apache-2.0/MIT; official canonical Apache text is selected. NOTICE preserves the actual copyright/license header from published lib.rs."
+  },
+  "mac": {
+    "folder": "mac",
+    "sources": [
+      "https://raw.githubusercontent.com/reem/rust-mac/66afc663b68a65633ea165c742b5a9c6734581c2/Cargo.toml",
+      "https://raw.githubusercontent.com/reem/rust-mac/66afc663b68a65633ea165c742b5a9c6734581c2/README.md",
+      "https://www.apache.org/licenses/LICENSE-2.0.txt"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "selectedLicense": "Apache-2.0",
+    "versions": [
+      "0.1.1"
+    ],
+    "revision": "66afc663b68a65633ea165c742b5a9c6734581c2",
+    "provenance": "The published package has no VCS metadata or license file. Pinned upstream manifest is version 0.1.1 and declares MIT/Apache-2.0; its README states the same choice. Official canonical Apache text is selected; no copyright notice has been invented."
+  },
+  "match_token": {
+    "folder": "match_token",
+    "sources": [
+      "https://raw.githubusercontent.com/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-MIT",
+      "https://raw.githubusercontent.com/servo/html5ever/0e4e125b8672abad4ff14d1e0043d3be9305af6a/LICENSE-APACHE"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.1.0"
+    ],
+    "revision": "0e4e125b8672abad4ff14d1e0043d3be9305af6a"
+  },
+  "selectors": {
+    "folder": "selectors",
+    "sources": [
+      "https://raw.githubusercontent.com/servo/servo/e82d7868d999d84f6d59719e4c397e5252aecb85/LICENSE",
+      "https://github.com/servo/servo/tree/e82d7868d999d84f6d59719e4c397e5252aecb85/components/selectors",
+      "https://static.crates.io/crates/selectors/selectors-0.24.0.crate",
+      "https://www.mozilla.org/en-US/MPL/2.0/"
+    ],
+    "license": "MPL-2.0",
+    "versions": [
+      "0.24.0"
+    ],
+    "revision": "e82d7868d999d84f6d59719e4c397e5252aecb85"
+  },
+  "phf": {
+    "folder": "phf",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.8.0",
+      "0.10.1",
+      "0.11.3"
+    ],
+    "provenance": "License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice."
+  },
+  "phf_codegen": {
+    "folder": "phf",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.8.0",
+      "0.11.3"
+    ],
+    "provenance": "License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice."
+  },
+  "phf_generator": {
+    "folder": "phf",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.8.0",
+      "0.10.0",
+      "0.11.3"
+    ],
+    "provenance": "License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice."
+  },
+  "phf_macros": {
+    "folder": "phf",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.10.0",
+      "0.11.3"
+    ],
+    "provenance": "License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice."
+  },
+  "phf_shared": {
+    "folder": "phf",
+    "sources": [
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE",
+      "https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.8.0",
+      "0.10.0",
+      "0.11.3"
+    ],
+    "provenance": "License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice."
+  },
+  "unic-char-property": {
+    "folder": "unic",
+    "sources": [
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/AUTHORS",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/AUTHORS"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.9.0"
+    ],
+    "revision": "5878605364af97a3358368a6eaef02104af2e016",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE",
+      "COPYRIGHT.md",
+      "AUTHORS"
+    ],
+    "provenance": "The MIT text relies on separate upstream copyright and author attribution. Preserve all four files. Files from the two exact published revisions are SHA256-identical."
+  },
+  "unic-char-range": {
+    "folder": "unic",
+    "sources": [
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/AUTHORS",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/AUTHORS"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.9.0"
+    ],
+    "revision": "5878605364af97a3358368a6eaef02104af2e016",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE",
+      "COPYRIGHT.md",
+      "AUTHORS"
+    ],
+    "provenance": "The MIT text relies on separate upstream copyright and author attribution. Preserve all four files. Files from the two exact published revisions are SHA256-identical."
+  },
+  "unic-common": {
+    "folder": "unic",
+    "sources": [
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/AUTHORS",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/AUTHORS"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.9.0"
+    ],
+    "revision": "5878605364af97a3358368a6eaef02104af2e016",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE",
+      "COPYRIGHT.md",
+      "AUTHORS"
+    ],
+    "provenance": "The MIT text relies on separate upstream copyright and author attribution. Preserve all four files. Files from the two exact published revisions are SHA256-identical."
+  },
+  "unic-ucd-ident": {
+    "folder": "unic",
+    "sources": [
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/AUTHORS",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/AUTHORS"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.9.0"
+    ],
+    "revision": "8a6ce83063d90b91ae2ce59eddb803edd393fca9",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE",
+      "COPYRIGHT.md",
+      "AUTHORS"
+    ],
+    "provenance": "The MIT text relies on separate upstream copyright and author attribution. Preserve all four files. Files from the two exact published revisions are SHA256-identical."
+  },
+  "unic-ucd-version": {
+    "folder": "unic",
+    "sources": [
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/5878605364af97a3358368a6eaef02104af2e016/AUTHORS",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-MIT",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/LICENSE-APACHE",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/COPYRIGHT.md",
+      "https://raw.githubusercontent.com/open-i18n/rust-unic/8a6ce83063d90b91ae2ce59eddb803edd393fca9/AUTHORS"
+    ],
+    "license": "MIT OR Apache-2.0",
+    "versions": [
+      "0.9.0"
+    ],
+    "revision": "5878605364af97a3358368a6eaef02104af2e016",
+    "files": [
+      "LICENSE-MIT",
+      "LICENSE-APACHE",
+      "COPYRIGHT.md",
+      "AUTHORS"
+    ],
+    "provenance": "The MIT text relies on separate upstream copyright and author attribution. Preserve all four files. Files from the two exact published revisions are SHA256-identical."
+  },
+  "webview2-com": {
+    "folder": "webview2",
+    "sources": [
+      "https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.38.2"
+    ],
+    "revision": "b74dc5e2b394044bea5191052868ce7a106c202c",
+    "provenance": "LICENSE is byte-identical at the two exact published revisions."
+  },
+  "webview2-com-macros": {
+    "folder": "webview2",
+    "sources": [
+      "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.8.1"
+    ],
+    "revision": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+    "provenance": "LICENSE is byte-identical at the two exact published revisions."
+  },
+  "webview2-com-sys": {
+    "folder": "webview2",
+    "sources": [
+      "https://raw.githubusercontent.com/wravery/webview2-rs/b74dc5e2b394044bea5191052868ce7a106c202c/LICENSE"
+    ],
+    "license": "MIT",
+    "versions": [
+      "0.38.2"
+    ],
+    "revision": "b74dc5e2b394044bea5191052868ce7a106c202c",
+    "provenance": "LICENSE is byte-identical at the two exact published revisions."
+  }
+}
+

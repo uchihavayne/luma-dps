@@ -1,0 +1,20 @@
+Standard dependency license provenance
+
+Packages covered:
+phf: 0.8.0, 0.10.1, 0.11.3; declared license MIT
+phf_codegen: 0.8.0, 0.11.3; declared license MIT
+phf_generator: 0.8.0, 0.10.0, 0.11.3; declared license MIT
+phf_macros: 0.10.0, 0.11.3; declared license MIT
+phf_shared: 0.8.0, 0.10.0, 0.11.3; declared license MIT
+
+License files fetched at exact published VCS revisions. 0.8/0.10 text is identical; the group also preserves the different actual 0.11.3 copyright notice.
+
+Sources:
+https://raw.githubusercontent.com/rust-phf/rust-phf/81c7cc5b48649108428671d3b8ad151f6fbdb359/LICENSE
+https://raw.githubusercontent.com/rust-phf/rust-phf/3ea14b2166553ad6e7b9afe7244144f5d661b6c6/LICENSE
+https://raw.githubusercontent.com/rust-phf/rust-phf/bed01538ae576876f11189d541875d228acef9e8/LICENSE
+https://raw.githubusercontent.com/rust-phf/rust-phf/3cc6f05cb07933af4cf886645d1170bdcb306b6b/LICENSE
+https://raw.githubusercontent.com/rust-phf/rust-phf/9b679189639fec8d449cd2f1759fad5dc0ef38db/LICENSE
+
+Package revision metadata was read from the published Cargo registry packages where available. License downloads preserve upstream bytes. No application or dependency source was modified as part of collecting these notices.
+

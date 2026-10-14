@@ -1,0 +1,15 @@
+Standard dependency license provenance
+
+Packages covered:
+selectors: 0.24.0; declared license MPL-2.0
+
+
+
+Sources:
+https://raw.githubusercontent.com/servo/servo/e82d7868d999d84f6d59719e4c397e5252aecb85/LICENSE
+https://github.com/servo/servo/tree/e82d7868d999d84f6d59719e4c397e5252aecb85/components/selectors
+https://static.crates.io/crates/selectors/selectors-0.24.0.crate
+https://www.mozilla.org/en-US/MPL/2.0/
+
+Package revision metadata was read from the published Cargo registry packages where available. License downloads preserve upstream bytes. No application or dependency source was modified as part of collecting these notices.
+

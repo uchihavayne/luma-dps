@@ -1,0 +1,12 @@
+Standard dependency license provenance
+
+Packages covered:
+convert_case: 0.4.0; declared license MIT
+
+Current upstream license fallback. The exact 0.4.0 source revision and published package omitted a LICENSE file; Cargo metadata declares MIT. The saved file is the actual upstream 2025 copyright notice, not a reconstructed 0.4.0 notice.
+
+Sources:
+https://raw.githubusercontent.com/rutrum/convert-case/637e1aec1717e3a4af07dff1c1dec7a4eb971b2a/LICENSE
+
+Package revision metadata was read from the published Cargo registry packages where available. License downloads preserve upstream bytes. No application or dependency source was modified as part of collecting these notices.
+
