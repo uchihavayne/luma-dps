@@ -5,6 +5,49 @@ import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exp
 const fight = () => ({ id: 3, started_ms: 1791882000123, ended_ms: 1791882060123, elapsed_ms: 60000, total_damage: 3000, dps: 50, local_player_id: 7, local_player_name: 'Self', local_identity_source: 'server', personal_total_damage: 1000, personal_dps: 20, personal_elapsed_ms: 50000, personal_targets: [{ id: 50, name: 'Boss', damage: 1000 }], party_member_ids: [7], party_membership_source: 'server', party_total_damage: 1000, party_dps: 20, party_targets: [{ id: 50, name: 'Boss', damage: 1000 }], players: [{ id: 7, name: 'Self', is_local: true, in_party: true, class_name: 'ranger', damage: 1000, dps: 20, skills: [{ id: 5, name: 'Arrow', damage: 1000, hits: 5, crit_hits: null, back_hits: 2 }] }, { id: 8, name: 'Nearby', damage: 2000, dps: 40, class_name: 'cleric', skills: [] }], targets: [{ id: 50, name: 'Boss', is_boss: true, damage: 3000, current_hp: 1000, observed_peak_hp: 8000 }], note: 'Private build', tags: ['guild'] });
 const packet = records => ({ type: 'luma-history', version: 1, encounters: records });
 
+function withStagger() {
+  const value = fight();
+  value.assist = { stagger: [50, 7, 65].map(actor_id => ({ actor_id, current: 750, maximum: 1200, broken: false, observed_at_ms: value.started_ms + 20, fresh_for_ms: 5000, fresh: true, source: 'server' })) };
+  return value;
+}
+
+test('recorded stagger survives JSON and scopes only self and actually damaged targets', () => {
+  const input = withStagger();
+  const all = JSON.parse(exportEncounterJson(input)).encounters[0];
+  assert.deepEqual(all.assist.stagger, input.assist.stagger);
+  const personal = JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0];
+  assert.deepEqual(personal.assist.stagger.map(row => row.actor_id), [50, 7]);
+  const party = JSON.parse(exportEncounterJson(input, { scope: 'party' })).encounters[0];
+  assert.deepEqual(party.assist.stagger.map(row => row.actor_id), [50, 7]);
+  input.local_player_id = null; input.local_identity_source = 'unresolved';
+  assert.deepEqual(JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0].assist.stagger, []);
+});
+
+test('anonymous stagger aliases and timestamps use the same target mapping and appear in free offline exports', () => {
+  const input = withStagger();
+  const report = JSON.parse(exportEncounterJson(input, { scope: 'personal', anonymize: true })).encounters[0];
+  assert.equal(report.assist.stagger[0].actor_id, report.targets[0].id);
+  assert.equal(report.assist.stagger[0].observed_at_ms, 20);
+  assert.equal(report.assist.stagger[1].actor_id, report.local_player_id);
+  const csv = exportEncounterCsv(input, { scope: 'personal' });
+  const row = csv.split('\r\n').find(row => row.includes('stagger-observation'));
+  assert.ok(row); assert.equal(row.split(',').length, 35); assert.match(row, /750 \/ 1200/);
+  const html = exportEncounterHtml(input, { scope: 'personal', locale: 'en' });
+  assert.match(html, /Observed boss stagger/); assert.match(html, /750 \/ 1,200/);
+});
+
+test('stagger imports reject oversized or invalid observations instead of silently truncating', () => {
+  const input = withStagger();
+  input.assist.stagger = Array(65).fill(input.assist.stagger[0]);
+  assert.throws(() => exportEncounterJson(input), /Stagger/);
+  input.assist.stagger = [{ ...input.assist.stagger[0], current: 1201 }];
+  assert.throws(() => exportEncounterJson(input), /stagger/);
+  input.assist.stagger = [{ ...input.assist.stagger[0], current: 0, maximum: null, broken: true, private_data: 'hidden' }];
+  const valid = exportEncounterJson(input);
+  assert.doesNotMatch(valid, /private_data|hidden/);
+  assert.equal(JSON.parse(valid).encounters[0].assist.stagger[0].maximum, null);
+});
+
 test('native milliseconds and unknown quality counters survive import and JSON export', () => {
   const imported = importEncounterCollection(JSON.stringify(packet([fight()])));
   assert.equal(imported.encounters[0].started_ms, 1791882000123);

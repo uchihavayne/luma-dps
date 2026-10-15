@@ -49,6 +49,41 @@ fn inspect_admin() -> AdminCapability {
 }
 
 #[derive(Clone, Serialize)]
+pub struct NetworkLatency {
+    pub status: String,
+    pub source: &'static str,
+    pub selection: &'static str,
+    pub rtt_ms: Option<u32>,
+    pub latest_rtt_ms: Option<u32>,
+    pub variation_ms: Option<u32>,
+    pub observed_at_ms: Option<u64>,
+    pub sampled_at_ms: Option<u64>,
+    pub fresh_for_ms: u64,
+    pub measured_connections: usize,
+    pub game_connections: usize,
+    pub error_code: Option<String>,
+}
+
+impl Default for NetworkLatency {
+    fn default() -> Self {
+        Self {
+            status: "waiting".into(),
+            source: "windows-tcp-estats",
+            selection: "worst-active-game-tcp",
+            rtt_ms: None,
+            latest_rtt_ms: None,
+            variation_ms: None,
+            observed_at_ms: None,
+            sampled_at_ms: None,
+            fresh_for_ms: 5_000,
+            measured_connections: 0,
+            game_connections: 0,
+            error_code: None,
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct CaptureStatus {
     pub status: String,
     pub detail: String,
@@ -61,6 +96,7 @@ pub struct CaptureStatus {
     pub last_packet_at_ms: Option<u64>,
     pub error_code: Option<String>,
     pub admin: AdminCapability,
+    pub network_latency: NetworkLatency,
 }
 
 impl Default for CaptureStatus {
@@ -77,6 +113,7 @@ impl Default for CaptureStatus {
             last_packet_at_ms: None,
             error_code: None,
             admin: inspect_admin(),
+            network_latency: NetworkLatency::default(),
         }
     }
 }
@@ -115,6 +152,11 @@ fn failed(shared: &crate::Shared, failure: CaptureFailure) {
         capture.error_code = failure.code;
         capture.game_connections = 0;
         capture.last_packet_at_ms = None;
+        capture.network_latency = NetworkLatency {
+            status: "unavailable".into(),
+            error_code: capture.error_code.clone(),
+            ..NetworkLatency::default()
+        };
     }
 }
 
@@ -209,9 +251,9 @@ pub fn open_support_url(url: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 mod windows {
-    use super::{update, CaptureFailure};
+    use super::{update, CaptureFailure, NetworkLatency};
     use std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
         ffi::c_void,
         mem::{size_of, transmute},
         ptr,
@@ -224,7 +266,9 @@ mod windows {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, GetLastError, HMODULE, INVALID_HANDLE_VALUE},
         NetworkManagement::IpHelper::{
-            GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
+            GetExtendedTcpTable, GetPerTcpConnectionEStats, SetPerTcpConnectionEStats,
+            TCP_ESTATS_PATH_ROD_v0, TCP_ESTATS_PATH_RW_v0, TcpConnectionEstatsPath, MIB_TCPROW_LH,
+            MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
         },
         Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
         System::{
@@ -846,6 +890,201 @@ mod windows {
         endpoints: HashSet<Connection>,
     }
 
+    #[derive(Clone, Copy)]
+    struct PathReading {
+        count: u32,
+        smoothed_ms: u32,
+        latest_ms: u32,
+        variation_ms: u32,
+    }
+
+    struct PathHistory {
+        count: u32,
+        observed_at_ms: Option<u64>,
+        reading: PathReading,
+    }
+
+    #[derive(Default)]
+    struct LatencyMonitor {
+        paths: HashMap<Connection, PathHistory>,
+    }
+
+    impl LatencyMonitor {
+        fn sample(
+            &mut self,
+            endpoints: &HashSet<Connection>,
+            now: u64,
+            mut read: impl FnMut(&Connection) -> Result<PathReading, u32>,
+        ) -> NetworkLatency {
+            self.paths
+                .retain(|endpoint, _| endpoints.contains(endpoint));
+            let mut state = NetworkLatency {
+                sampled_at_ms: Some(now),
+                game_connections: endpoints.len(),
+                ..NetworkLatency::default()
+            };
+            if endpoints.is_empty() {
+                return state;
+            }
+            let mut failures = 0;
+            let mut first_error: Option<u32> = None;
+            for endpoint in endpoints {
+                let reading = match read(endpoint) {
+                    Ok(reading)
+                        if reading.smoothed_ms <= 120_000
+                            && reading.latest_ms <= 120_000
+                            && reading.variation_ms <= 120_000 =>
+                    {
+                        reading
+                    }
+                    Ok(_) => {
+                        self.paths.remove(endpoint);
+                        failures += 1;
+                        first_error = Some(first_error.unwrap_or(13).min(13));
+                        continue;
+                    }
+                    Err(error) => {
+                        // Never retain a displayed RTT after the OS can no longer
+                        // read that connection or says collection is disabled.
+                        self.paths.remove(endpoint);
+                        failures += 1;
+                        first_error = Some(first_error.unwrap_or(error).min(error));
+                        continue;
+                    }
+                };
+                if let Some(path) = self.paths.get_mut(endpoint) {
+                    let delta = reading.count.wrapping_sub(path.count);
+                    if delta > 0 && delta < u32::MAX / 2 {
+                        path.observed_at_ms = Some(now);
+                        path.reading = reading;
+                    } else if delta > 0 {
+                        // A reset/reused tuple is a new baseline, not a fresh
+                        // sample from the previous game connection.
+                        path.observed_at_ms = None;
+                    }
+                    path.count = reading.count;
+                } else {
+                    // Existing Windows counters can predate Luma. One read
+                    // cannot prove when the last RTT sample was measured.
+                    self.paths.insert(
+                        endpoint.clone(),
+                        PathHistory {
+                            count: reading.count,
+                            observed_at_ms: None,
+                            reading,
+                        },
+                    );
+                }
+            }
+            state.error_code = first_error.map(|error| format!("win32:{error}"));
+            let mut selected: Option<&PathHistory> = None;
+            let mut newest = None;
+            for path in self.paths.values() {
+                let Some(observed) = path.observed_at_ms else {
+                    continue;
+                };
+                newest = Some(newest.unwrap_or(0).max(observed));
+                if now < observed || now - observed > state.fresh_for_ms {
+                    continue;
+                }
+                state.measured_connections += 1;
+                if selected.is_none_or(|previous| {
+                    (path.reading.smoothed_ms, observed)
+                        > (
+                            previous.reading.smoothed_ms,
+                            previous.observed_at_ms.unwrap_or(0),
+                        )
+                }) {
+                    selected = Some(path);
+                }
+            }
+            if let Some(path) = selected {
+                state.status = "ready".into();
+                state.rtt_ms = Some(path.reading.smoothed_ms);
+                state.latest_rtt_ms = Some(path.reading.latest_ms);
+                state.variation_ms = Some(path.reading.variation_ms);
+                state.observed_at_ms = path.observed_at_ms;
+            } else {
+                state.observed_at_ms = newest;
+                state.status = if failures == endpoints.len() {
+                    "unavailable"
+                } else if newest.is_some() {
+                    "stale"
+                } else {
+                    "collecting"
+                }
+                .into();
+            }
+            state
+        }
+    }
+
+    fn read_path(endpoint: &Connection) -> Result<PathReading, u32> {
+        let row = MIB_TCPROW_LH {
+            Anonymous: MIB_TCPROW_LH_0 { dwState: 5 },
+            dwLocalAddr: u32::from_ne_bytes(endpoint.local),
+            dwLocalPort: u32::from(endpoint.local_port.to_be()),
+            dwRemoteAddr: u32::from_ne_bytes(endpoint.remote),
+            dwRemotePort: u32::from(endpoint.remote_port.to_be()),
+        };
+        let mut rw = TCP_ESTATS_PATH_RW_v0::default();
+        let mut rod = TCP_ESTATS_PATH_ROD_v0::default();
+        let result = unsafe {
+            GetPerTcpConnectionEStats(
+                &row,
+                TcpConnectionEstatsPath,
+                (&mut rw as *mut TCP_ESTATS_PATH_RW_v0).cast(),
+                0,
+                size_of::<TCP_ESTATS_PATH_RW_v0>() as u32,
+                ptr::null_mut(),
+                0,
+                0,
+                (&mut rod as *mut TCP_ESTATS_PATH_ROD_v0).cast(),
+                0,
+                size_of::<TCP_ESTATS_PATH_ROD_v0>() as u32,
+            )
+        };
+        if result != 0 {
+            return Err(result);
+        }
+        if !rw.EnableCollection {
+            // EStats observes normal Windows TCP traffic. It sends no probe or
+            // game packet. Microsoft recommends leaving collection enabled to
+            // avoid resetting another diagnostic tool's connection counters.
+            // https://learn.microsoft.com/windows/win32/api/iphlpapi/nf-iphlpapi-setpertcpconnectionestats
+            let enabled = TCP_ESTATS_PATH_RW_v0 {
+                EnableCollection: true,
+            };
+            let result = unsafe {
+                SetPerTcpConnectionEStats(
+                    &row,
+                    TcpConnectionEstatsPath,
+                    (&enabled as *const TCP_ESTATS_PATH_RW_v0).cast(),
+                    0,
+                    size_of::<TCP_ESTATS_PATH_RW_v0>() as u32,
+                    0,
+                )
+            };
+            if result != 0 {
+                return Err(result);
+            }
+            // The just-read ROD was undefined while collection was disabled.
+            // Use zero only as a baseline; it is never displayed as zero ping.
+            return Ok(PathReading {
+                count: 0,
+                smoothed_ms: 0,
+                latest_ms: 0,
+                variation_ms: 0,
+            });
+        }
+        Ok(PathReading {
+            count: rod.CountRtt,
+            smoothed_ms: rod.SmoothedRtt,
+            latest_ms: rod.SampleRtt,
+            variation_ms: rod.RttVar,
+        })
+    }
+
     fn read_tcp_table(
         mut read: impl FnMut(*mut c_void, &mut u32) -> u32,
     ) -> Result<Vec<u32>, CaptureFailure> {
@@ -1037,6 +1276,7 @@ mod windows {
         let mut active: Option<ActiveCapture<'_>> = None;
         let mut endpoints = HashSet::new();
         let mut totals = StreamTotals::default();
+        let mut latency = LatencyMonitor::default();
         let mut refresh = Instant::now() - Duration::from_secs(2);
         update(
             shared,
@@ -1108,7 +1348,9 @@ mod windows {
                         .as_ref()
                         .map(|stream| stream_totals(&stream.session.context))
                         .unwrap_or_default();
+                    let network_latency = latency.sample(&endpoints, crate::now_ms(), read_path);
                     if let Ok(mut capture) = shared.capture.lock() {
+                        capture.network_latency = network_latency;
                         capture.game_connections = endpoints.len();
                         capture.game_processes = refreshed.processes;
                         capture.missed_packets = totals.missed.saturating_add(current.missed);
@@ -1171,6 +1413,10 @@ mod windows {
             capture.missed_packets = totals.missed.saturating_add(previous.missed);
             capture.stream_warnings = totals.warnings.saturating_add(previous.warnings);
             capture.largest_warning_packet = totals.largest_packet.max(previous.largest_packet);
+            capture.network_latency = NetworkLatency {
+                status: "stopped".into(),
+                ..NetworkLatency::default()
+            };
         }
         result
     }
@@ -1180,6 +1426,112 @@ mod windows {
         use super::*;
 
         const TEST_CLOCK_MS: u64 = 1_791_931_200_000;
+
+        fn test_connection(port: u16) -> Connection {
+            Connection {
+                local: [192, 0, 2, 3],
+                local_port: port,
+                remote: [198, 51, 100, 9],
+                remote_port: 7777,
+            }
+        }
+
+        fn path(count: u32, rtt: u32) -> PathReading {
+            PathReading {
+                count,
+                smoothed_ms: rtt,
+                latest_ms: rtt + 4,
+                variation_ms: 2,
+            }
+        }
+
+        #[test]
+        fn latency_requires_an_advancing_os_sample_and_expires_without_new_samples() {
+            let endpoints = HashSet::from([test_connection(50_000)]);
+            let mut monitor = LatencyMonitor::default();
+            let baseline = monitor.sample(&endpoints, 1_000, |_| Ok(path(40, 81)));
+            assert_eq!(baseline.status, "collecting");
+            assert_eq!(baseline.rtt_ms, None);
+            let fresh = monitor.sample(&endpoints, 2_000, |_| Ok(path(41, 83)));
+            assert_eq!(fresh.status, "ready");
+            assert_eq!(fresh.rtt_ms, Some(83));
+            assert_eq!(fresh.latest_rtt_ms, Some(87));
+            assert_eq!(fresh.variation_ms, Some(2));
+            assert_eq!(fresh.observed_at_ms, Some(2_000));
+            assert_eq!(fresh.measured_connections, 1);
+            let unchanged = monitor.sample(&endpoints, 6_999, |_| Ok(path(41, 110)));
+            assert_eq!(unchanged.rtt_ms, Some(83));
+            assert_eq!(unchanged.observed_at_ms, Some(2_000));
+            let stale = monitor.sample(&endpoints, 7_001, |_| Ok(path(41, 110)));
+            assert_eq!(stale.status, "stale");
+            assert_eq!(stale.rtt_ms, None);
+            assert_eq!(stale.measured_connections, 0);
+            assert_eq!(stale.observed_at_ms, Some(2_000));
+            let resumed = monitor.sample(&endpoints, 8_000, |_| Ok(path(42, 80)));
+            assert_eq!(resumed.rtt_ms, Some(80));
+        }
+
+        #[test]
+        fn latency_uses_worst_active_owned_connection_and_drops_removed_tuples() {
+            let slow = test_connection(50_001);
+            let fast = test_connection(50_000);
+            let mut endpoints = HashSet::from([slow.clone(), fast.clone()]);
+            let mut monitor = LatencyMonitor::default();
+            monitor.sample(&endpoints, 1_000, |_| Ok(path(1, 20)));
+            let measured = monitor.sample(&endpoints, 2_000, |endpoint| {
+                Ok(path(2, if endpoint == &slow { 99 } else { 20 }))
+            });
+            assert_eq!(measured.rtt_ms, Some(99));
+            assert_eq!(measured.measured_connections, 2);
+            assert_eq!(measured.game_connections, 2);
+            endpoints.remove(&slow);
+            let after_close = monitor.sample(&endpoints, 3_000, |_| Ok(path(3, 21)));
+            assert_eq!(after_close.rtt_ms, Some(21));
+            assert_eq!(monitor.paths.len(), 1);
+            let serialized = serde_json::to_string(&after_close).unwrap();
+            assert!(!serialized.contains("198.51.100.9"));
+            assert!(!serialized.contains("50000"));
+            assert_eq!(after_close.selection, "worst-active-game-tcp");
+            let empty = monitor.sample(&HashSet::new(), 4_000, |_| unreachable!());
+            assert_eq!(empty.status, "waiting");
+            assert_eq!(empty.rtt_ms, None);
+            assert!(monitor.paths.is_empty());
+        }
+
+        #[test]
+        fn latency_never_reuses_unreadable_or_reset_statistics() {
+            let endpoints = HashSet::from([test_connection(50_000)]);
+            let mut monitor = LatencyMonitor::default();
+            monitor.sample(&endpoints, 1_000, |_| Ok(path(7, 81)));
+            monitor.sample(&endpoints, 2_000, |_| Ok(path(8, 81)));
+            let denied = monitor.sample(&endpoints, 3_000, |_| Err(5));
+            assert_eq!(denied.status, "unavailable");
+            assert_eq!(denied.error_code.as_deref(), Some("win32:5"));
+            assert_eq!(denied.rtt_ms, None);
+            let restarted = monitor.sample(&endpoints, 4_000, |_| Ok(path(9, 80)));
+            assert_eq!(restarted.status, "collecting");
+            assert_eq!(restarted.rtt_ms, None);
+            monitor.sample(&endpoints, 5_000, |_| Ok(path(10, 80)));
+            let reset = monitor.sample(&endpoints, 6_000, |_| Ok(path(1, 79)));
+            assert_eq!(reset.status, "collecting");
+            assert_eq!(reset.rtt_ms, None);
+            let bad = monitor.sample(&endpoints, 7_000, |_| Ok(path(2, u32::MAX - 4)));
+            assert_eq!(bad.status, "unavailable");
+            assert_eq!(bad.rtt_ms, None);
+            assert_eq!(bad.error_code.as_deref(), Some("win32:13"));
+        }
+
+        #[test]
+        fn latency_counter_wrap_and_zero_millisecond_samples_are_supported() {
+            let endpoints = HashSet::from([test_connection(50_000)]);
+            let mut monitor = LatencyMonitor::default();
+            monitor.sample(&endpoints, 1_000, |_| Ok(path(u32::MAX, 1)));
+            let wrapped = monitor.sample(&endpoints, 2_000, |_| Ok(path(0, 0)));
+            assert_eq!(wrapped.rtt_ms, Some(0));
+            assert_eq!(wrapped.status, "ready");
+            let backward_clock = monitor.sample(&endpoints, 1_900, |_| Ok(path(0, 0)));
+            assert_eq!(backward_clock.rtt_ms, None);
+        }
 
         fn filetime(at_ms: u64) -> i64 {
             (at_ms * 10_000 + 116_444_736_000_000_000) as i64

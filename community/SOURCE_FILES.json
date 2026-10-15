@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "shared_files": [
+    {
+      "path": "app/layout.tsx",
+      "sha256": "d65494b2c5ff1282735e6c81b090a2b476c2b68665ac848d297e411ef0ff283e",
+      "bytes": 570
+    },
+    {
+      "path": "app/globals.css",
+      "sha256": "e6b432e38d4d39e6b0c5b6a55504311abb45f337ff5084cf76bed5fe54a8a62a",
+      "bytes": 23643
+    },
+    {
+      "path": "app/page.tsx",
+      "sha256": "02d0679cfd75ffefd3c85da4c4fe7d3fc36b485e751d7150566382eeb149530e",
+      "bytes": 13648
+    },
+    {
+      "path": "app/ui.tsx",
+      "sha256": "70d095c68648e82ab938d3dff3651834c98c75fa867d73665a8b5c56afc44482",
+      "bytes": 4267
+    },
+    {
+      "path": "app/r/[id]/page.tsx",
+      "sha256": "6b8e001a1cf9b5a9c6c1bd938f9bf6429433b959b1b9d220155567a5f26e6b03",
+      "bytes": 334
+    },
+    {
+      "path": "app/r/[id]/report.tsx",
+      "sha256": "8e3a866b0ab6e3ac2e18636a5cdfa94325e6088d0545a41c492e0a25c05c30c4",
+      "bytes": 15240
+    },
+    {
+      "path": "app/v1/[...path]/route.ts",
+      "sha256": "2c41426445a8624c97446237a0b6b68da076e1bf3f16f1ad8f1348a3359f49ad",
+      "bytes": 257
+    },
+    {
+      "path": "lib/community.mjs",
+      "sha256": "d95c697d0fd7ccec9d27c51954a5b04e9adafd9a17c228cf84388fbd7a59fa69",
+      "bytes": 15578
+    },
+    {
+      "path": "lib/community.test.mjs",
+      "sha256": "6b85301105407daca854d1543bd0356d7c393f76824fd0e9ef1fcca1b3428be2",
+      "bytes": 11803
+    },
+    {
+      "path": "db/schema.ts",
+      "sha256": "b88358c4b2d86bc5686ea478658cfa81ad92be3d7d1c54ff5cb79e2169b23a11",
+      "bytes": 1458
+    },
+    {
+      "path": "drizzle/0000_nebulous_lockheed.sql",
+      "sha256": "67716a3f30539912ed169eb25d347d9f01da83f809f4cfb57ebf7dada12b7ae6",
+      "bytes": 1365
+    },
+    {
+      "path": "drizzle/meta/_journal.json",
+      "sha256": "378d8a00d05acd3d606d10dc061e5f21d7242aa012a840a5ec76292aaabe87d2",
+      "bytes": 207
+    },
+    {
+      "path": "drizzle/meta/0000_snapshot.json",
+      "sha256": "d49cb5c9e8d407ddcf1bd0ffa724c9f88d06cc206effd22b9a72616ca087e36c",
+      "bytes": 6191
+    },
+    {
+      "path": "public/favicon.svg",
+      "sha256": "9cf46199cef11e8057421e172cfe29fb6248fd7098de888c6d3f53579ea0c6fa",
+      "bytes": 333
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "7199c6e4e400921e8049729840165a39f1476fa97901bed00239e7697bfe8da4",
+      "bytes": 800
+    },
+    {
+      "path": "next.config.ts",
+      "sha256": "614bce25b089c3f19b1e17a6346c74b858034040154c6621e7d35303004767cc",
+      "bytes": 133
+    },
+    {
+      "path": "postcss.config.mjs",
+      "sha256": "dfac7ac2d86d326a0e5adb024e7943c181393ed17a5fcb8f0315b24c7da6ddde",
+      "bytes": 94
+    },
+    {
+      "path": "drizzle.config.ts",
+      "sha256": "af081f7384aaeb0082cf422e29f139d137ca2f6a57c69b2c37b9fb1f8479867b",
+      "bytes": 148
+    },
+    {
+      "path": "cloudflare-env.d.ts",
+      "sha256": "8b0eca84aa3364cc7ccc43cc3af6beb88dd34ebd410de08690bf094ce39fbcb0",
+      "bytes": 99
+    }
+  ],
+  "portable_files": [
+    "README.md",
+    ".gitignore",
+    "package.json",
+    "package-lock.json",
+    "vite.config.ts",
+    "worker.ts",
+    "wrangler.jsonc",
+    "eslint.config.mjs"
+  ]
+}

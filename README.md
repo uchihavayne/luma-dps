@@ -1,6 +1,6 @@
 # Luma DPS
 
-Luma is an independent Windows encounter meter for AION2 with personal, party and observed views, local analysis and a configurable overlay. The interface supports Turkish and English. This is a preview: supported protocol layouts have replay tests; live coverage outside the tested encounters still requires validation.
+Luma is an independent Windows encounter meter for AION2 with personal, party and observed views, local analysis and a configurable overlay. The interface supports Turkish and English. The 0.13.0 preview adds explicit free sharing/community-ranking integration and conditional received pet/stagger observations and TCP RTT. Supported protocol layouts have replay tests; live coverage outside the tested encounters still requires validation.
 
 ## Hızlı başlangıç · Türkçe
 
@@ -9,6 +9,7 @@ Luma is an independent Windows encounter meter for AION2 with personal, party an
 3. **Etkinlik takvimi** bölümünden hazır EU etkinliklerini seç. Rift, Shugo ve diğer hazır saatlerde aralık veya başlangıç girmen gerekmez. Üst çubuktaki saati değiştirebilir veya kapatabilirsin; hatırlatıcıları ayrı ayrı açabilirsin.
 4. Ayarlardan dili, tasarımı, renkleri, yazıyı ve satır bilgilerini seç. Analizden mevcut karşılaşmayı veya geçmişi HTML, CSV ya da JSON olarak dışa aktar. Paylaşmadan önce ad gizleme seçeneğini kullanabilirsin.
 5. Hidden Cube sesi Luma açıkken arka planda otomatik dinlenir. Hazır ses referansı dahildir. Ses eşleştiğinde pusula aynı pencerede DPS listesinin yanında açılır; oyuncu listesi görünmeye devam eder. Pusuladaki ok eşleşen sesin stereo sol/sağ dengesini izler, kesikli ok olası arka yönü gösterir. Kamera yönünü değiştirerek karşılaştır. **Ayarlar → Hidden Cube** bölümünden dinlemeyi kapatabilir veya göstergeyi gizleyebilirsin. Dinlemeyi kapatma tercihin sonraki açılışlarda korunur. Kesin metre ve harita konumu hesaplanmaz.
+6. **Analiz → Paylaşım ve sıralama** aynı uygulama penceresindedir. Sunucusuz paylaşım için karşılaşma metnini kopyalayabilir veya yerel rapor dışa aktarabilirsin. Çevrimiçi hizmet etkinleştirildiğinde bitmiş bir kayıt seçip gizliliği inceleyerek açıkça bağlantı oluşturabilirsin; sıralamaya katılım ayrı ve isteğe bağlıdır. Kamuya açık hizmetin etkinleştirilmesi henüz yayın aşamasındadır; bağlı değilse arayüz bunu belirtir. [Paylaşım kuralları](docs/community-sharing.md).
 
 Bağlantı bekleniyorsa durum yazısının ayrıntısını kontrol et. Oyuna girişten sonra Luma'yı açmak bazı kimlik kayıtlarını kaçırabilir. Tarayıcı önizlemesi canlı oyun verisi okumaz. Bu sürümde yeni senkronize oyun testi hâlâ bekleniyor; kapsam sınırlamaları aşağıda açıklanıyor.
 
@@ -16,11 +17,13 @@ Bağlantı bekleniyorsa durum yazısının ayrıntısını kontrol et. Oyuna gir
 
 Extract the Windows portable archive and open `Luma-DPS.exe`. Release builds request the standard Windows administrator approval needed for native capture. Windows' built-in Packet Monitor streaming API and WebView2 must already be present. Luma installs no Npcap or extra capture driver. Unsupported Windows builds display the actual backend error.
 
-The independent application uses a separate settings directory and application identity. It closes only its own capture session. Completed fights, preferences and imported reports stay on this device. There is no automatic upload or account requirement.
+The independent application uses a separate settings directory and application identity. It closes only its own capture session. Completed fights, preferences and imported reports stay on this device unless you explicitly publish a selected encounter summary. There is no automatic upload or account requirement.
 
 Start Luma before entering the character when testing automatic identity. Opening it after login may miss the self and build records; the meter then waits for received identity or an explicit fallback selection.
 
 Choose your display language and appearance in Settings. Ready EU clocks need no entered interval or anchor; choose the compact header's event and enable reminders individually. Export the current encounter or history from Analysis as HTML, CSV or JSON, with optional anonymous names.
+
+**Analysis → Sharing and rankings** remains in the same app drawer. Copying an encounter text or exporting a local file works without a server. Online sharing is an explicit action with anonymous names by default and a separate ranking opt-in; public service activation is still a deployment gate. See [sharing, privacy and eligibility](docs/community-sharing.md).
 
 ## Your character and measurement scope
 
@@ -40,11 +43,15 @@ An explicit server self record identifies the current character automatically. N
 - Received equipment, skills and Daevanion lists; unbound inspection records; immutable encounter-start build observations. Structural equipment coverage is partial.
 - Ready EU event clocks for Rift, Shugo Festival, Dimensional Invasion, siege, siege bosses, Kaira, Nahma and daily/weekly resets. No interval or opening anchor is needed. Published calendar subscriptions refresh automatically, retain their last valid cache offline and keep source/timezone information. Custom timers remain optional.
 - Received map boss slots with alive/dead status and server timestamps, selectable compact countdowns, per-event reminders and finite UTC calendar export.
+- Fresh received boss stagger current/max and break markers, retained in scoped HTML/CSV/JSON reports. An observation is not a predicted break duration; stale observations stop appearing as live bars.
+- Own pet level/progress observations and received gains, bound to authoritative self identity. Unknown names remain IDs, capture gaps invalidate the progress baseline, and no soul threshold/drop-location catalog is invented.
+- Conditional Windows TCP EStats RTT for existing eligible game IPv4 connections, without ICMP or extra game packets. The first read establishes a baseline; stale, unsupported, denied or unsampled paths show unavailable data. TCP RTT is not the game's application-response latency.
 - Explicit per-second values such as `12.3K/sn` (Turkish) or `12.3K/s` (English). Rates keep the K unit above 1000 rather than switching to M; totals retain their own K/M units. Combined rows show total damage followed by the rate, for example `1.2M (12.3K/sn)`. The upper summary and player rows independently show DPS, total damage or both.
 - Invalid packet timestamps fall back to receipt time so the encounter clock can advance. Old saved encounters with damage but zero duration keep their totals and display an unavailable DPS instead of an invented rate.
 - Turkish/English UI, four original layouts, twelve palettes including white, editable colors/fonts/density/columns, local images and appearance import/export. Player bars can use relative DPS, received class or theme colors.
 - Native movement/resizing, keyboard resize, pause/reset, focus-safe updates and movable settings/analysis panels. Closing a panel restores the compact window's position and size. The minimum overlay is 320 × 200; older shorter saved windows are expanded while preserving appearance preferences.
 - Optional same-PC OBS browser source with per-session access token, explicit measurement scope and hidden names by default. It starts only when enabled for that session.
+- Free clipboard encounter summaries and an integrated Community section: explicit selected-encounter link creation, anonymous names by default, copy/open/revoke, and optional filtered community rankings. The native client and hosted implementation are included; public endpoint activation remains pending. No successful share or rank is invented while the service is unavailable.
 - Background Hidden Cube sound detection with a built-in spectral reference and a compass that appears beside the DPS list only when a fresh match arrives. Smooth stereo steering, reference similarity, signal/noise readings and relative signal changes share the same overlay. Local WAV/M4A reference import accepts at most 8 MB and 30 seconds. Automatic game-only listening is on by default and can be disabled persistently; neither microphone capture nor automatic audio recording/upload is used.
 
 ## Hidden Cube sound locator
@@ -71,13 +78,21 @@ The meter measures what the game connection supplies. A nearby player may not ap
 
 Boss classification and unfamiliar skill/target labels still need validated mappings or user selection. Map slot IDs are not guessed into boss names. A passed map deadline waits for a fresh server report rather than claiming the boss spawned. Ready event clocks use published community schedules and public calendar subscriptions; they do not establish live availability or NCSOFT confirmation. Nahma remains a provisional community preset. See [event sources and clock rules](docs/events-sources.md).
 
-Live healing/resource classification remains unsupported where the wire form is ambiguous. Player/pet-to-player amounts are retained as unclassified and excluded from damage/HPS until that distinction is verified; PvP statistics are therefore not yet supported. Unsupported HPS is unavailable; saved game reports can provide their own healing totals. Verified NPC damage to a player's body is shown separately with coverage information. Automatic Odyle inventory is not included; the planner uses entered values. Public world rankings need a shared service and comparable uploaded encounters; this preview does not pretend local history is a world ranking.
+Live healing/resource classification remains unsupported where the wire form is ambiguous. Player/pet-to-player amounts are retained as unclassified and excluded from damage/HPS until that distinction is verified; PvP statistics are therefore not yet supported. Unsupported HPS is unavailable; saved game reports can provide their own healing totals. Verified NPC damage to a player's body is shown separately with coverage information. Automatic Odyle inventory is not included; the planner uses entered values. Community sharing/ranking code is implemented, with public service activation pending. Community submissions and local history are not a verified world ranking or an all-player percentile.
 
 Gear observations are partial and do not bundle another provider's item/skill/icon catalog. Equipment ownership requires confirmed server self identity; a matching inspection name or manual row selection is insufficient. Starting midway through a session can miss login lists.
 
 TCP retransmissions are removed; bounded frame recovery and capture-loss reporting protect totals. Loss invalidates partial records and marks measurements. The native backend currently supports incoming IPv4 TCP for the allowed AION2 executables. IPv6, encrypted game traffic, unsupported executables and oversized/incomplete snapshots are reported limitations. See [capture details](src-tauri/NATIVE_CAPTURE.md), [protocol coverage](docs/observed-character-and-bosses.md) and [feature comparison](docs/feature-parity.md).
 
 Browser preview has no live connection. `?demo=1` shows fixed sample records and an explicit DEMO label.
+
+## Sharing and community rankings
+
+Choose a finished current encounter or a saved record in **Analysis → Sharing and rankings**. Online publication requires an explicit consent control; background measuring never uploads encounters. Anonymous is the default. If you choose to expose your name, other players still use anonymous labels. Raw packets, audio, private notes, unrelated encounters and original actor IDs are excluded from public summaries. A link can be revoked from the app and expires after 30 days; local encounters remain available independently.
+
+Ranking participation is separate from sharing. Ranked results require confirmed own identity/class, complete live capture, at least 10 seconds of personal measurement, and exactly one named boss target matching the supplied boss context. Region/server/class/boss/difficulty filters describe opted-in community records only. The service checks structured values and arithmetic; a client-submitted summary is not an authenticated game record. Mixed-target, imported, short, incomplete and manually identified encounters do not qualify for rankings even when their valid summaries can be shared.
+
+The public client/service implementation is present in this preview, but activating a publicly reachable endpoint remains a release gate. An unavailable or unconfigured endpoint leaves local measuring, clipboard summaries and HTML/CSV/JSON exports working. Free online service capacity and rate limits are bounded; see [community sharing](docs/community-sharing.md) for exact initial quotas, privacy, recovery and retention, and [feature comparison](docs/feature-parity.md) for unsupported features.
 
 ## Build and test
 

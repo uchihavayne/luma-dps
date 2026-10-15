@@ -2,6 +2,7 @@
 
 mod audio_capture;
 mod audio_decode;
+mod community;
 mod cube_locator;
 mod cube_signal;
 mod event_schedule;
@@ -25,6 +26,80 @@ use std::{
 use tauri::{Emitter, Manager, State, WebviewWindow};
 
 const MIN_METER_HEIGHT: f64 = 200.0;
+const COMMUNITY_ENDPOINT: &str = "https://luma-dps-community.uchihavayne.chatgpt.site";
+
+/// A failed optional HTTPS initialization must not prevent local measurement,
+/// settings or capture from opening.
+struct CommunityRuntime {
+    service: Result<Arc<community::Service>, String>,
+}
+
+impl CommunityRuntime {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            service: community::Service::new(COMMUNITY_ENDPOINT, path).map(Arc::new),
+        }
+    }
+
+    fn service(&self) -> Result<Arc<community::Service>, String> {
+        self.service.as_ref().cloned().map_err(Clone::clone)
+    }
+
+    fn snapshot(&self) -> community::Snapshot {
+        match &self.service {
+            Ok(service) => service.snapshot(),
+            Err(message) => community::Snapshot {
+                configured: false,
+                endpoint: COMMUNITY_ENDPOINT.into(),
+                shares: Vec::new(),
+                pending_count: 0,
+                storage_error: message.clone(),
+            },
+        }
+    }
+}
+
+fn community_record_id(value: Option<&str>) -> Result<Option<u64>, String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.len() > 20 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("Invalid community encounter identifier".into());
+    }
+    let id = value
+        .parse::<u64>()
+        .ok()
+        .filter(|id| *id != 0 && id.to_string() == value)
+        .ok_or("Invalid community encounter identifier")?;
+    Ok(Some(id))
+}
+
+/// Return an owned record while the engine is locked. Callers drop that lock
+/// before serialization, disk persistence or any network request.
+fn select_community_record(
+    engine: &MeterEngine,
+    record_id: Option<&str>,
+    at_ms: u64,
+) -> Result<luma_engine::Encounter, String> {
+    let selected = community_record_id(record_id)?;
+    let (_, history) = engine.history_snapshot();
+    if let Some(id) = selected {
+        return history
+            .into_iter()
+            .find(|record| record.id == id)
+            .ok_or_else(|| {
+                "The selected community encounter is no longer in local history".into()
+            });
+    }
+    let current = engine.current_record(at_ms);
+    if !history.iter().any(|record| record.id == current.id) {
+        return Err(
+            "Finish this encounter before sharing, or choose a completed record from history"
+                .into(),
+        );
+    }
+    Ok(current)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -745,6 +820,98 @@ mod shell_tests {
         assert!(!encoded.contains("private-background-marker"));
         assert!(!encoded.contains("private-import-marker"));
     }
+
+    fn community_fixture_engine() -> MeterEngine {
+        let mut engine = MeterEngine::default();
+        engine.set_boss_targets(&[9]);
+        for (target, amount, at) in [(2, 100, 1_000), (9, 200, 2_000)] {
+            engine.ingest_event(
+                luma_engine::packets::Event::Damage(luma_engine::packets::Hit {
+                    source: 1,
+                    target,
+                    skill: 14_090_000,
+                    amount,
+                    critical: false,
+                    tick: false,
+                    flags: 0,
+                    angle: 0,
+                }),
+                at,
+            );
+        }
+        engine
+    }
+
+    #[test]
+    fn community_record_ids_are_exact_and_cannot_address_files_or_other_commands() {
+        assert_eq!(community_record_id(None).unwrap(), None);
+        assert_eq!(community_record_id(Some("")).unwrap(), None);
+        assert_eq!(community_record_id(Some("42")).unwrap(), Some(42));
+        for value in [
+            "0",
+            "01",
+            " 1",
+            "1 ",
+            "-1",
+            "1.0",
+            "1e3",
+            "../history.json",
+            "18446744073709551616",
+        ] {
+            assert!(community_record_id(Some(value)).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn community_current_selection_preserves_target_filter_and_requires_completion() {
+        let mut engine = community_fixture_engine();
+        assert!(select_community_record(&engine, None, 2_100).is_err());
+        engine.pause(true);
+        assert!(!engine.live_state(2_100).encounter_active);
+        assert!(select_community_record(&engine, None, 2_100).is_err());
+        engine.pause(false);
+        engine.tick(12_000);
+        engine.set_target_mode("boss");
+        let current = select_community_record(&engine, None, 12_000).unwrap();
+        assert_eq!(current.total_damage, 200);
+        assert!(current.targets.iter().all(|target| target.id == 9));
+        let saved =
+            select_community_record(&engine, Some(&current.id.to_string()), 12_000).unwrap();
+        assert_eq!(saved.total_damage, 300);
+        assert!(select_community_record(&engine, Some("9999999"), 12_000).is_err());
+    }
+
+    #[test]
+    fn community_selection_clones_only_the_chosen_record_and_preserves_import_source() {
+        let mut engine = community_fixture_engine();
+        engine.tick(12_000);
+        let (_, records) = engine.history_snapshot();
+        let original = records[0].clone();
+        let mut other_engine = MeterEngine::default();
+        other_engine.merge_history(&[original]).unwrap();
+        let (_, imported) = other_engine.history_snapshot();
+        let id = imported[0].id.to_string();
+        let selected = select_community_record(&other_engine, Some(&id), 12_000).unwrap();
+        assert_eq!(selected.source, "imported");
+        assert_eq!(selected.total_damage, 300);
+        other_engine.reset();
+        assert_eq!(selected.total_damage, 300);
+        assert_eq!(selected.damage_samples.len(), 2);
+    }
+
+    #[test]
+    fn optional_community_initialization_failure_leaves_a_readable_offline_state() {
+        let runtime = CommunityRuntime {
+            service: Err("HTTPS initialization unavailable".into()),
+        };
+        let state = runtime.snapshot();
+        assert!(!state.configured);
+        assert_eq!(state.endpoint, COMMUNITY_ENDPOINT);
+        assert!(state.shares.is_empty());
+        assert_eq!(state.pending_count, 0);
+        assert_eq!(state.storage_error, "HTTPS initialization unavailable");
+        assert!(runtime.service().is_err());
+    }
 }
 
 fn persist(shared: &Shared, preferences: &Preferences) -> Result<(), String> {
@@ -962,6 +1129,79 @@ fn stop_obs(shared: State<Arc<Shared>>) -> Result<Value, String> {
         server.stop();
     }
     Ok(serde_json::json!({"running": false}))
+}
+
+#[tauri::command]
+async fn get_community_state(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+) -> Result<community::Snapshot, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.snapshot())
+        .await
+        .map_err(|_| "Community state request was interrupted".into())
+}
+
+#[tauri::command]
+async fn create_community_share(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    shared: State<'_, Arc<Shared>>,
+    record_id: Option<String>,
+    options: community::ShareOptions,
+) -> Result<community::Share, String> {
+    let runtime = runtime.inner().clone();
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = runtime.service()?;
+        let record = {
+            let engine = shared
+                .engine
+                .lock()
+                .map_err(|_| "Meter history unavailable")?;
+            select_community_record(&engine, record_id.as_deref(), now_ms())?
+        };
+        service.share(&record, &options)
+    })
+    .await
+    .map_err(|_| "Community sharing was interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn get_community_rankings(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    filters: community::RankingFilters,
+) -> Result<community::Rankings, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.service()?.rankings(&filters))
+        .await
+        .map_err(|_| "Community ranking request was interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn revoke_community_share(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    id: String,
+) -> Result<community::Snapshot, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.service()?.revoke(&id))
+        .await
+        .map_err(|_| "Community revocation was interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn open_community_url(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    url: String,
+) -> Result<(), String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = runtime.service()?;
+        if !service.allows_public_url(&url) {
+            return Err("Only public reports on the Luma community service can be opened".into());
+        }
+        native_capture::open_support_url(&url)
+    })
+    .await
+    .map_err(|_| "Community report could not be opened".to_string())?
 }
 
 #[tauri::command]
@@ -1655,6 +1895,11 @@ fn main() {
             get_obs_state,
             start_obs,
             stop_obs,
+            get_community_state,
+            create_community_share,
+            get_community_rankings,
+            revoke_community_share,
+            open_community_url,
             get_history,
             get_current_encounter,
             get_assistance_state,
@@ -1684,6 +1929,9 @@ fn main() {
         ])
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
+            app.manage(Arc::new(CommunityRuntime::new(
+                data_dir.join("community-shares.json"),
+            )));
             let cube = Arc::new(cube_locator::Service::new(data_dir.clone())?);
             app.manage(cube.clone());
             let preferences_path = data_dir.join("preferences.json");

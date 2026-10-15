@@ -125,6 +125,123 @@ fn explicitly_confirmed_mid_session_local_can_show_received_self_cooldowns() {
 }
 
 #[test]
+fn received_self_cooldowns_do_not_move_to_another_selected_actor() {
+    let mut engine = MeterEngine::default();
+    hit(&mut engine, 7, 10, 100, 1000);
+    hit(&mut engine, 8, 10, 100, 1100);
+    engine.set_local_player(Some(7), "First").unwrap();
+    engine.ingest_event(
+        Event::Cooldown {
+            skill: 13_130_000,
+            remaining_ms: Some(6_000),
+            charges: None,
+        },
+        2000,
+    );
+    assert_eq!(engine.live_state(3000).cooldowns[0]["actor_id"], 7);
+    engine.set_local_player(Some(8), "Second").unwrap();
+    assert!(engine.live_state(3000).cooldowns.is_empty());
+    engine.set_local_player(Some(7), "First").unwrap();
+    assert!(engine.live_state(3000).cooldowns.is_empty());
+}
+
+#[test]
+fn elapsed_self_cooldown_is_distinct_from_server_ready_and_partial_updates_keep_reported_charges() {
+    let mut engine = MeterEngine::default();
+    hit(&mut engine, 7, 10, 100, 1000);
+    engine.set_local_player(Some(7), "Local").unwrap();
+    engine.ingest_event(
+        Event::Cooldown {
+            skill: 13_130_000,
+            remaining_ms: Some(6_000),
+            charges: Some(1),
+        },
+        2000,
+    );
+    engine.ingest_event(
+        Event::Cooldown {
+            skill: 13_130_000,
+            remaining_ms: Some(4_000),
+            charges: None,
+        },
+        3000,
+    );
+    let row = engine.live_state(3500).cooldowns.remove(0);
+    assert_eq!(row["readiness"], "cooling");
+    assert_eq!(row["charges"], 1);
+    assert_eq!(row["max_charges"], serde_json::Value::Null);
+    assert_eq!(row["charges_observed_at_ms"], 2000);
+    assert_eq!(row["observed_at_ms"], 3000);
+    assert_eq!(engine.live_state(7000).cooldowns[0]["readiness"], "elapsed");
+    engine.ingest_event(
+        Event::Cooldown {
+            skill: 13_130_000,
+            remaining_ms: Some(0),
+            charges: None,
+        },
+        7100,
+    );
+    assert_eq!(
+        engine.live_state(7200).cooldowns[0]["readiness"],
+        "server-ready"
+    );
+    engine.ingest_event(
+        Event::Cooldown {
+            skill: 13_130_000,
+            remaining_ms: None,
+            charges: Some(2),
+        },
+        7300,
+    );
+    let row = engine.live_state(7400).cooldowns.remove(0);
+    assert_eq!(row["readiness"], "unknown");
+    assert_eq!(row["remaining_ms"], serde_json::Value::Null);
+    assert_eq!(row["charges"], 2);
+}
+
+#[test]
+fn cooldown_storage_is_bounded_and_rejects_invalid_observations() {
+    let mut engine = MeterEngine::default();
+    hit(&mut engine, 7, 10, 100, 1000);
+    engine.set_local_player(Some(7), "Local").unwrap();
+    for skill in 1..=300 {
+        engine.ingest_event(
+            Event::Cooldown {
+                skill,
+                remaining_ms: Some(6_000),
+                charges: None,
+            },
+            2000 + u64::from(skill),
+        );
+    }
+    let state = engine.live_state(3000);
+    assert_eq!(state.cooldowns.len(), 256);
+    assert_eq!(state.cooldowns[0]["skill_id"], 45);
+    for invalid in [
+        Event::Cooldown {
+            skill: 0,
+            remaining_ms: Some(1),
+            charges: None,
+        },
+        Event::Cooldown {
+            skill: 400,
+            remaining_ms: Some(3_600_001),
+            charges: None,
+        },
+        Event::Cooldown {
+            skill: 401,
+            remaining_ms: Some(1),
+            charges: Some(101),
+        },
+    ] {
+        engine.ingest_event(invalid, 4000);
+    }
+    let state = engine.live_state(5000);
+    assert_eq!(state.cooldowns.len(), 256);
+    assert_eq!(state.cooldowns[0]["skill_id"], 45);
+}
+
+#[test]
 fn typed_names_require_one_authoritative_match_and_late_identity_resolves() {
     let mut engine = MeterEngine::default();
     engine.set_character_name("Ranger");

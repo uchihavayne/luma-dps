@@ -13,6 +13,8 @@ import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegated
 import { createHistoryCache } from './history.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
 import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
+import { communityLabels, communityUrl, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
+import { latencyPresentation, petProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -35,6 +37,7 @@ const settingsPanels = new Map(), dirtySettingsForms = new Set();
 let trainingDuration = 60000, trainingTargetId = '', curveInterval = 1000, curveRecord = null, curvePending = false;
 let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
+let petPage = 0;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
@@ -44,7 +47,24 @@ let obsState = { running: false }, obsPending = false, obsScope = prefs.damageSc
 let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, scheduledCacheKey = '', scheduledCache = [], scheduleTimingSecond = -1;
 const scheduleTimings = new Map();
 let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0, cubeAutoListenIntent = null;
+let communityDraft = { recordId: '', scope: 'personal', anonymous: true, rank_opt_in: false, consent: false, context: { region: 'EU', server: '', boss: '', difficulty: '' } };
+let communityRankingDraft = communityFilters({ region: 'EU' }), communityRevokeId = '', communityOpened = false, communityCurrentRecord = null, communitySummaryText = '';
 const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') === '1';
+const telemetryDemo = demo && new URLSearchParams(location.search).get('telemetryDemo') === '1';
+if (telemetryDemo) {
+  const at = Date.now();
+  state = normalizeState({ ...state, local_player_id: 7, local_identity_source: 'server',
+    players: state.players.map(player => ({ ...player, id: player.is_local ? 7 : player.id })),
+    targets: state.targets.map((target, index) => ({ ...target, id: index === 0 ? 10 : target.id })),
+    assist: { stagger: [{ actor_id: 10, maximum: 1200, current: 750, broken: false, observed_at_ms: at, fresh_for_ms: 5000, fresh: true, source: 'server' }] },
+    cooldowns: [{ actor_id: 7, skill_id: 14090000, scope: 'self', source: 'server', remaining_ms: 0, readiness: 'server-ready', ready_confirmed: true, charges: 1 }],
+    capture: { status: 'capturing', game_connections: 2, network_latency: { status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 87, variation_ms: 2, observed_at_ms: at, sampled_at_ms: at, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 } },
+  });
+  characterData = characterSnapshot({ own: { actor_id: 7, name: state.local_player_name, source: 'server-self', observed_at_ms: at },
+    pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1042, active_pet_known: true, inventory_complete: true,
+      pets: [{ pet_id: 1042, level: 2, progress: 34, progress_source: 'server-delta', session_gained: 2, observed_at_ms: at }, { pet_id: 1124, level: 3, progress: null, progress_source: 'unknown', session_gained: 0, observed_at_ms: at }] },
+  });
+}
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
 const words = {
@@ -56,6 +76,10 @@ const words = {
   },
 };
 const t = key => words[prefs.locale][key] || key;
+Object.assign(words.tr, { petProgress: 'Pet ilerlemesi', petHelp: 'Karakterine ait alınan pet seviyesi, ilerleme ve bu oturumdaki kazanımlar. Bilinmeyen adlar kimlikleriyle görünür; gerekli ruh sayısı tahmin edilmez.', noPetProgress: 'Pet verisi henüz alınmadı. Luma açıkken karakterine giriş yaptığında veya pet ilerlemesi geldiğinde görünür.', petActive: 'Çağrılan', petGained: 'Bu oturumda alınan', petAbsolute: 'Alınan ilerleme', petUnknown: 'İlerleme alınmadı', petPrevious: 'Önceki', petNext: 'Sonraki', petPartial: 'Yalnızca alınan pet kayıtları gösteriliyor; tam envanter değil.', stagger: 'Boss dengesi', noStagger: 'Güncel denge verisi alınmadı.', staggerHelp: 'Sunucudan alınan denge çubuğu ve kırılma durumu. Yeni veri gelmezse 5 saniye sonra gösterge kaldırılır; kırılma süresi tahmin edilmez.', eventStagger: 'Denge kırıldı' });
+Object.assign(words.en, { petProgress: 'Pet progress', petHelp: 'Received pet levels, progress and gains from this session for your character. Unknown names use IDs; required soul counts are not guessed.', noPetProgress: 'No pet data received yet. It appears after login with Luma open or when pet progress arrives.', petActive: 'Summoned', petGained: 'Received this session', petAbsolute: 'Observed progress', petUnknown: 'Progress unavailable', petPrevious: 'Previous', petNext: 'Next', petPartial: 'Only observed pet records are shown, not a complete inventory.', stagger: 'Boss stagger', noStagger: 'No fresh stagger observation.', staggerHelp: 'Server-reported stagger bar and break state. The display clears after 5 seconds without new data; no break duration is predicted.', eventStagger: 'Stagger broken' });
+Object.assign(words.tr, { community: communityLabels.tr.community, copyEncounterText: 'Karşılaşma metnini kopyala' });
+Object.assign(words.en, { community: communityLabels.en.community, copyEncounterText: 'Copy encounter text' });
 Object.assign(words.tr, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube ses bulucu', cubeIntro: 'Oyunun çıkış sesindeki Küp örneğini yerel olarak eşleştirir. AION2 sesi arka planda otomatik dinlenir. Eşleşince pusula DPS listesinin yanında belirir; mikrofon kullanılmaz ve canlı ses kaydedilmez.', cubeStart: 'Dinlemeyi başlat', cubeStop: 'Dinlemeyi durdur', cubeBusy: 'Hazırlanıyor…', cubeSource: 'Dinlenecek ses', cubeGame: 'Yalnızca AION2', cubeSystem: 'Bu cihazın ses çıkışı', cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Oyun açıldığında dinleme başlar. Kulaklık veya stereo çıkış ile sol/sağ gösterilebilir.', cubeSystemHelp: 'Sistem çıkışı seçildi: diğer uygulamalar ve Luma uyarıları da duyulur. Desteklenmeyen oyun ses yakalamasında bu seçeneği kendin kullanabilirsin.', cubeThreshold: 'Eşleşme eşiği', cubeThresholdHelp: 'Düşük eşik sessiz örnekleri daha kolay kabul eder, yanlış eşleşmeleri de artırabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.', cubeIndicator: 'Küçük barda Küp göstergesini göster', cubeSimilarity: 'Ses benzerliği', cubeSimilarityHelp: 'Yüzde, örnekle benzerlik puanıdır; kesinlik veya olasılık değildir.', cubeDirection: 'Stereo yön', cubeStrength: 'Eşleşen sinyal', cubeTrend: 'Sinyal değişimi', cubeLimit: 'Ses üzerinden kesin metre, harita konumu ve ön/arka hesaplanamaz. Stereo sol/sağ ve sinyal değişimi gösterilir; kamerayı döndürerek yönü karşılaştır.', cubeRelative: 'Sinyal güçlenmesi yalnızca göreli bir ipucudur. Oyun ses seviyesi, çevre sesleri ve kameranın yönü de değeri değiştirir.', cubeReference: 'Ses örneği', cubeBuiltin: 'Yerleşik Hidden Cube örneği', cubeImport: 'Kendi ses örneğini seç', cubeImportHelp: 'M4A veya WAV · en çok 8 MB ve 30 saniye. Örnek bu cihazda saklanır; internete gönderilmez. İçeriği yalnızca Küp sesi olan temiz bir kayıt kullan.', cubeReset: 'Yerleşik örneğe dön', cubeImported: 'Küp ses örneği kaydedildi', cubeImportInvalid: 'Ses örneği okunamadı. Desteklenen, en çok 8 MB bir ses dosyası seç.', cubePreview: 'Tarayıcı örneği · Canlı ses dinlenmiyor.', cubeAudioFormat: 'Ses biçimi', cubeUnknownFormat: 'Ses çıkışı bekleniyor', cubeNoDirection: 'Sol/sağ için stereo ses gerekir.', cubeReadFailed: 'Ses bulucunun durumu okunamadı', cubeActiveControls: 'Ses kaynağını veya örneği değiştirmek için önce dinlemeyi durdur.' });
 Object.assign(words.en, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube sound locator', cubeIntro: 'Locally matches the Cube reference against game output. AION2 audio is monitored automatically in the background. A matching sound opens the compass beside the DPS list; no microphone is used and live audio is not saved.', cubeStart: 'Start listening', cubeStop: 'Stop listening', cubeBusy: 'Preparing…', cubeSource: 'Audio source', cubeGame: 'AION2 only', cubeSystem: 'This device’s audio output', cubeGameHelp: 'Separates AION2 audio from other apps. Listening begins when the game opens. Headphones or stereo output can provide left/right cues.', cubeSystemHelp: 'System output is selected: other apps and Luma alerts are included. Choose this explicitly if game-only audio capture is unavailable.', cubeThreshold: 'Match threshold', cubeThresholdHelp: 'A lower threshold can accept quieter samples and more false matches. A higher threshold is more selective. Stop listening before changing it.', cubeIndicator: 'Show Cube indicator in the compact bar', cubeSimilarity: 'Sound similarity', cubeSimilarityHelp: 'The percentage is a reference similarity score, not certainty or probability.', cubeDirection: 'Stereo direction', cubeStrength: 'Matched signal', cubeTrend: 'Signal change', cubeLimit: 'Audio cannot provide exact metres, map position or front/back. Stereo left/right and signal changes are shown; turn the camera to compare directions.', cubeRelative: 'A stronger signal is only a relative cue. Game volume, other sounds and camera direction also affect it.', cubeReference: 'Sound reference', cubeBuiltin: 'Built-in Hidden Cube reference', cubeImport: 'Choose your sound reference', cubeImportHelp: 'M4A or WAV · up to 8 MB and 30 seconds. The reference stays on this device and is never uploaded. Use a clean recording containing only the Cube sound.', cubeReset: 'Restore built-in reference', cubeImported: 'Cube reference saved', cubeImportInvalid: 'The audio reference could not be read. Choose a supported audio file up to 8 MB.', cubePreview: 'Browser sample · No live audio is being captured.', cubeAudioFormat: 'Audio format', cubeUnknownFormat: 'Waiting for audio output', cubeNoDirection: 'Left/right requires stereo audio.', cubeReadFailed: 'The sound locator state could not be read', cubeActiveControls: 'Stop listening before changing the source or reference.' });
 Object.assign(words.tr, { settingsSections: 'Ayar bölümleri', analysisSections: 'Analiz bölümleri', combatSettings: 'Savaş', about: 'Hakkında', autoSaveHelp: 'Görünüm değişiklikleri otomatik kaydedilir.', keyboardHelp: 'Bölümler arasında ← → ile geç. Esc ile kapat.', panelResizeFailed: 'Pencere boyutu değiştirilemedi. Ayarlarını kullanmaya devam edebilirsin.', bossAdvanced: 'Hedef kimlikleri', bossSettingsHelp: 'Boss olarak işaretlediğin hedefler Boss filtresinde görünür. Liste, bu oturumda görülen hedefleri içerir.' });
@@ -244,6 +268,18 @@ function localizeControls() {
   $('#resize-button').setAttribute('aria-description', t('resizeHelp'));
 }
 
+function renderLatency() {
+  const chip = $('#latency-chip');
+  if (!chip) return;
+  chip.hidden = (!native && !telemetryDemo) || !(state.capture.game_connections > 0);
+  const value = telemetryDemo ? { ...state.capture.network_latency, status: 'ready', observed_at_ms: Date.now(), sampled_at_ms: Date.now() } : state.capture.network_latency;
+  const view = latencyPresentation(state.capture.status === 'capturing' ? value : { status: 'unavailable' }, { locale: prefs.locale });
+  setText(chip, view.label);
+  chip.title = view.detail;
+  chip.dataset.fresh = String(view.fresh);
+  chip.setAttribute('aria-label', `TCP RTT · ${view.label} · ${view.detail}`);
+}
+
 function renderMeter() {
   localizeControls();
   const status = connectionStatus(state, { native, demo, locale: prefs.locale });
@@ -252,6 +288,7 @@ function renderMeter() {
   connection.dataset.status = status.kind;
   setText(connection.querySelector('span'), status.label);
   connection.title = `${status.message}\n${status.detail}`;
+  renderLatency();
   const scopes = meterScopes(state, prefs), scoped = scopes.summary, roster = scopes.roster;
   for (const [scope, summary] of Object.entries(scopes.summaries)) {
     const node = $(`[data-summary-scope="${scope}"]`);
@@ -290,6 +327,7 @@ function renderMeter() {
   if (drawer === 'analysis' && ['overview', 'skills'].includes(tab) && !snapshot && !$('#drawer-content').contains(document.activeElement)) refreshDrawer();
   if (drawer === 'character' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer();
   if (drawer === 'analysis' && tab === 'training') updateTrainingLive();
+  renderLatency();
   renderCombatWarning();
   renderCubeLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -615,7 +653,7 @@ function receivedPlayerStats(p) {
 function overviewContent() {
   const s = analysisState();
   const scoped = scopedEncounter(s, prefs.damageScope), self = scopedEncounter(s, 'personal');
-  return `${source()}<p class="help">${t('selectedScope')}: ${t(prefs.damageScope)} · ${t('statsReceived')}</p><div class="analysis-metrics"><div><span>${t(`${prefs.damageScope}Dps`)}</span><strong>${scoped.known ? rate(scoped.dps) : '—'}</strong></div><div><span>${t(`${prefs.damageScope}Damage`)}</span><strong>${scoped.known ? num(scoped.damage) : '—'}</strong></div><div><span>${t('duration')}</span><strong>${clockTime(scoped.elapsed)}</strong></div><div><span>${t('player')}</span><strong>${scoped.players.length}</strong></div></div><div class="comparison-strip"><div><span>${t('personalDamage')}</span><strong>${self.known ? num(self.damage) : '—'}</strong></div><div><span>${t('encounterObserved')}</span><strong>${num(s.total_damage)}</strong></div></div>${receivedPersonalStats(s)}${playerPicker()}${(() => { const p = analysisPlayer(); if (!p) return ''; const summary = skillSummary(p); return `<div class="record-card"><strong class="class-colour" style="--class-color:${classColor(p.class_name)}">${esc(p.name)}</strong><div class="record-meta">${esc(p.class_name)} · #${esc(p.id)}</div><div class="analysis-metrics"><div><span>DPS</span><strong>${rate(p.dps)}</strong></div><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>${t('hits')}</span><strong>${fullNumber(summary.hits)}</strong></div><div><span>${t('crit')}</span><strong>${summary.criticalRate.toFixed(1)}%</strong></div></div>${receivedPlayerStats(p)}</div>`; })()}${reportToolbar()}`;
+  return `${source()}<p class="help">${t('selectedScope')}: ${t(prefs.damageScope)} · ${t('statsReceived')}</p><div class="analysis-metrics"><div><span>${t(`${prefs.damageScope}Dps`)}</span><strong>${scoped.known ? rate(scoped.dps) : '—'}</strong></div><div><span>${t(`${prefs.damageScope}Damage`)}</span><strong>${scoped.known ? num(scoped.damage) : '—'}</strong></div><div><span>${t('duration')}</span><strong>${clockTime(scoped.elapsed)}</strong></div><div><span>${t('player')}</span><strong>${scoped.players.length}</strong></div></div><div class="comparison-strip"><div><span>${t('personalDamage')}</span><strong>${self.known ? num(self.damage) : '—'}</strong></div><div><span>${t('encounterObserved')}</span><strong>${num(s.total_damage)}</strong></div></div>${receivedPersonalStats(s)}${playerPicker()}${(() => { const p = analysisPlayer(); if (!p) return ''; const summary = skillSummary(p); return `<div class="record-card"><strong class="class-colour" style="--class-color:${classColor(p.class_name)}">${esc(p.name)}</strong><div class="record-meta">${esc(p.class_name)} · #${esc(p.id)}</div><div class="analysis-metrics"><div><span>DPS</span><strong>${rate(p.dps)}</strong></div><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>${t('hits')}</span><strong>${fullNumber(summary.hits)}</strong></div><div><span>${t('crit')}</span><strong>${summary.criticalRate.toFixed(1)}%</strong></div></div>${receivedPlayerStats(p)}</div>`; })()}${reportToolbar()}<div class="button-row">${button('open-community-section', 'community', '', true)}${button('copy-community-summary', 'copyEncounterText', '', true)}</div>`;
 }
 
 function skillsContent() {
@@ -670,8 +708,8 @@ function curvesContent() {
 
 const actorName = id => state.players.find(player => player.id === String(id))?.name || state.targets.find(target => target.id === String(id))?.name || `#${id || '?'}`;
 function effectsContent() {
-  const labels = { windup: 'eventWindup', cast: 'eventCast', 'effect-applied': 'eventApplied', 'effect-refreshed': 'eventRefreshed', 'effect-removed': 'eventRemoved', 'effect-expired': 'eventExpired' };
-  return `${source(t('serverObserved'))}<p class="help">${t('effectHelp')}</p>${state.assist.retention_limited ? `<p class="quality-warning">${t('effectLimited')}</p>` : ''}<h3 class="section-title">${t('windups')}</h3><div id="windup-list"></div><h3 class="section-title">${t('effects')} · ${t(prefs.damageScope)}</h3><div id="effect-list"></div><h3 class="section-title">${t('effectTimeline')}</h3><div class="button-row">${button('refresh-effects', 'refreshEffects', assistPending || !native ? 'disabled' : '', true)}</div>${assistTimeline.length ? assistTimeline.map(event => `<div class="timeline-row"><time>${new Date(event.at_ms).toLocaleTimeString(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><span>${t(labels[event.kind])}</span><small>${esc(actorName(event.actor_id))} → ${esc(actorName(event.target_id))}${event.skill_id ? ` · Skill #${esc(event.skill_id)}` : ''}${event.instance_id ? ` · #${esc(event.instance_id)}` : ''}</small></div>`).join('') : empty('noEffectTimeline')}`;
+  const labels = { 'stagger-break': 'eventStagger', windup: 'eventWindup', cast: 'eventCast', 'effect-applied': 'eventApplied', 'effect-refreshed': 'eventRefreshed', 'effect-removed': 'eventRemoved', 'effect-expired': 'eventExpired' };
+  return `${source(t('serverObserved'))}<p class="help">${t('effectHelp')}</p>${state.assist.retention_limited ? `<p class="quality-warning">${t('effectLimited')}</p>` : ''}<h3 class="section-title">${t('stagger')}</h3><p class="help">${t('staggerHelp')}</p><div id="stagger-list"></div><h3 class="section-title">${t('windups')}</h3><div id="windup-list"></div><h3 class="section-title">${t('effects')} · ${t(prefs.damageScope)}</h3><div id="effect-list"></div><h3 class="section-title">${t('effectTimeline')}</h3><div class="button-row">${button('refresh-effects', 'refreshEffects', assistPending || !native ? 'disabled' : '', true)}</div>${assistTimeline.length ? assistTimeline.map(event => `<div class="timeline-row"><time>${new Date(event.at_ms).toLocaleTimeString(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><span>${t(labels[event.kind])}</span><small>${esc(actorName(event.actor_id))} → ${esc(actorName(event.target_id))}${event.skill_id ? ` · Skill #${esc(event.skill_id)}` : ''}${event.instance_id ? ` · #${esc(event.instance_id)}` : ''}</small></div>`).join('') : empty('noEffectTimeline')}`;
 }
 
 async function readAssistTimeline() {
@@ -682,11 +720,36 @@ async function readAssistTimeline() {
   finally { assistPending = false; if (drawer === 'analysis' && tab === 'effects') refreshDrawer(); }
 }
 
+function renderStaggerList(rows, now) {
+  const container = $('#stagger-list');
+  if (!container) return;
+  const observations = staggerPresentation(telemetryDemo ? rows.map(row => ({ ...row, fresh: true, observed_at_ms: now })) : rows, { now, locale: prefs.locale });
+  reconcileKeyedRows(container, observations.length ? observations : [{ empty: true }], {
+    key: row => row.empty ? 'empty' : row.actor_id,
+    create: row => {
+      const element = document.createElement('div'); element.className = 'record-card stagger-card';
+      element.innerHTML = row.empty ? '<p class="help"></p>' : '<div class="record-top"><strong></strong><span></span></div><progress max="100"></progress><div class="record-meta"></div>';
+      return element;
+    },
+    update: (element, row) => {
+      if (row.empty) { setText(element.querySelector('p'), t('noStagger')); return; }
+      setText(element.querySelector('strong'), actorName(row.actor_id));
+      setText(element.querySelector('.record-top span'), row.label);
+      const bar = element.querySelector('progress'); bar.hidden = row.percent === null || row.broken;
+      bar.value = row.percent ?? 0;
+      bar.setAttribute('aria-label', `${actorName(row.actor_id)} · ${t('stagger')} · ${row.label}`);
+      element.classList.toggle('broken', row.broken);
+      setText(element.querySelector('.record-meta'), `${t('observedAt')}: ${dateText(row.observed_at_ms)}`);
+    },
+  });
+}
+
 function renderEffectLists() {
   if (!$('#effect-list')) return;
   const assist = assistanceState(state.assist), now = Date.now();
   const effects = scopedEffects(state, prefs.damageScope, now);
   const casts = assist.casts.filter(cast => cast.expires_ms > now);
+  renderStaggerList(assist.stagger, now);
   reconcileKeyedRows($('#windup-list'), casts.length ? casts : [{ empty: true }], {
     key: cast => cast.empty ? 'empty' : `${cast.actor_id}:${cast.skill_id}:${cast.started_ms}`,
     create: cast => { const row = document.createElement('div'); row.className = 'record-card'; row.innerHTML = cast.empty ? '<p class="help"></p>' : '<div class="record-top"><strong></strong><time class="effect-time"></time></div><div class="record-meta"></div>'; return row; },
@@ -719,14 +782,25 @@ async function readCharacterData() {
   finally { characterPending = false; if (drawer === 'analysis' && tab === 'build') { refreshDrawer(); if (epoch !== metadataEpoch(state, 'character')) readCharacterData(); } }
 }
 
+function petProgressContent(input) {
+  const observed = petProgress(input, { localPlayerId: state.local_player_id });
+  const heading = `<h3 class="section-title">${t('petProgress')} ${source(demo ? t('sourceDemo') : t('serverObserved'))}</h3><p class="help">${t('petHelp')}</p>`;
+  if (!observed || !observed.pets.length) return heading + `<p class="status-card">${t('noPetProgress')}</p>`;
+  const ordered = [...observed.pets].sort((a, b) => Number(b.pet_id === observed.active_pet_id) - Number(a.pet_id === observed.active_pet_id) || b.session_gained - a.session_gained || a.pet_id - b.pet_id);
+  const pageCount = Math.ceil(ordered.length / 32); petPage = Math.min(petPage, pageCount - 1);
+  const rows = ordered.slice(petPage * 32, (petPage + 1) * 32);
+  return `${heading}${observed.inventory_complete ? '' : `<p class="help">${t('petPartial')}</p>`}<div class="pet-progress-grid">${rows.map(pet => `<div class="record-card pet-progress-card"><div class="record-top"><strong>Pet #${pet.pet_id}</strong><span class="tag">${pet.pet_id === observed.active_pet_id ? `${t('petActive')} · ` : ''}${t('level')} ${pet.level ?? '—'}</span></div><div class="pet-progress-values"><span>${t('petAbsolute')}<strong>${pet.progress === null ? '—' : fullNumber(pet.progress)}</strong></span><span>${t('petGained')}<strong>+${fullNumber(pet.session_gained)}</strong></span></div><div class="record-meta">${pet.progress === null ? t('petUnknown') : t('observedAt') + ': ' + dateText(pet.observed_at_ms)}</div></div>`).join('')}</div>${pageCount > 1 ? `<div class="button-row pet-pagination"><button class="action-button secondary" data-action="pet-previous" ${petPage === 0 ? 'disabled' : ''}>${t('petPrevious')}</button><span>${petPage + 1} / ${pageCount} · ${ordered.length}</span><button class="action-button secondary" data-action="pet-next" ${petPage >= pageCount - 1 ? 'disabled' : ''}>${t('petNext')}</button></div>` : ''}`;
+}
+
 function buildContent() {
   const data = snapshot ? characterSnapshot({ own: snapshot.character_build }) : characterData;
   const choices = [{ id: 'own', name: t('ownBuild'), value: data.own }, { id: 'unbound', name: t('unboundBuild'), value: data.unbound_own }, ...data.inspected.map((value, index) => ({ id: `inspected-${index}`, name: `${t('inspectedBuild')}: ${value.name || '?'}`, value }))].filter(choice => choice.value);
   if (!choices.some(choice => choice.id === selectedBuild)) selectedBuild = choices[0]?.id || 'own';
   const current = choices.find(choice => choice.id === selectedBuild)?.value;
   const header = `${source(snapshot ? t('snapshot') : t('serverObserved'))}<p class="help">${t('buildHelp')}</p><div class="button-row">${button('refresh-build', 'refreshBuild', characterPending || !native || snapshot ? 'disabled' : '', true)}</div>`;
-  if (!current) return header + empty('noBuild');
-  return `${header}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
+  const pets = snapshot ? '' : petProgressContent(data.pet_progress);
+  if (!current) return header + pets + empty('noBuild');
+  return `${header}${pets}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
 }
 
 async function readWorldData() {
@@ -769,10 +843,54 @@ function gameReportContent() {
 const historyCache = native ? createHistoryCache({
   read: () => invoke('get_history'),
   normalizeRecord: normalizeEncounter,
-  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshDrawer(); },
+  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshDrawer(); if (drawer === 'analysis' && tab === 'community') refreshCommunityDrawer(); },
   onRejected: () => { if (drawer === 'analysis' && tab === 'history') refreshDrawer(); },
 }) : null;
 const allHistory = () => [...(native ? historyCache.history : state.history).map(item => ({ item, imported: false })), ...prefs.importedHistory.map(item => ({ item, imported: true }))];
+const communityController = createCommunityController({
+  readState: () => native ? invoke('get_community_state') : Promise.resolve({ configured: false, shares: [] }),
+  readRankings: filters => native ? invoke('get_community_rankings', { filters }) : Promise.resolve({ entries: [], total: 0 }),
+  publish: (recordId, options) => invoke('create_community_share', { recordId, options }),
+  revoke: id => invoke('revoke_community_share', { id }),
+  onChanged: refreshCommunityDrawer,
+});
+
+function refreshCommunityDrawer() {
+  if (drawer !== 'analysis' || tab !== 'community') return;
+  const active = document.activeElement, name = $('#drawer-content').contains(active) ? active.name : '', caret = active?.selectionStart;
+  refreshDrawer(name);
+  if (name && Number.isInteger(caret)) { const field = $(`#drawer-content [name="${name}"]`); try { field?.setSelectionRange(caret, caret); } catch {} }
+}
+
+function communityContent() {
+  return renderCommunity({ view: communityController.view, locale: prefs.locale, records: (native ? historyCache.history : state.history).filter(record => record.provenance !== 'imported-unverified'), currentRecord: communityCurrentRecord, draft: communityDraft, rankingDraft: communityRankingDraft, demo, native, revokeId: communityRevokeId, summaryText: communitySummaryText });
+}
+
+async function readCommunity() {
+  if (communityController.view.readingState) return;
+  communityOpened = true;
+  await Promise.allSettled([communityController.refreshState(), native ? invoke('get_current_encounter').then(record => { communityCurrentRecord = record; refreshCommunityDrawer(); }) : Promise.resolve()]);
+  if (communityController.view.state.configured) await communityController.refreshRankings(communityRankingDraft);
+}
+
+function captureCommunityForm(form) {
+  if (form?.id === 'community-share-form') {
+    const values = Object.fromEntries(new FormData(form));
+    const options = communityShareOptions({ scope: values.communityScope, anonymous: values.communityAnonymous === 'on', rank_opt_in: values.communityRankOptIn === 'on', context: Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`community${key[0].toUpperCase()}${key.slice(1)}`]])) });
+    communityDraft = { recordId: String(values.communityRecordId || ''), ...options, consent: values.communityConsent === 'on' };
+  }
+  if (form?.id === 'community-rankings-form') {
+    const values = Object.fromEntries(new FormData(form));
+    communityRankingDraft = communityFilters({ class_name: values.rankingClass, scope: values.rankingScope, ...Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`ranking${key[0].toUpperCase()}${key.slice(1)}`]])) });
+  }
+}
+
+async function openCommunityUrl(url) {
+  const safe = communityUrl(url); if (!safe) return;
+  if (native) { try { await action('open_url', { url: safe }); } catch {} }
+  else if (!demo) window.open(safe, '_blank', 'noopener,noreferrer');
+}
+
 function historyContent() {
   const records = allHistory();
   return `<p class="help">${t('historyHelp')}</p>${historyCache?.failed ? `<div class="status-card history-error"><p>${t('historyReadFailed')}</p>${button('retry-history', 'historyRetry', '', true)}</div>` : ''}${reportToolbar(true)}<input id="history-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1">${records.length ? records.map(({ item, imported }, index) => { const scoped = scopedEncounter(item, prefs.damageScope), isImported = imported || item.provenance === 'imported-unverified'; return `<div class="record-card"><div class="record-top"><strong>${esc(item.name)}</strong>${source(isImported ? t('importedUnverified') : demo ? t('sourceDemo') : t('sourceActual'))}</div><div class="record-meta">${dateText(item.timestamp)} · ${clockTime(scoped.elapsed)} · ${t(prefs.damageScope)}<br>${scoped.known ? rate(scoped.dps) : '—'} DPS · ${scoped.known ? num(scoped.damage) : '—'} ${t('damage').toLowerCase()}${item.timing_valid === false ? `<br><span>${t('timingUnavailable')}</span>` : ''}</div><div class="button-row">${button('view-history', 'replay', `data-index="${index}"`, true)}</div></div>`; }).join('') : historyCache?.failed ? '' : empty('noHistory')}<div class="button-row">${prefs.importedHistory.length ? button('clear-imported', 'clearImported', '', true) : ''}</div>`;
@@ -792,7 +910,7 @@ function alertsContent() {
 }
 
 function actualCooldownText(value) {
-  const cooldown = cooldownStatus(value);
+  const cooldown = cooldownObservation(value, { localPlayerId: value?.actor_id === undefined ? undefined : state.local_player_id });
   const label = cooldown.kind === 'confirmed' ? t('readyConfirmed') : cooldown.kind === 'elapsed' ? t('timerElapsed') : cooldown.kind === 'countdown' ? clockTime(cooldown.remaining) : '—';
   return `${label}${cooldown.charges === null ? '' : ` · ${t('charges')}: ${cooldown.charges}`}`;
 }
@@ -837,7 +955,7 @@ function renderDrawerContent() {
   }
   contentHost.setAttribute('role', drawer === 'analysis' ? 'tabpanel' : 'region');
   contentHost.setAttribute('aria-labelledby', drawer === 'analysis' ? `drawer-tab-analysis-${tab}` : 'drawer-title');
-  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, planner: plannerContent, alerts: alertsContent }[tab])();
+  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
   if (drawerContentFingerprint !== content) { $('#drawer-content').innerHTML = content; drawerContentFingerprint = content; }
   tickTimers();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -856,6 +974,7 @@ function selectDrawerTab(name) {
     if (['training', 'effects'].includes(name)) snapshot = null;
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
     if (name === 'history') historyCache?.retry();
+    if (name === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
     if (name === 'curves') { historyCache?.retry(); readCurveRecord(); }
     if (name === 'effects') readAssistTimeline();
     if (name === 'build') readCharacterData();
@@ -881,6 +1000,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   for (const element of [...$('#meter').children]) if (!['drawer', 'drawer-backdrop', 'toast'].includes(element.id)) element.inert = true;
   renderDrawerContent();
   if (kind === 'analysis' && requestedTab === 'history') historyCache?.retry();
+  if (kind === 'analysis' && requestedTab === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
   if (kind === 'analysis' && requestedTab === 'curves') { historyCache?.retry(); readCurveRecord(); }
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
   if (kind === 'analysis' && requestedTab === 'build') readCharacterData();
@@ -940,6 +1060,7 @@ function tickTimers() {
   if ($('#alert-status')) $('#alert-status').textContent = `${t(prefs.alerts.dpsGoal > 0 ? goalReached ? 'goalReached' : 'goalWaiting' : 'noGoal')}${soon ? ` · ${t('eventSoon')}: ${timerName}` : ''}`;
   for (const element of $$('.field-boss-countdown')) { const timer = fieldBossTimers(worldData).find(timer => timer.key === element.dataset.bossTimer); if (timer) setText(element, timer.status === 'countdown' ? clockTime(timer.remaining, true) : t({ alive: 'bossAlive', awaiting: 'bossAwaiting', unknown: 'bossUnknown' }[timer.status])); }
   for (const element of $$('[data-scheduled-time]')) { const event = scheduledEvents().find(event => event.id === element.dataset.scheduledTime), timing = event ? scheduleTiming(event) : null; setText(element, timing?.status === 'open' ? `${t('calendarOpen')} ${clockTime(timing.remainingMs)}` : timing ? clockTime(timing.remainingMs, true) : '—'); const next = element.closest('.schedule-card')?.querySelector('[data-scheduled-next]'); if (next) setText(next, `${t(timing?.status === 'open' ? 'calendarCloses' : 'calendarNext')}: ${timing ? dateText(timing.status === 'open' ? timing.closesAt : timing.nextOpening) : '—'}`); }
+  renderLatency();
   renderCombatWarning();
   renderCubeLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -992,6 +1113,7 @@ $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || eve
 
 $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
+  if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); if (['communityScope', 'communityRecordId', 'communityAnonymous'].includes(name)) refreshCommunityDrawer(); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
   if (name === 'cubeAutoListen') { await setCubeListening(element.checked); return; }
@@ -1040,6 +1162,7 @@ $('#drawer-content').addEventListener('change', async event => {
 
 $('#drawer-content').addEventListener('input', event => {
   const element = event.target;
+  if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (element.name === 'cubeThreshold') { setText($('#cube-threshold-value'), `${Math.round(Number(element.value) * 100)}%`); return; }
   if (['targetFontSize', 'numberPrecision'].includes(element.name)) { preferenceCommitter?.invalidate(); const patch = numericPreferenceEdit(element.name, element.value); if (patch) savePreferences(patch); return; }
@@ -1056,6 +1179,36 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
+  if (actionName === 'copy-community-summary') {
+    try {
+      const fromCommunity = tab === 'community', recordId = fromCommunity ? communityDraft.recordId : '', scope = fromCommunity ? communityDraft.scope : prefs.damageScope;
+      const record = recordId ? (native ? historyCache.history : state.history).find(record => record.id === recordId) : !fromCommunity && snapshot ? snapshot : native ? await invoke('get_current_encounter') : state;
+      communitySummaryText = communitySummary(record, { scope, locale: prefs.locale, anonymous: fromCommunity ? communityDraft.anonymous : true });
+      if (!communitySummaryText) { toast(t('missingHistory')); return; }
+      try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(communitySummaryText); refreshCommunityDrawer(); toast(t('copied')); }
+      catch { if (tab !== 'community') openDrawer('analysis', 'community'); else refreshCommunityDrawer(); $('#community-summary-text')?.focus(); $('#community-summary-text')?.select(); toast(t('selectToCopy')); }
+    } catch { toast(t('failed'), true); }
+    return;
+  }
+  if (actionName === 'refresh-community') { await readCommunity(); return; }
+  if (actionName === 'community-page-next' || actionName === 'community-page-previous') {
+    await (actionName === 'community-page-next' ? communityController.nextRankingsPage() : communityController.previousRankingsPage());
+    if (drawer === 'analysis' && tab === 'community' && (document.activeElement === document.body || document.activeElement === control || document.activeElement?.closest('.community-pagination'))) {
+      const preferred = $(`[data-action="${actionName}"]`), available = $('.community-pagination button:not(:disabled)') || $('#community-rankings-form button[type=submit]');
+      (preferred && !preferred.disabled ? preferred : available)?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  if (actionName === 'open-community-section') { if (snapshot?.id && (native ? historyCache.history : state.history).some(record => record.id === snapshot.id && record.provenance !== 'imported-unverified')) communityDraft.recordId = snapshot.id; openDrawer('analysis', 'community'); return; }
+  if (actionName === 'confirm-revoke-community' || actionName === 'cancel-revoke-community') { communityRevokeId = actionName === 'confirm-revoke-community' ? id : ''; refreshCommunityDrawer(); return; }
+  if (actionName === 'revoke-community') { if (id !== communityRevokeId) return; if (await communityController.revoke(id)) { communityRevokeId = ''; toast(communityLabels[prefs.locale].removed); await communityController.refreshRankings(communityRankingDraft); } return; }
+  if (actionName === 'open-community-rank') { await openCommunityUrl(communityController.view.rankings.entries.find(entry => entry.share_id === id)?.url); return; }
+  if (actionName === 'open-community' || actionName === 'copy-community') {
+    const share = communityController.view.state.shares.find(entry => entry.id === id); if (!share) return;
+    if (actionName === 'open-community') await openCommunityUrl(share.url);
+    else { try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(share.url); toast(communityLabels[prefs.locale].copied); } catch { const field = $$('[data-community-url]').find(element => element.dataset.communityUrl === id); field?.focus(); field?.select(); toast(t('selectToCopy')); } }
+    return;
+  }
   if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
   if (actionName === 'reset-cube-reference') { if (!cubeState.enabled) await cubeCommand('reset_cube_reference', {}); return; }
   if (actionName === 'open-alerts' || actionName === 'open-training') { snapshot = null; openDrawer('analysis', actionName === 'open-alerts' ? 'alerts' : 'training'); }
@@ -1069,6 +1222,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
   if (actionName === 'refresh-build') await readCharacterData();
+  if (actionName === 'pet-previous' || actionName === 'pet-next') { petPage = Math.max(0, petPage + (actionName === 'pet-next' ? 1 : -1)); refreshDrawer(); }
   if (actionName === 'refresh-world') await readWorldData();
   if (actionName === 'refresh-comparison') await readComparisonRecord();
   if (actionName === 'open-world') { snapshot = null; openDrawer('analysis', 'worldBosses'); }
@@ -1096,6 +1250,16 @@ $('#drawer-content').addEventListener('click', async event => {
 
 $('#drawer-content').addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target, values = Object.fromEntries(new FormData(form));
+  if (form.id === 'community-share-form') {
+    captureCommunityForm(form);
+    if (!native || !communityDraft.consent) return;
+    const id = communityDraft.recordId || null;
+    if (id && !historyCache.history.some(record => record.id === id && record.provenance !== 'imported-unverified')) { toast(communityLabels[prefs.locale].recordMissing, true); return; }
+    const result = await communityController.publish(id, communityDraft);
+    if (result) { communityDraft.consent = false; refreshCommunityDrawer(); toast(communityLabels[prefs.locale].published); if (result.rank_opt_in) await communityController.refreshRankings(communityRankingDraft); }
+    return;
+  }
+  if (form.id === 'community-rankings-form') { captureCommunityForm(form); if (native) await communityController.refreshRankings(communityRankingDraft); return; }
   if (form.id === 'character-form') {
     const name = String(values.characterName || '').trim(), selectedId = String(values.localPlayerId || '');
     try {

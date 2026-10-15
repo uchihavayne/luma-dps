@@ -2,6 +2,9 @@
 //! catalog or game image is bundled. Structural gear coverage stays partial;
 //! absent enchants, stones and rolled stats are unknown rather than zero.
 //! Wire provenance and supported boundaries: docs/observed-character-and-bosses.md.
+//! Own pet list (00 90), gain (0d 90) and level (14 90) layouts are independently
+//! implemented from AionDPS protocol observations at 72417dc72457844f514729fd2680fcbbd4423a93.
+//! No pet name/icon/spawn catalog or soul thresholds are bundled.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
@@ -13,6 +16,7 @@ const MAX_BOARDS: usize = 32;
 const MAX_NODES: usize = 255;
 const MAX_INSPECTIONS: usize = 16;
 const PENDING_MS: u64 = 30_000;
+const MAX_PETS: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CharacterError {
@@ -103,6 +107,39 @@ pub enum CharacterEvent {
         boards: Vec<ObservedBoard>,
     },
     Inspection(InspectedCharacter),
+    PetInventory {
+        active_pet_id: Option<u32>,
+        pets: Vec<ObservedPetProgress>,
+    },
+    PetGains {
+        gains: Vec<(u32, u32)>,
+    },
+    PetLevel {
+        pet_id: u32,
+        level: u32,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedPetProgress {
+    pub pet_id: u32,
+    pub level: Option<u32>,
+    pub progress: Option<u64>,
+    pub progress_source: String,
+    pub required_progress: Option<u64>,
+    pub session_gained: u64,
+    pub observed_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PetProgressSnapshot {
+    pub actor_id: Option<u64>,
+    pub source: String,
+    pub observed_at_ms: u64,
+    pub active_pet_id: Option<u32>,
+    pub active_pet_known: bool,
+    pub inventory_complete: bool,
+    pub pets: Vec<ObservedPetProgress>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +148,8 @@ pub struct CharacterSnapshot {
     pub unbound_own: Option<CharacterBuild>,
     pub inspected: Vec<InspectedCharacter>,
     pub retention_limited: bool,
+    #[serde(default)]
+    pub pet_progress: Option<PetProgressSnapshot>,
 }
 
 struct Reader<'a> {
@@ -135,6 +174,12 @@ impl<'a> Reader<'a> {
     }
     fn word(&mut self) -> Result<u32, CharacterError> {
         Ok(u32::from_le_bytes(self.take()?))
+    }
+    fn variable(&mut self) -> Result<u32, CharacterError> {
+        crate::framing::varint(self.bytes, &mut self.offset).map_err(|error| match error {
+            crate::framing::ReadError::Short => CharacterError::Truncated,
+            crate::framing::ReadError::Invalid => CharacterError::Invalid,
+        })
     }
     fn end(&self) -> Result<(), CharacterError> {
         if self.offset == self.bytes.len() {
@@ -538,11 +583,116 @@ fn inspect(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     })))
 }
 
+fn pet_inventory(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    let mut reader = Reader {
+        bytes: frame,
+        offset: 2,
+    };
+    let active = reader.word()?;
+    if active != 0 && !(1_000..=99_999).contains(&active) {
+        return Err(CharacterError::Invalid);
+    }
+    let count = reader.variable()? as usize;
+    if count > MAX_PETS {
+        return Err(CharacterError::Limit);
+    }
+    let mut ids = BTreeSet::new();
+    let mut pets = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = reader.word()?;
+        let repeated_id = reader.word()?;
+        let level = reader.word()?;
+        if !(1_000..=99_999).contains(&id)
+            || id != repeated_id
+            || !(1..=3).contains(&level)
+            || !ids.insert(id)
+        {
+            return Err(CharacterError::Invalid);
+        }
+        pets.push(ObservedPetProgress {
+            pet_id: id,
+            level: Some(level),
+            progress: None,
+            progress_source: "unknown".into(),
+            required_progress: None,
+            session_gained: 0,
+            observed_at_ms: 0,
+        });
+    }
+    if active != 0 && !ids.contains(&active) {
+        return Err(CharacterError::Invalid);
+    }
+    let progress_count = reader.variable()? as usize;
+    if progress_count > count {
+        return Err(CharacterError::Invalid);
+    }
+    let mut progress_ids = BTreeSet::new();
+    for _ in 0..progress_count {
+        let id = reader.word()?;
+        let progress = reader.word()?;
+        if !progress_ids.insert(id) {
+            return Err(CharacterError::Invalid);
+        }
+        let Some(pet) = pets.iter_mut().find(|pet| pet.pet_id == id) else {
+            return Err(CharacterError::Invalid);
+        };
+        pet.progress = Some(u64::from(progress));
+        pet.progress_source = "server-absolute".into();
+    }
+    // The same login frame continues with independently counted species data.
+    // Only the validated pet prefix is used; that tail is not a pet catalog.
+    pets.sort_by_key(|pet| pet.pet_id);
+    Ok(Some(CharacterEvent::PetInventory {
+        active_pet_id: (active != 0).then_some(active),
+        pets,
+    }))
+}
+
+fn pet_gains(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    let mut reader = Reader {
+        bytes: frame,
+        offset: 2,
+    };
+    let count = usize::from(reader.byte()?);
+    let mut gains = Vec::with_capacity(count);
+    let mut ids = BTreeSet::new();
+    for _ in 0..count {
+        let id = reader.word()?;
+        let gained = reader.word()?;
+        if !(1_000..=99_999).contains(&id) || !(1..1_000).contains(&gained) || !ids.insert(id) {
+            return Err(CharacterError::Invalid);
+        }
+        gains.push((id, gained));
+    }
+    reader.end()?;
+    Ok(Some(CharacterEvent::PetGains { gains }))
+}
+
+fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    let mut reader = Reader {
+        bytes: frame,
+        offset: 4,
+    };
+    let pet_id = reader.word()?;
+    let level = reader.word()?;
+    if !(1_000..=99_999).contains(&pet_id) || !(1..=3).contains(&level) {
+        return Err(CharacterError::Invalid);
+    }
+    reader.end()?;
+    Ok(Some(CharacterEvent::PetLevel { pet_id, level }))
+}
+
 pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     let opcode = frame.get(..2).ok_or(CharacterError::Truncated)?;
     if !matches!(
         opcode,
-        [0x11, 0x56] | [0, 0x51] | [0x26, 0xe2] | [0x50, 0x36]
+        [0x11, 0x56]
+            | [0, 0x51]
+            | [0x26, 0xe2]
+            | [0x50, 0x36]
+            | [0, 0x90]
+            | [0x0d, 0x90]
+            | [0x14, 0x90]
     ) {
         return Ok(None);
     }
@@ -554,6 +704,9 @@ pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
         [0, 0x51] => skills(frame),
         [0x26, 0xe2] => daevanion(frame),
         [0x50, 0x36] => inspect(frame),
+        [0, 0x90] => pet_inventory(frame),
+        [0x0d, 0x90] => pet_gains(frame),
+        [0x14, 0x90] => pet_level(frame),
         _ => Ok(None),
     }
 }
@@ -565,10 +718,16 @@ pub struct CharacterStore {
     inspected: VecDeque<InspectedCharacter>,
     last_ms: Option<u64>,
     limited: bool,
+    pets: Option<PetProgressSnapshot>,
+    unbound_pets: Option<PetProgressSnapshot>,
 }
 impl CharacterStore {
     pub fn clear(&mut self) {
         *self = Self::default()
+    }
+    pub fn clear_pets(&mut self) {
+        self.pets = None;
+        self.unbound_pets = None;
     }
     fn clock(&mut self, now: u64) {
         if self.last_ms.is_some_and(|old| now < old) {
@@ -592,6 +751,21 @@ impl CharacterStore {
                 && !old.server_id.zip(server_id).is_some_and(|(a, b)| a != b)
         });
         let first_binding = self.own.is_none();
+        let mut pets = if same_character {
+            self.pets.take()
+        } else if first_binding {
+            self.unbound_pets.take().filter(|pending| {
+                now >= pending.observed_at_ms && now - pending.observed_at_ms <= PENDING_MS
+            })
+        } else {
+            self.unbound_pets = None;
+            None
+        };
+        if let Some(pets) = &mut pets {
+            pets.actor_id = Some(actor_id);
+            pets.source = "server-self".into();
+        }
+        self.pets = pets;
         let mut build = if same_character {
             self.own.take().unwrap_or_default()
         } else if first_binding {
@@ -613,6 +787,15 @@ impl CharacterStore {
     }
     pub fn ingest(&mut self, event: CharacterEvent, now: u64) {
         self.clock(now);
+        if matches!(
+            event,
+            CharacterEvent::PetInventory { .. }
+                | CharacterEvent::PetGains { .. }
+                | CharacterEvent::PetLevel { .. }
+        ) {
+            self.ingest_pets(event, now);
+            return;
+        }
         if let CharacterEvent::Inspection(mut inspected) = event {
             inspected.observed_at_ms = now;
             self.inspected.retain(|old| {
@@ -653,7 +836,120 @@ impl CharacterStore {
                 build.boards = boards;
                 build.boards_observed_at_ms = Some(now)
             }
-            CharacterEvent::Inspection(_) => {}
+            CharacterEvent::Inspection(_)
+            | CharacterEvent::PetInventory { .. }
+            | CharacterEvent::PetGains { .. }
+            | CharacterEvent::PetLevel { .. } => {}
+        }
+    }
+
+    fn ingest_pets(&mut self, event: CharacterEvent, now: u64) {
+        let state = if let Some(own) = &self.own {
+            self.pets.get_or_insert_with(|| PetProgressSnapshot {
+                actor_id: own.actor_id,
+                source: "server-self".into(),
+                ..Default::default()
+            })
+        } else {
+            self.unbound_pets
+                .get_or_insert_with(|| PetProgressSnapshot {
+                    source: "server-self-unbound".into(),
+                    ..Default::default()
+                })
+        };
+        state.observed_at_ms = now;
+        match event {
+            CharacterEvent::PetInventory {
+                active_pet_id,
+                mut pets,
+            } => {
+                for pet in &mut pets {
+                    pet.session_gained = state
+                        .pets
+                        .iter()
+                        .find(|old| old.pet_id == pet.pet_id)
+                        .map_or(0, |old| old.session_gained);
+                    pet.observed_at_ms = now;
+                }
+                state.active_pet_id = active_pet_id;
+                state.active_pet_known = true;
+                state.inventory_complete = true;
+                state.pets = pets;
+            }
+            CharacterEvent::PetGains { gains } => {
+                for (id, gained) in gains {
+                    let index = match state.pets.binary_search_by_key(&id, |pet| pet.pet_id) {
+                        Ok(index) => index,
+                        Err(index) => {
+                            if state.pets.len() >= MAX_PETS {
+                                state.inventory_complete = false;
+                                self.limited = true;
+                                continue;
+                            }
+                            state.pets.insert(
+                                index,
+                                ObservedPetProgress {
+                                    pet_id: id,
+                                    level: None,
+                                    progress: None,
+                                    progress_source: "unknown".into(),
+                                    required_progress: None,
+                                    session_gained: 0,
+                                    observed_at_ms: now,
+                                },
+                            );
+                            state.inventory_complete = false;
+                            index
+                        }
+                    };
+                    let pet = &mut state.pets[index];
+                    pet.session_gained = pet.session_gained.saturating_add(u64::from(gained));
+                    if pet.level == Some(3) {
+                        pet.progress = None;
+                        pet.progress_source = "unknown".into();
+                    } else if let Some(progress) = &mut pet.progress {
+                        *progress = progress.saturating_add(u64::from(gained));
+                        pet.progress_source = "server-delta".into();
+                    }
+                    pet.observed_at_ms = now;
+                }
+            }
+            CharacterEvent::PetLevel { pet_id, level } => {
+                let index = match state.pets.binary_search_by_key(&pet_id, |pet| pet.pet_id) {
+                    Ok(index) => index,
+                    Err(index) => {
+                        if state.pets.len() >= MAX_PETS {
+                            state.inventory_complete = false;
+                            self.limited = true;
+                            return;
+                        }
+                        state.pets.insert(
+                            index,
+                            ObservedPetProgress {
+                                pet_id,
+                                level: None,
+                                progress: None,
+                                progress_source: "unknown".into(),
+                                required_progress: None,
+                                session_gained: 0,
+                                observed_at_ms: now,
+                            },
+                        );
+                        state.inventory_complete = false;
+                        index
+                    }
+                };
+                let pet = &mut state.pets[index];
+                if pet.level != Some(level) {
+                    // The level event has no remaining/overflow progress. The
+                    // next absolute list can supply that; do not assume zero.
+                    pet.progress = None;
+                    pet.progress_source = "unknown".into();
+                }
+                pet.level = Some(level);
+                pet.observed_at_ms = now;
+            }
+            _ => {}
         }
     }
     pub fn own_available(&self) -> bool {
@@ -672,6 +968,7 @@ impl CharacterStore {
             unbound_own: self.unbound.clone(),
             inspected: self.inspected.iter().cloned().collect(),
             retention_limited: self.limited,
+            pet_progress: self.pets.clone(),
         }
     }
 }

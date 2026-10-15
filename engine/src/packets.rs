@@ -255,7 +255,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
     };
     if matches!(
         opcode,
-        [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d]
+        [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d] | [5, 0xe0]
     ) {
         return crate::assistance::decode(frame)
             .map(|event| event.map(Event::Assistance))
@@ -268,7 +268,13 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
     }
     if matches!(
         opcode,
-        [0x11, 0x56] | [0, 0x51] | [0x26, 0xe2] | [0x50, 0x36]
+        [0x11, 0x56]
+            | [0, 0x51]
+            | [0x26, 0xe2]
+            | [0x50, 0x36]
+            | [0, 0x90]
+            | [0x0d, 0x90]
+            | [0x14, 0x90]
     ) {
         return crate::character::decode(frame)
             .map(|event| event.map(Event::Character))

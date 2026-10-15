@@ -232,8 +232,12 @@ struct Identity {
     health_observed_at_ms: Option<u64>,
 }
 struct Cooldown {
+    actor_id: u64,
     expires: Option<u64>,
     charges: Option<u32>,
+    observed_at_ms: u64,
+    charges_observed_at_ms: Option<u64>,
+    server_ready: bool,
 }
 
 type Aggregate = BTreeMap<(u64, u64), BTreeMap<u32, SkillState>>;
@@ -380,6 +384,9 @@ impl MeterEngine {
             self.frames.discard(&segment.connection);
             self.prefixes.remove(&segment.connection);
             self.cooldowns.clear();
+            self.assistance.clear();
+            self.character.clear_pets();
+            self.character_revision = self.character_revision.wrapping_add(1);
             if segment.syn {
                 self.frames.mark_start(&segment.connection)
             }
@@ -467,6 +474,7 @@ impl MeterEngine {
                 self.own_id = None;
                 self.alias_bound_id = None
             }
+            self.assistance.remove_actor(id, now);
             if let Some(ids) = &mut self.manual_party_ids {
                 ids.retain(|value| *value != id)
             }
@@ -690,13 +698,38 @@ impl MeterEngine {
                 remaining_ms,
                 charges,
             } => {
-                if self.local_in(&self.identities).0.is_some() {
+                if let Some(actor_id) = self.local_in(&self.identities).0 {
+                    if skill == 0
+                        || remaining_ms.is_some_and(|duration| duration > 3_600_000)
+                        || charges.is_some_and(|count| count > 100)
+                    {
+                        return;
+                    }
+                    self.cooldowns
+                        .retain(|_, cooldown| cooldown.actor_id == actor_id);
+                    if self.cooldowns.len() >= 256 && !self.cooldowns.contains_key(&skill) {
+                        if let Some(oldest) = self
+                            .cooldowns
+                            .iter()
+                            .min_by_key(|(_, cooldown)| cooldown.observed_at_ms)
+                            .map(|(skill, _)| *skill)
+                        {
+                            self.cooldowns.remove(&oldest);
+                        }
+                    }
+                    let old = self.cooldowns.get(&skill);
+                    let previous_charges = old.and_then(|old| old.charges);
+                    let previous_charge_time = old.and_then(|old| old.charges_observed_at_ms);
                     self.cooldowns.insert(
                         skill,
                         Cooldown {
+                            actor_id,
                             expires: remaining_ms
                                 .map(|duration| now.saturating_add(u64::from(duration))),
-                            charges,
+                            charges: charges.or(previous_charges),
+                            observed_at_ms: now,
+                            charges_observed_at_ms: charges.map(|_| now).or(previous_charge_time),
+                            server_ready: remaining_ms == Some(0),
                         },
                     );
                 }
@@ -712,6 +745,7 @@ impl MeterEngine {
                 // Keep attribution until the encounter ends; an entity leaving
                 // the scene does not change damage it already dealt.
                 self.identities.entry(id).or_default().removed = true;
+                self.assistance.remove_actor(id, now);
                 // A death/despawn keeps existing attribution. A later spawn
                 // reusing this id, or a connection change, invalidates it.
                 if death && self.alive_targets.remove(&id) {
@@ -1040,7 +1074,8 @@ impl MeterEngine {
             }
         }
         if self.manual_own_id != id {
-            self.cancel_training()
+            self.cancel_training();
+            self.cooldowns.clear();
         }
         self.manual_own_id = id;
         self.alias_bound_id = id;
@@ -1055,8 +1090,12 @@ impl MeterEngine {
         if self.character_name == name {
             return;
         }
+        let previous_local = self.local_in(&self.identities).0;
         self.character_name = name;
         self.alias_bound_id = self.manual_own_id;
+        if previous_local != self.local_in(&self.identities).0 {
+            self.cooldowns.clear();
+        }
         self.dirty();
     }
     pub fn set_party_members(&mut self, ids: &[u64]) -> Result<(), String> {
@@ -1728,9 +1767,44 @@ impl MeterEngine {
             )
         });
         assist.retention_limited |= assist.casts.len() > 8 || assist.effects.len() > 64;
+        assist.stagger.sort_by_key(|row| {
+            (
+                !self.bosses.contains(&row.actor_id),
+                !row.fresh,
+                std::cmp::Reverse(row.observed_at_ms),
+            )
+        });
+        assist.retention_limited |= assist.stagger.len() > 8;
         assist.casts.truncate(8);
         assist.effects.truncate(64);
-        let cooldowns=self.cooldowns.iter().map(|(id,cooldown)|serde_json::json!({"id":id,"skill_id":id,"name":format!("Skill #{}",id),"remaining_ms":cooldown.expires.map(|expires|expires.saturating_sub(now)),"charges":cooldown.charges,"observed":true,"source":"server"})).collect();
+        assist.stagger.truncate(8);
+        let cooldowns = self
+            .cooldowns
+            .iter()
+            .filter(|(_, cooldown)| current.local_player_id == Some(cooldown.actor_id))
+            .map(|(id, cooldown)| {
+                let readiness = if cooldown.server_ready {
+                    "server-ready"
+                } else if cooldown.expires.is_some_and(|expires| now >= expires) {
+                    "elapsed"
+                } else if cooldown.expires.is_some() {
+                    "cooling"
+                } else {
+                    "unknown"
+                };
+                serde_json::json!({
+                    "id": id, "skill_id": id, "actor_id": cooldown.actor_id,
+                    "scope": "self", "name": format!("Skill #{}", id),
+                    "remaining_ms": cooldown.expires.map(|expires| expires.saturating_sub(now)),
+                    "expires_at_ms": cooldown.expires,
+                    "charges": cooldown.charges, "max_charges": null,
+                    "observed_at_ms": cooldown.observed_at_ms,
+                    "charges_observed_at_ms": cooldown.charges_observed_at_ms,
+                    "readiness": readiness, "ready_confirmed": cooldown.server_ready,
+                    "observed": true, "source": "server"
+                })
+            })
+            .collect();
         MeterState {
             status: if self.paused {
                 "paused"
@@ -2022,6 +2096,16 @@ fn record_details_bounded(record: &Encounter) -> bool {
         && record.assist.effects.len() <= 256
         && record.assist.timeline.len() <= 1000
         && record.assist.health.len() <= 256
+        && record.assist.stagger.len() <= 64
+        && record.assist.stagger.iter().all(|row| {
+            row.actor_id > 0
+                && row.actor_id <= 10_000_000
+                && row.maximum.is_none_or(|maximum| {
+                    maximum > 0 && maximum <= 1_000_000 && row.current <= maximum
+                })
+                && (!row.broken || row.current == 0)
+                && row.source.len() <= 40
+        })
         && record.local_player_name.len() <= 320
         && record.party_member_ids.len() <= 12
         && record.players.iter().all(|player| {

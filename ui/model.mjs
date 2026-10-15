@@ -1,5 +1,6 @@
 import { trainingState } from './analysis.mjs';
 import { assistanceState } from './assistance.mjs';
+import { networkLatency, cooldownObservation } from './telemetry.mjs';
 import { characterSnapshot } from './character.mjs';
 
 export const THEMES = Object.freeze({
@@ -192,7 +193,7 @@ export function normalizeState(value) {
   const historyCount = Number.isSafeInteger(s.history_count) && s.history_count >= 0 ? s.history_count : (Array.isArray(s.history) ? s.history.length : 0);
   const encounterActive = typeof s.encounter_active === 'boolean' ? s.encounter_active : null;
   const metadata = { state_revision: Number.isSafeInteger(s.state_revision) && s.state_revision >= 0 ? s.state_revision : null, character_revision: Number.isSafeInteger(s.character_revision) && s.character_revision >= 0 ? s.character_revision : 0, character_available: s.character_available === true, field_boss_revision: Number.isSafeInteger(s.field_boss_revision) && s.field_boss_revision >= 0 ? s.field_boss_revision : 0, field_boss_available: s.field_boss_available === true };
-  return { ...identityState(s), ...metadata, training: trainingState(s.training), assist: assistanceState(s.assist), history_revision: historyRevision, history_count: historyCount, encounter_active: encounterActive, status: str(s.status, 120) || 'disconnected', elapsed_ms: Math.max(0, finite(s.elapsed_ms)), total_damage: Math.max(0, finite(s.total_damage)), dps: Math.max(0, finite(s.dps)), paused: Boolean(s.paused), players: (Array.isArray(s.players) ? s.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(s.targets) ? s.targets : []).slice(0, 100).map(normalizeTarget), history: (Array.isArray(s.history) ? s.history : []).slice(0, 30).map(normalizeEncounter).filter(Boolean), cooldowns: Array.isArray(s.cooldowns) ? s.cooldowns.slice(0, 50) : [], diagnostics: { stream_gaps: Math.max(0, finite(s.diagnostics?.stream_gaps)) }, capture: { status: str(capture.status, 120), detail: str(capture.detail, 500), error_code: str(capture.error_code, 80), packets: Math.max(0, finite(capture.packets)), missed_packets: Math.max(0, finite(capture.missed_packets)), game_processes: Number.isFinite(capture.game_processes) ? Math.max(0, capture.game_processes) : null, game_connections: Number.isFinite(capture.game_connections) ? Math.max(0, capture.game_connections) : null, last_packet_at_ms: Number.isFinite(capture.last_packet_at_ms) ? Math.max(0, capture.last_packet_at_ms) : null, admin: { required: admin.required === true, elevated: typeof admin.elevated === 'boolean' ? admin.elevated : null, status: str(admin.status, 80), detail: str(admin.detail, 300) } } };
+  return { ...identityState(s), ...metadata, training: trainingState(s.training), assist: assistanceState(s.assist), history_revision: historyRevision, history_count: historyCount, encounter_active: encounterActive, status: str(s.status, 120) || 'disconnected', elapsed_ms: Math.max(0, finite(s.elapsed_ms)), total_damage: Math.max(0, finite(s.total_damage)), dps: Math.max(0, finite(s.dps)), paused: Boolean(s.paused), players: (Array.isArray(s.players) ? s.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(s.targets) ? s.targets : []).slice(0, 100).map(normalizeTarget), history: (Array.isArray(s.history) ? s.history : []).slice(0, 30).map(normalizeEncounter).filter(Boolean), cooldowns: Array.isArray(s.cooldowns) ? s.cooldowns.slice(0, 256).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], diagnostics: { stream_gaps: Math.max(0, finite(s.diagnostics?.stream_gaps)) }, capture: { network_latency: networkLatency(capture.network_latency), status: str(capture.status, 120), detail: str(capture.detail, 500), error_code: str(capture.error_code, 80), packets: Math.max(0, finite(capture.packets)), missed_packets: Math.max(0, finite(capture.missed_packets)), game_processes: Number.isFinite(capture.game_processes) ? Math.max(0, capture.game_processes) : null, game_connections: Number.isFinite(capture.game_connections) ? Math.max(0, capture.game_connections) : null, last_packet_at_ms: Number.isFinite(capture.last_packet_at_ms) ? Math.max(0, capture.last_packet_at_ms) : null, admin: { required: admin.required === true, elevated: typeof admin.elevated === 'boolean' ? admin.elevated : null, status: str(admin.status, 80), detail: str(admin.detail, 300) } } };
 }
 
 const CONNECTION_TEXT = Object.freeze({
@@ -268,13 +269,7 @@ export function playerShare(player, total) {
 }
 
 export function cooldownStatus(value) {
-  const remaining = typeof value?.remaining_ms === 'number' && Number.isFinite(value.remaining_ms) ? Math.max(0, value.remaining_ms) : null;
-  return {
-    kind: remaining === null ? 'unknown' : remaining > 0 ? 'countdown' : value?.ready_confirmed === true ? 'confirmed' : 'elapsed',
-    remaining,
-    charges: typeof value?.charges === 'number' && Number.isFinite(value.charges) && value.charges >= 0 ? Math.floor(value.charges) : null,
-    source: value?.source === 'server' ? 'server' : 'received',
-  };
+  return cooldownObservation(value);
 }
 
 export function resizeStep(key, shift = false) {

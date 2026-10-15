@@ -23,7 +23,7 @@ def write(root, name, content="public"):
 
 
 def source_tree(root, version="0.9.3", engine="0.9.0"):
-    for name in package.ROOT_FILES + package.CONFIG_FILES + ("engine/src/lib.rs", "engine/src/packets.rs", "ui/index.html", "ui/app.mjs", "src-tauri/src/main.rs"):
+    for name in package.ROOT_FILES + package.CONFIG_FILES + package.COMMUNITY_FILES + ("engine/src/lib.rs", "engine/src/packets.rs", "ui/index.html", "ui/app.mjs", "src-tauri/src/main.rs"):
         write(root, name)
     write(root, "src-tauri/tauri.conf.json", json.dumps({"version": version}))
     write(root, "src-tauri/Cargo.toml", f'[package]\nname="luma-desktop"\nversion="{version}"\n')
@@ -31,6 +31,13 @@ def source_tree(root, version="0.9.3", engine="0.9.0"):
     write(root, "engine/Cargo.lock", f'[[package]]\nname="luma-engine"\nversion="{engine}"\n')
     write(root, "src-tauri/Cargo.lock", f'[[package]]\nname="luma-desktop"\nversion="{version}"\n[[package]]\nname="luma-engine"\nversion="{engine}"\n')
     write(root, "dependency-notices/mapping.json", "{}")
+    for name in ("community/package.json", "community/package-lock.json", "community/wrangler.jsonc"):
+        write(root, name, "{}")
+    write(root, "community/SOURCE_FILES.json", json.dumps({
+        "schema_version": 1,
+        "shared_files": [{"path": name, "bytes": len((root / "community" / name).read_bytes()), "sha256": package.digest((root / "community" / name).read_bytes())} for name in package.COMMUNITY_SHARED_FILES],
+        "portable_files": list(package.COMMUNITY_PORTABLE_FILES),
+    }))
 
 
 def pe_binary(machine=0x8664, magic=0x20B):
@@ -105,6 +112,48 @@ class PackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Source link"):
             package.sources(self.root)
 
+    def test_community_source_is_explicitly_reviewed_and_private_service_runtime_is_excluded(self):
+        private = (
+            "community/.openai/hosting.json", "community/.sites-runtime/private.mjs",
+            "community/.wrangler/state/v3/d1/local.sqlite", "community/.env.production",
+            "community/.dev.vars", "community/.git/config", "community/node_modules/private.mjs",
+            "community/dist/server/worker.js", "community/app/chatgpt-auth.ts",
+            "community/lib/private-capture.mjs", "community/public/session.pcapng",
+            "community/app/community-shares.json", "community/wrangler.secret.json",
+            "ui/.sites-runtime/private.mjs", "docs/.openai/private.md",
+        )
+        for name in private:
+            write(self.root, name, "PRIVATE_SERVICE_DATA")
+        selected = package.sources(self.root)
+        self.assertTrue(set(private).isdisjoint(selected))
+        self.assertTrue(set(package.COMMUNITY_FILES).issubset(selected))
+        self.assertFalse(any(b"PRIVATE_SERVICE_DATA" in content for content in selected.values()))
+        self.assertIn("community/lib/community.test.mjs", selected)
+        (self.root / "community/lib/community.mjs").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing source"):
+            package.sources(self.root)
+
+    def test_community_source_hashes_prevent_unreviewed_backend_changes(self):
+        write(self.root, "community/lib/community.mjs", "changed after review")
+        with self.assertRaisesRegex(ValueError, "Community shared source changed after review"):
+            package.sources(self.root)
+        source_tree(self.root)
+        manifest = json.loads((self.root / "community/SOURCE_FILES.json").read_text())
+        manifest["shared_files"].append({"path": ".env", "bytes": 0, "sha256": "a" * 64})
+        write(self.root, "community/SOURCE_FILES.json", json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unreviewed path"):
+            package.sources(self.root)
+
+    def test_private_credential_fields_and_embedded_authenticated_urls_block_service_publication(self):
+        for field in ("api_token", "CLOUDFLARE_API_TOKEN", "deletionToken"):
+            write(self.root, "community/wrangler.jsonc", json.dumps({"vars": {field: "PRIVATE"}}))
+            with self.assertRaisesRegex(ValueError, "private credential"):
+                package.sources(self.root)
+        write(self.root, "community/wrangler.jsonc", "{}")
+        write(self.root, "community/package-lock.json", '{"resolved":"https://user:password@registry.example/package"}')
+        with self.assertRaisesRegex(ValueError, "credential-bearing URL"):
+            package.sources(self.root)
+
     def test_source_edit_after_build_is_rejected_but_document_edits_are_allowed(self):
         selected = package.sources(self.root)
         binary = write(self.root, "src-tauri/target/release/luma-desktop.exe")
@@ -147,10 +196,14 @@ class PackageTests(unittest.TestCase):
             for record in manifest["files"]:
                 self.assertEqual(record["sha256"], package.digest(archive.read(record["path"])))
             self.assertIn("licenses/dependency/LICENSE", {row["path"] for row in manifest["files"]})
+            self.assertIn("community/lib/community.mjs", archive.namelist())
+            self.assertIn("community/lib/community.test.mjs", archive.namelist())
+            self.assertIn("community/wrangler.jsonc", archive.namelist())
         with zipfile.ZipFile(self.root / f"release/{prefix}-windows-x64.zip") as archive:
             self.assertEqual(archive.read(f"{prefix}/Luma-DPS.exe"), pe_binary())
             self.assertIn(f"{prefix}/docs/events-sources.md", archive.namelist())
             self.assertIn(f"{prefix}/SOURCE_MANIFEST.json", archive.namelist())
+            self.assertFalse(any(name.startswith(f"{prefix}/community/") for name in archive.namelist()))
         checksum = (self.root / "release/SHA256SUMS.txt").read_text()
         self.assertIn(package.digest(source_path.read_bytes()), checksum)
 

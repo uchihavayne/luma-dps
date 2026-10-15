@@ -1,3 +1,5 @@
+import { staggerState } from './telemetry.mjs';
+
 const id = value => value === null || value === undefined ? null : String(value).slice(0, 80);
 const time = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const nonnegative = value => time(value) ?? 0;
@@ -6,6 +8,7 @@ export function assistanceState(value = {}) {
   value = value && typeof value === 'object' ? value : {};
   return {
     retention_limited: value.retention_limited === true,
+    stagger: staggerState(value.stagger),
     casts: (Array.isArray(value.casts) ? value.casts : []).slice(0, 64).filter(cast => cast.source === 'server-windup' && time(cast.expires_ms) !== null).map(cast => ({ actor_id: id(cast.actor_id), skill_id: id(cast.skill_id), target_id: id(cast.target_id), started_ms: time(cast.started_ms), expires_ms: time(cast.expires_ms), duration_ms: nonnegative(cast.duration_ms), source: 'server-windup' })),
     effects: (Array.isArray(value.effects) ? value.effects : []).slice(0, 256).filter(effect => effect.source === 'server-effect').map(effect => ({ recipient_id: id(effect.recipient_id), caster_id: id(effect.caster_id), instance_id: id(effect.instance_id), effect_id: id(effect.effect_id), duration_ms: nonnegative(effect.duration_ms), started_ms: time(effect.started_ms), expires_ms: time(effect.expires_ms), persistent: effect.persistent === true, source: 'server-effect' })),
   };
@@ -13,7 +16,7 @@ export function assistanceState(value = {}) {
 
 export function assistanceTimeline(value = {}) {
   value = value && typeof value === 'object' ? value : {};
-  const kinds = ['windup', 'cast', 'effect-applied', 'effect-refreshed', 'effect-removed', 'effect-expired'];
+  const kinds = ['windup', 'cast', 'effect-applied', 'effect-refreshed', 'effect-removed', 'effect-expired', 'stagger-break'];
   return (Array.isArray(value.timeline) ? value.timeline : []).slice(-1000).filter(event => kinds.includes(event?.kind) && time(event.at_ms) !== null).map(event => ({ kind: event.kind, at_ms: event.at_ms, actor_id: id(event.actor_id), skill_id: id(event.skill_id), target_id: id(event.target_id), instance_id: id(event.instance_id) })).slice(-30).reverse();
 }
 

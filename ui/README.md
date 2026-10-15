@@ -15,6 +15,10 @@ Run `node --test ui/tests/*.test.mjs`. Tests cover identity/scope, display forma
 
 `/?demo=1&cubeDemo=1` also supplies an explicitly labelled, non-live Cube UI sample. It does not open an audio input or output device.
 
+`/?demo=1&partyDemo=1&cubeDemo=1&telemetryDemo=1` demonstrates the unified roster, party summaries, contextual Cube compass, TCP RTT, pet progress and boss stagger with labelled fictional data. It performs no live capture or community upload. The Community drawer uses real native IPC in the desktop application; a browser preview cannot create a successful public share or ranking.
+
+Sharing and rankings remain in the existing analysis drawer. Ranking pages replace bounded sets of 25 results with Next/Previous controls. Sharing requires explicit consent, defaults to anonymous names and keeps deletion capabilities outside renderer snapshots. Free encounter-text copying works offline and falls back to selectable text when clipboard access is unavailable. See [sharing rules and service limits](../docs/community-sharing.md).
+
 ## Measurement and displays
 
 The player list defaults to Nearby, independently of the header/report scope, which defaults to Personal. Received nearby names and per-player total/DPS rows remain visible even when self identity is unresolved. The footer shows personal, party and nearby rates separately. Automatic server self identity, an exact unique saved-name match or an explicit session row selection can identify your character; nearby damage stays excluded from personal totals. Party needs received membership or an explicitly selected session roster. When membership is unknown, the list can fall back to nearby rows with an explicit notice while the party total remains unavailable. A known party list includes only members. Imported records never establish live identity.

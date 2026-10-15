@@ -143,11 +143,13 @@ fn anchor_opcode(frame: &[u8]) -> bool {
             | Some([0x2a, 0x38])
             | Some([0x2b, 0x38])
             | Some([0x2c, 0x38])
+            | Some([5, 0xe0])
             | Some([1, 0x91])
             | Some([0x11, 0x56])
             | Some([0, 0x51])
             | Some([0x26, 0xe2])
             | Some([0x50, 0x36])
+            | Some([0, 0x90])
             | Some([0xff, 0xff])
     )
 }
@@ -179,6 +181,8 @@ fn decoded_anchor(frame: &[u8]) -> bool {
                 CharacterEvent::Inspection(profile) => {
                     profile.equipment.iter().any(|item| item.stones.is_some())
                 }
+                CharacterEvent::PetInventory { pets, .. } => !pets.is_empty(),
+                CharacterEvent::PetGains { .. } | CharacterEvent::PetLevel { .. } => false,
             }
         }
         _ => false,

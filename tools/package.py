@@ -15,14 +15,27 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "release"
 ROOT_FILES = ("README.md", "LICENSE", ".gitignore", "CHANGELOG.md", "RELEASING.md", "SECURITY.md", "tools/package.py")
 CONFIG_FILES = ("engine/Cargo.toml", "engine/Cargo.lock", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs", "src-tauri/windows-app-manifest.xml", "src-tauri/tauri.conf.json", "src-tauri/NATIVE_CAPTURE.md", "src-tauri/src/cube_reference.json", "dependency-notices/mapping.json")
+COMMUNITY_SHARED_FILES = (
+    "app/layout.tsx", "app/globals.css", "app/page.tsx", "app/ui.tsx",
+    "app/r/[id]/page.tsx", "app/r/[id]/report.tsx", "app/v1/[...path]/route.ts",
+    "lib/community.mjs", "lib/community.test.mjs", "db/schema.ts",
+    "drizzle/0000_nebulous_lockheed.sql", "drizzle/meta/_journal.json", "drizzle/meta/0000_snapshot.json",
+    "public/favicon.svg", "tsconfig.json", "next.config.ts", "postcss.config.mjs",
+    "drizzle.config.ts", "cloudflare-env.d.ts",
+)
+COMMUNITY_PORTABLE_FILES = (
+    "README.md", ".gitignore", "package.json", "package-lock.json", "vite.config.ts",
+    "worker.ts", "wrangler.jsonc", "eslint.config.mjs",
+)
+COMMUNITY_FILES = tuple(f"community/{name}" for name in COMMUNITY_SHARED_FILES + COMMUNITY_PORTABLE_FILES + ("SOURCE_FILES.json",))
 PUBLIC_TREES = {
     ".github/workflows": {".yml", ".yaml"}, "engine/src": {".rs"}, "engine/tests": {".rs"},
     "ui": {".mjs", ".css", ".html", ".md"}, "docs": {".md"},
     "src-tauri/src": {".rs", ".js", ".css", ".html"}, "src-tauri/icons": {".png", ".ico"},
     "src-tauri/capabilities": {".json"}, "tools/tests": {".py"},
 }
-PRIVATE_PARTS = {"target", ".cache", "node_modules", "release", ".git", "__pycache__", "captures", "exports", "logs"}
-PRIVATE_NAMES = {"preferences.json", "history.json", "native-probe.json", "event-schedule-cache.json", ".env"}
+PRIVATE_PARTS = {"target", ".cache", "node_modules", "release", ".git", "__pycache__", "captures", "exports", "logs", ".sites-runtime", ".openai", ".wrangler", ".next", "dist"}
+PRIVATE_NAMES = {"preferences.json", "history.json", "native-probe.json", "event-schedule-cache.json", "event-calendars.json", "community-shares.json", "cube-reference.json", ".env"}
 
 
 def digest(data):
@@ -31,12 +44,53 @@ def digest(data):
 
 def public_path(path, root):
     relative = path.relative_to(root)
-    return not any(part.lower() in PRIVATE_PARTS for part in relative.parts) and path.name.lower() not in PRIVATE_NAMES and path.suffix.lower() not in {".etl", ".pcap", ".pcapng", ".pyc", ".pfx", ".pem", ".key"}
+    return not any(part.lower() in PRIVATE_PARTS for part in relative.parts) and path.name.lower() not in PRIVATE_NAMES and not path.name.lower().startswith((".env", ".dev.vars")) and path.suffix.lower() not in {".etl", ".pcap", ".pcapng", ".pyc", ".pfx", ".pem", ".key", ".wav", ".m4a", ".npy", ".db", ".sqlite", ".sqlite3"}
+
+
+def validate_community(files):
+    try:
+        manifest = json.loads(files["community/SOURCE_FILES.json"])
+    except (KeyError, ValueError, TypeError) as error:
+        raise ValueError("Community source manifest is missing or invalid") from error
+    if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "shared_files", "portable_files"} or manifest["schema_version"] != 1 or not isinstance(manifest["shared_files"], list) or not isinstance(manifest["portable_files"], list):
+        raise ValueError("Unsupported community source manifest")
+    names = set()
+    for row in manifest["shared_files"]:
+        if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"} or row["path"] not in COMMUNITY_SHARED_FILES or row["path"] in names:
+            raise ValueError("Community source manifest contains an unreviewed path")
+        names.add(row["path"])
+        data = files[f"community/{row['path']}"]
+        if row["bytes"] != len(data) or row["sha256"] != digest(data):
+            raise ValueError(f"Community shared source changed after review: {row['path']}")
+    if names != set(COMMUNITY_SHARED_FILES) or any(not isinstance(name, str) for name in manifest["portable_files"]) or set(manifest["portable_files"]) != set(COMMUNITY_PORTABLE_FILES) or len(manifest["portable_files"]) != len(COMMUNITY_PORTABLE_FILES):
+        raise ValueError("Community source manifest does not match the reviewed file list")
+
+    def check_config(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).casefold().replace("-", "_")
+                if normalized in {"token", "secret", "password", "credentials", "private_key", "api_key", "authorization", "auth_bypass", "preview_bypass"} or normalized.endswith(("_token", "_secret", "_password", "_credentials", "_private_key", "_api_key")):
+                    raise ValueError("Community configuration contains a private credential field")
+                check_config(item)
+        elif isinstance(value, list):
+            for item in value:
+                check_config(item)
+        elif isinstance(value, str) and re.match(r"https?://[^/]*@", value, flags=re.IGNORECASE):
+            raise ValueError("Community configuration contains a credential-bearing URL")
+
+    for name in ("community/package.json", "community/package-lock.json", "community/wrangler.jsonc"):
+        try:
+            document = json.loads(files[name])
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"Invalid portable community configuration: {name}") from error
+        if not isinstance(document, dict):
+            raise ValueError(f"Invalid portable community configuration: {name}")
+        check_config(document)
 
 
 def sources(root=None):
     root = Path(root or ROOT).resolve()
-    paths = {root / name for name in ROOT_FILES + CONFIG_FILES}
+    paths = {root / name for name in ROOT_FILES + CONFIG_FILES + COMMUNITY_FILES}
     for directory, suffixes in PUBLIC_TREES.items():
         paths.update(path for path in (root / directory).rglob("*") if path.is_file() and path.suffix.lower() in suffixes and public_path(path, root))
     # This directory contains reviewed library notices, never runtime records.
@@ -48,9 +102,10 @@ def sources(root=None):
             if path.is_symlink() or not path.resolve().is_relative_to(root):
                 raise ValueError(f"Source link escapes the reviewed tree: {relative}")
             result[relative] = path.read_bytes()
-    for required in ROOT_FILES + CONFIG_FILES + ("engine/src/lib.rs", "engine/src/packets.rs", "ui/index.html", "ui/app.mjs", "src-tauri/src/main.rs"):
+    for required in ROOT_FILES + CONFIG_FILES + COMMUNITY_FILES + ("engine/src/lib.rs", "engine/src/packets.rs", "ui/index.html", "ui/app.mjs", "src-tauri/src/main.rs"):
         if required not in result:
             raise ValueError(f"Missing source: {required}")
+    validate_community(result)
     return result
 
 

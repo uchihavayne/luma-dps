@@ -13,6 +13,8 @@ const MAX_EFFECTS: usize = 256;
 const MAX_HEALTH: usize = 256;
 const MAX_TIMELINE: usize = 1000;
 const MAX_REMOVALS: usize = 64;
+const MAX_STAGGER: usize = 64;
+const STAGGER_FRESH_MS: u64 = 5_000;
 const MAX_EFFECT_MS: u64 = 86_400_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +59,12 @@ pub enum AssistEvent {
         actor_id: u64,
         current_hp: Option<u64>,
         reported_max_hp: Option<u64>,
+    },
+    Stagger {
+        actor_id: u64,
+        current: u32,
+        maximum: Option<u32>,
+        broken: bool,
     },
 }
 
@@ -184,7 +192,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<AssistEvent>, AssistError> {
         .map_err(|_| AssistError::Truncated)?;
     if !matches!(
         opcode,
-        [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d]
+        [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d] | [5, 0xe0]
     ) {
         return Ok(None);
     }
@@ -198,6 +206,32 @@ pub fn decode(frame: &[u8]) -> Result<Option<AssistEvent>, AssistError> {
     let event = match opcode {
         [9, 0x38] => AssistEvent::Windup(aim(&mut reader, true)?),
         [2, 0x38] => AssistEvent::Cast(aim(&mut reader, false)?),
+        [5, 0xe0] => {
+            let actor_id = reader.actor()?;
+            if actor_id > 10_000_000 {
+                return Err(AssistError::Invalid);
+            }
+            let (current, maximum, broken) = match [reader.byte()?, reader.byte()?] {
+                [3, 1] => {
+                    let maximum = reader.word()?;
+                    let current = reader.word()?;
+                    reader.byte()?; // Opaque trailing status byte.
+                    if maximum == 0 || maximum > 1_000_000 || current > maximum {
+                        return Err(AssistError::Invalid);
+                    }
+                    (current, Some(maximum), false)
+                }
+                [0, 3] => (0, None, true),
+                _ => return Err(AssistError::Unsupported),
+            };
+            reader.end()?;
+            AssistEvent::Stagger {
+                actor_id,
+                current,
+                maximum,
+                broken,
+            }
+        }
         [0x2a, 0x38] | [0x2b, 0x38] => {
             let recipient_id = reader.actor()?;
             let refreshed = opcode[0] == 0x2b;
@@ -358,12 +392,26 @@ pub struct HealthObservation {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StaggerObservation {
+    pub actor_id: u64,
+    pub current: u32,
+    pub maximum: Option<u32>,
+    pub broken: bool,
+    pub observed_at_ms: u64,
+    pub fresh_for_ms: u64,
+    pub fresh: bool,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AssistSnapshot {
     pub casts: Vec<ActiveCast>,
     pub effects: Vec<ActiveEffect>,
     pub timeline: Vec<AssistTimelineEvent>,
     pub health: Vec<HealthObservation>,
     pub retention_limited: bool,
+    #[serde(default)]
+    pub stagger: Vec<StaggerObservation>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -374,11 +422,21 @@ pub struct AssistState {
     timeline: VecDeque<AssistTimelineEvent>,
     last_ms: Option<u64>,
     limited: bool,
+    stagger: BTreeMap<u64, StaggerObservation>,
 }
 
 impl AssistState {
     pub fn clear(&mut self) {
         *self = Self::default()
+    }
+    pub fn remove_actor(&mut self, actor_id: u64, now: u64) {
+        self.tick(now);
+        self.casts.remove(&actor_id);
+        self.health.remove(&actor_id);
+        self.stagger.remove(&actor_id);
+        // A caster leaving the scene does not remove its buffs from others.
+        self.effects
+            .retain(|_, effect| effect.recipient_id != actor_id);
     }
     fn log(
         &mut self,
@@ -447,6 +505,52 @@ impl AssistState {
     pub fn ingest(&mut self, event: AssistEvent, now: u64) {
         self.tick(now);
         match event {
+            AssistEvent::Stagger {
+                actor_id,
+                current,
+                maximum,
+                broken,
+            } => {
+                if actor_id == 0
+                    || actor_id > 10_000_000
+                    || maximum.is_some_and(|maximum| {
+                        maximum == 0 || maximum > 1_000_000 || current > maximum
+                    })
+                    || broken && current != 0
+                    || !broken && maximum.is_none()
+                {
+                    return;
+                }
+                if self.stagger.len() >= MAX_STAGGER && !self.stagger.contains_key(&actor_id) {
+                    if let Some(oldest) = self
+                        .stagger
+                        .values()
+                        .min_by_key(|row| row.observed_at_ms)
+                        .map(|row| row.actor_id)
+                    {
+                        self.stagger.remove(&oldest);
+                        self.limited = true;
+                    }
+                }
+                let known_maximum =
+                    maximum.or_else(|| self.stagger.get(&actor_id).and_then(|old| old.maximum));
+                self.stagger.insert(
+                    actor_id,
+                    StaggerObservation {
+                        actor_id,
+                        current,
+                        maximum: known_maximum,
+                        broken,
+                        observed_at_ms: now,
+                        fresh_for_ms: STAGGER_FRESH_MS,
+                        fresh: true,
+                        source: "server".into(),
+                    },
+                );
+                if broken {
+                    self.log("stagger-break", now, actor_id, None, actor_id, None);
+                }
+            }
             AssistEvent::Windup(value) => {
                 let Some(duration_ms) = value.duration_ms else {
                     return;
@@ -615,6 +719,7 @@ impl AssistState {
             timeline: self.timeline.iter().cloned().collect(),
             health: self.health.values().cloned().collect(),
             retention_limited: self.limited,
+            stagger: self.stagger_snapshot(now),
         }
     }
     /// Avoids copying timeline and health collections for frequent live IPC. The
@@ -637,8 +742,20 @@ impl AssistState {
                 .cloned()
                 .collect(),
             retention_limited: self.limited,
+            stagger: self.stagger_snapshot(now),
             ..Default::default()
         }
+    }
+    fn stagger_snapshot(&self, now: u64) -> Vec<StaggerObservation> {
+        self.stagger
+            .values()
+            .cloned()
+            .map(|mut row| {
+                row.fresh =
+                    now >= row.observed_at_ms && now - row.observed_at_ms <= STAGGER_FRESH_MS;
+                row
+            })
+            .collect()
     }
 }
 

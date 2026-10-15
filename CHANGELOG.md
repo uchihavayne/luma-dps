@@ -2,6 +2,20 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.13.0 preview · 2026-10-15
+
+- Add Sharing and rankings to the existing analysis drawer: explicit aggregate-only upload, anonymous names by default, separate ranking participation, filtered community results, link copying/opening and revocation. No automatic uploads or account requirement.
+- Add free offline encounter-text sharing alongside the existing scoped HTML, CSV and JSON reports. Keep only the uploader's own name when name hiding is disabled; alias other participants.
+- Introduce an optional shared report service with SQL validation, short-lived report retention, deletion capabilities, bounded requests and capacity limits. Community submissions are not official or game-verified world records. Public service activation requires a separately authorized public Site audience.
+- Restrict ranking eligibility to complete captured personal encounters of at least ten seconds with confirmed identity, a known class and one received boss matching the comparison context. Mixed-target, incomplete and imported records remain shareable without entering rankings.
+- Measure passive Windows TCP round-trip time for active game connections, expire old samples and expose unavailable/collecting states without extra probe packets.
+- Decode received self-bound pet levels and progress, clear unknown progress after capture loss and retain nullable requirements. Do not substitute pet progress for Odyle.
+- Show received boss stagger values and break observations in the existing effects panel. Expire live bars without inventing a break duration; preserve scoped observations in local reports.
+- Keep received cooldown readiness distinct from an elapsed local countdown, bind timers to the correct character and retain separately observed charge information.
+- Test atomic sharing-key storage, retry/revocation failures, request privacy, scoped ranking gates, actual SQL operations, telemetry freshness and unified responsive UI behavior.
+
+Live gate: combat, Cube recognition and new protocol telemetry still require matching in-game observations across supported regions. Unsupported live healing/Odyle, ally cooldowns, provider catalogs, spatial replay and official world rankings are not claimed as implemented. See the feature comparison and community sharing documentation.
+
 ## 0.12.0 preview · 2026-10-15
 
 - Keep the DPS roster and Hidden Cube compass in one overlay. Remove the DPS/Cube page switch; a fresh Cube match opens the compass beside the player list and an expired match hides it without replacing the damage view.

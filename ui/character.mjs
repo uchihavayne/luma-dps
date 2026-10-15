@@ -1,3 +1,5 @@
+import { petProgress } from './telemetry.mjs';
+
 const id = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? String(value) : typeof value === 'string' && /^\d{1,20}$/.test(value) ? value : null;
 const metric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const text = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f]/g, '').slice(0, 100) : '';
@@ -19,7 +21,7 @@ function build(value) {
 
 export function characterSnapshot(value = {}) {
   value = value && typeof value === 'object' ? value : {};
-  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })) };
+  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })), pet_progress: petProgress(value.pet_progress) };
 }
 
 export function fieldBossSnapshot(value = {}) {
