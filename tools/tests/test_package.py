@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 import struct
 import tempfile
@@ -49,6 +51,24 @@ def pe_binary(machine=0x8664, magic=0x20B):
 
 
 class PackageTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("git"), "Git is required for the checkout regression")
+    def test_reviewed_service_bytes_survive_windows_git_line_ending_conversion(self):
+        repository = self.root / "checkout-input"
+        destination = self.root / "checkout-output"
+        repository.mkdir(); destination.mkdir()
+        attributes = (package.ROOT / ".gitattributes").read_bytes()
+        (repository / ".gitattributes").write_bytes(attributes)
+        content = {"community/script.mjs": b"export const answer = 42;\n", "community/view.tsx": b"export default function View() { return null; }\r\n"}
+        for name, data in content.items():
+            path = repository / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+        def git(*arguments):
+            return subprocess.run(["git", *arguments], cwd=repository, capture_output=True, check=True)
+        git("init", "--quiet")
+        git("-c", "core.autocrlf=false", "add", "--", ".gitattributes", *content)
+        git("-c", "core.autocrlf=true", "checkout-index", "--all", "--prefix=" + destination.as_posix() + "/")
+        for name, expected in content.items():
+            self.assertEqual((destination / name).read_bytes(), expected, name)
+
     def setUp(self):
         fixture_directory = (package.ROOT / ".cache/package-tests").resolve()
         if not fixture_directory.is_relative_to(package.ROOT.resolve()):
