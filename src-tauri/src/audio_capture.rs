@@ -16,6 +16,13 @@ pub struct AudioChunk {
     pub channels: u16,
     pub samples: Vec<f32>,
     pub discontinuity: bool,
+    pub native_flags: Option<u32>,
+}
+
+fn samples_discontinuous(flags: u32) -> bool {
+    // WASAPI's timestamp-error flag concerns timing metadata, not PCM continuity.
+    // Only DATA_DISCONTINUITY (0x1) requires restarting spectral history.
+    flags & 0x1 != 0
 }
 
 pub fn find_game_process() -> Result<Option<u32>, String> {
@@ -614,11 +621,8 @@ mod native {
                                 format.channels
                             },
                             samples,
-                            discontinuity: flags
-                                & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0
-                                    | AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0)
-                                    as u32
-                                != 0,
+                            discontinuity: samples_discontinuous(flags),
+                            native_flags: Some(flags),
                         });
                         last_audio = Instant::now();
                     }
@@ -640,6 +644,7 @@ mod native {
                         },
                         samples: format.samples(&[], frames, true)?,
                         discontinuity: true,
+                        native_flags: None,
                     });
                     last_audio = Instant::now();
                 }
@@ -751,6 +756,15 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timestamp_uncertainty_does_not_discard_valid_pcm() {
+        for flags in [0, 2, 4, 6] {
+            assert!(!samples_discontinuous(flags));
+        }
+        for flags in [1, 3, 5, 7] {
+            assert!(samples_discontinuous(flags));
+        }
+    }
     fn process(pid: u32, parent_pid: u32, name: &str) -> ProcessInfo {
         ProcessInfo {
             pid,

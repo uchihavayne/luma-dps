@@ -2,6 +2,17 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.11.0 preview · 2026-10-15
+
+- Add a prominent DPS/CUBE header switch and a compass in the meter body, with compact/detailed layouts, a smooth steering needle, relative signal and signal/noise readings. Minimize or Escape returns to DPS; listening remains an explicit choice and starts off on every launch.
+- Preserve stereo front/back ambiguity with a dashed rear candidate. Clear the needle for stale, missing or conflicting directional evidence instead of presenting an unsupported bearing. The display does not calculate GPS coordinates or calibrated distance.
+- Compare Cube tone clusters against local per-channel noise floors and tolerate briefly masked frames. Offline reference mixtures with wind, voice, rumble and harmonic music detect more matching sections than the previous filter; tested directional mixtures do not steer to the opposite side. Tested background-only mixtures, silence and unrelated tones remain rejected; strong masking can still prevent detection.
+- Stop treating Windows' timestamp-uncertainty flag as a loss of audio samples. Actual sample discontinuities still reset detector history.
+- Separate raw input level from matched Cube strength and show a quiet-input diagnostic, helping distinguish a silent game stream from a non-matching sound. Retain AION2-only capture by default, explicit system-output selection and no microphone or automatic audio recording/upload.
+- Add detector, stream-flag, stale-state and compass interaction regressions. A bounded AION2-only stereo capture opened and stopped successfully; its effectively silent input did not verify a Cube scene.
+
+Live gate: detection beside a real Cube, false positives around other game sounds and camera-relative stereo guidance remain pending. Final native window checks and synchronized combat trials also remain pending; this build remains a preview.
+
 ## 0.10.0 preview · 2026-10-14
 
 - Add an opt-in Hidden Cube sound locator with an included spectral reference, sound similarity, matched stereo left/right balance and relative signal changes. No absolute distance, map position or front/back direction is inferred.

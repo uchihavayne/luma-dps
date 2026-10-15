@@ -40,7 +40,7 @@ export const DEFAULTS = Object.freeze({
   numberPrecision: 2,
   summaryMetric: 'both',
   calendarVersion: 1, calendarRegion: 'EU', builtInReminders: {},
-  showCubeLocator: true, cubeSource: 'game', cubeThreshold: .82,
+  showCubeLocator: true, cubeSource: 'game', cubeThreshold: .82, cubeView: 'dps', cubeNavigatorSize: 'compact',
 });
 
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -80,6 +80,7 @@ export function normalizePreferences(input = {}) {
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'),
     calendarVersion: 1, calendarRegion: oneOf(p.calendarRegion, ['EU'], 'EU'), builtInReminders,
     showCubeLocator: p.showCubeLocator !== false, cubeSource: oneOf(p.cubeSource, ['game', 'system'], 'game'), cubeThreshold: bounded(p.cubeThreshold, .6, .97, .82),
+    cubeView: p.showCubeLocator === false ? 'dps' : oneOf(p.cubeView, ['dps', 'navigator'], 'dps'), cubeNavigatorSize: oneOf(p.cubeNavigatorSize, ['compact', 'full'], 'compact'),
     customColors: Object.fromEntries(['bg', 'panel', 'text', 'accent'].map(key => [key, color(custom[key], THEMES.custom[key])])),
     background: validBackground(p.background), events,
     activeEventId,

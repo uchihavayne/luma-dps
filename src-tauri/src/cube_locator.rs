@@ -31,6 +31,16 @@ pub struct CubeState {
     score: f32,
     direction: String,
     direction_confidence: f32,
+    pan: Option<f32>,
+    steer_degrees: Option<f32>,
+    bearing_ambiguous: bool,
+    snr_db: Option<f32>,
+    signal_strength: Option<f32>,
+    input_level_db: Option<f32>,
+    audio_present: bool,
+    received_audio_frames: u64,
+    timestamp_uncertain_packets: u64,
+    stream_discontinuities: u64,
     strength_db: Option<f32>,
     trend: String,
     last_detection_ms: Option<u64>,
@@ -52,6 +62,16 @@ impl CubeState {
             score: 0.0,
             direction: "unknown".into(),
             direction_confidence: 0.0,
+            pan: None,
+            steer_degrees: None,
+            bearing_ambiguous: true,
+            snr_db: None,
+            signal_strength: None,
+            input_level_db: None,
+            audio_present: false,
+            received_audio_frames: 0,
+            timestamp_uncertain_packets: 0,
+            stream_discontinuities: 0,
             strength_db: None,
             trend: "unknown".into(),
             last_detection_ms: None,
@@ -65,6 +85,11 @@ impl CubeState {
         self.score = 0.0;
         self.direction = "unknown".into();
         self.direction_confidence = 0.0;
+        self.pan = None;
+        self.steer_degrees = None;
+        self.bearing_ambiguous = true;
+        self.snr_db = None;
+        self.signal_strength = None;
         self.strength_db = None;
         self.trend = "unknown".into();
     }
@@ -138,13 +163,17 @@ impl Service {
         let mut state = self.state.lock().map_err(|_| "Cube status unavailable")?;
         // A stopped audio endpoint must not leave an old directional arrow on screen.
         if state.enabled
-            && state.status == "detected"
             && state
                 .last_audio_at
                 .is_none_or(|time| time.elapsed() > Duration::from_millis(900))
+            && (state.status == "detected" || state.input_level_db.is_some() || state.audio_present)
         {
-            state.clear_signal();
-            state.status = "listening".into();
+            if state.status == "detected" {
+                state.clear_signal();
+                state.status = "listening".into();
+            }
+            state.input_level_db = None;
+            state.audio_present = false;
             state.revision += 1;
         }
         Ok(state.clone())
@@ -187,6 +216,8 @@ impl Service {
             state.last_detection_ms = None;
             state.audio_channels = 0;
             state.sample_rate = 0;
+            state.input_level_db = None;
+            state.audio_present = false;
         });
         result?;
         self.snapshot()
@@ -229,6 +260,11 @@ impl Service {
             state.last_audio_at = None;
             state.sample_rate = 0;
             state.audio_channels = 0;
+            state.input_level_db = None;
+            state.audio_present = false;
+            state.received_audio_frames = 0;
+            state.timestamp_uncertain_packets = 0;
+            state.stream_discontinuities = 0;
         });
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
@@ -263,8 +299,33 @@ impl Service {
                     } else {
                         audio_capture::CaptureSource::SystemOutput
                     };
+                    let mut received_frames = 0_u64;
+                    let mut timestamp_errors = 0_u64;
+                    let mut discontinuities = 0_u64;
+                    let mut window_power = 0.0_f64;
+                    let mut window_samples = 0_usize;
+                    let mut window_peak = 0.0_f32;
                     let result =
                         audio_capture::capture(capture_source, worker_stop.clone(), |chunk| {
+                            received_frames =
+                                received_frames.saturating_add(if chunk.native_flags.is_some() {
+                                    chunk.samples.len() as u64 / u64::from(chunk.channels.max(1))
+                                } else {
+                                    0
+                                });
+                            timestamp_errors +=
+                                u64::from(chunk.native_flags.is_some_and(|flags| flags & 4 != 0));
+                            discontinuities += u64::from(chunk.discontinuity);
+                            window_power += chunk
+                                .samples
+                                .iter()
+                                .map(|value| f64::from(*value).powi(2))
+                                .sum::<f64>();
+                            window_samples += chunk.samples.len();
+                            window_peak = chunk
+                                .samples
+                                .iter()
+                                .fold(window_peak, |peak, value| peak.max(value.abs()));
                             let detection = detector.push(
                                 &chunk.samples,
                                 chunk.sample_rate,
@@ -276,6 +337,15 @@ impl Service {
                                 return;
                             }
                             last_publish = Instant::now();
+                            let input_db = (20.0
+                                * (window_power / window_samples.max(1) as f64)
+                                    .sqrt()
+                                    .max(1e-6)
+                                    .log10()) as f32;
+                            let audio_present = window_peak > 0.000_05;
+                            window_power = 0.0;
+                            window_samples = 0;
+                            window_peak = 0.0;
                             service.update(generation, |state| {
                                 state.status = if detection.detected {
                                     "detected"
@@ -290,6 +360,16 @@ impl Service {
                                 state.score = detection.score;
                                 state.direction = detection.direction;
                                 state.direction_confidence = detection.direction_confidence;
+                                state.pan = detection.detected.then_some(detection.pan);
+                                state.steer_degrees = detection.steer_degrees;
+                                state.bearing_ambiguous = detection.bearing_ambiguous;
+                                state.snr_db = detection.snr_db;
+                                state.signal_strength = detection.signal_strength;
+                                state.input_level_db = Some(input_db.clamp(-120.0, 0.0));
+                                state.audio_present = audio_present;
+                                state.received_audio_frames = received_frames;
+                                state.timestamp_uncertain_packets = timestamp_errors;
+                                state.stream_discontinuities = discontinuities;
                                 state.strength_db = detection.strength_db;
                                 state.trend = detection.trend;
                                 if detection.detected {
@@ -306,12 +386,16 @@ impl Service {
                             state.status = "error".into();
                             state.message = error.chars().take(400).collect();
                             state.clear_signal();
+                            state.input_level_db = None;
+                            state.audio_present = false;
                         }),
                         Ok(()) => service.update(generation, |state| {
                             state.status = "error".into();
                             state.message =
                                 "Audio capture ended; retrying the selected source".into();
                             state.clear_signal();
+                            state.input_level_db = None;
+                            state.audio_present = false;
                         }),
                     }
                     // Re-open after output-device changes; never change the selected source.
@@ -341,6 +425,8 @@ impl Service {
             state.enabled = false;
             state.message = error.chars().take(400).collect();
             state.clear_signal();
+            state.input_level_db = None;
+            state.audio_present = false;
         });
     }
 
@@ -539,12 +625,33 @@ mod tests {
             state.status = "detected".into();
             state.direction = "right".into();
             state.strength_db = Some(-25.0);
+            state.pan = Some(0.6);
+            state.steer_degrees = Some(36.0);
+            state.snr_db = Some(12.0);
+            state.signal_strength = Some(0.7);
+            state.audio_present = true;
             state.last_audio_at = Some(Instant::now() - Duration::from_millis(1500));
         });
         let state = service.snapshot().unwrap();
         assert_eq!(state.status, "listening");
         assert_eq!(state.direction, "unknown");
         assert!(state.strength_db.is_none());
+        assert!(state.pan.is_none());
+        assert!(state.steer_degrees.is_none());
+        assert!(state.snr_db.is_none());
+        assert!(state.signal_strength.is_none());
+        assert!(!state.audio_present);
+
+        service.update(0, |state| {
+            state.status = "listening".into();
+            state.input_level_db = Some(-18.0);
+            state.audio_present = true;
+        });
+        let state = service.snapshot().unwrap();
+        assert_eq!(state.status, "listening");
+        assert!(state.input_level_db.is_none());
+        assert!(!state.audio_present);
+        assert_eq!(service.snapshot().unwrap().revision, state.revision);
     }
 
     #[test]

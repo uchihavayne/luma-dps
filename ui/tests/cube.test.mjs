@@ -4,7 +4,7 @@ import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeReferenc
 import { normalizePreferences, exportTheme, importTheme } from '../model.mjs';
 
 const now = 1791939600000;
-const match = overrides => ({ revision: 10, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .938, direction: 'left', direction_confidence: .9, strength_db: -31.5, trend: 'approaching', last_detection_ms: now - 400, audio_channels: 2, sample_rate: 48000, ...overrides });
+const match = overrides => ({ revision: 10, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .938, direction: 'left', direction_confidence: .9, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, signal_strength: .64, snr_db: 17.35, strength_db: -31.5, trend: 'approaching', last_detection_ms: now - 400, audio_channels: 2, sample_rate: 48000, ...overrides });
 
 test('a fresh installation exposes the Cube control and keeps live listening out of persisted settings', () => {
   const preferences = normalizePreferences({ cubeEnabled: true, enabled: true });
@@ -67,6 +67,7 @@ test('stale, future, stopped and failed matches immediately clear direction and 
   for (const input of [match({ last_detection_ms: now - CUBE_MATCH_LIFETIME_MS - 1 }), match({ last_detection_ms: now + 1000 }), match({ last_detection_ms: null }), match({ enabled: false }), match({ status: 'waiting_game' }), match({ status: 'error' })]) {
     const view = cubePresentation(input, { now });
     assert.equal(view.matched, false); assert.equal(view.direction, 'unknown'); assert.equal(view.similarity, '—'); assert.equal(view.strength, '—'); assert.equal(view.trendLabel, '—');
+    assert.equal(view.steerDegrees, null); assert.equal(view.rearDegrees, null); assert.equal(view.signalStrength, null); assert.equal(view.relativeStrength, '—'); assert.equal(view.snr, '—');
   }
   assert.equal(cubePresentation(match({ last_detection_ms: now - CUBE_MATCH_LIFETIME_MS - 1 }), { now }).status, 'listening');
 });
@@ -94,4 +95,51 @@ test('bounded reference conversion preserves binary audio and rejects oversized 
   await assert.rejects(cubeReferenceBase64(new Blob([])), /reference_size/);
   assert.equal(reads, 0);
   await assert.rejects(cubeReferenceBase64({ size: 3, async arrayBuffer() { return new ArrayBuffer(2); } }), /reference_size/);
+});
+
+test('continuous audio steering preserves side and shows the equally possible rear mirror', () => {
+  for (const [pan, steer, direction, rear] of [[-1, -90, 'left', 270], [-.5, -30, 'left', 210], [0, 0, 'center', 180], [.5, 30, 'right', 150], [1, 90, 'right', 90]]) {
+    const state = normalizeCubeState(match({ pan, steer_degrees: steer, direction }));
+    const view = cubePresentation(state, { now });
+    assert.equal(state.pan, pan); assert.equal(view.steerDegrees, steer); assert.equal(view.rearDegrees, rear); assert.equal(view.bearingAmbiguous, true);
+  }
+  assert.equal(cubePresentation(match({ bearing_ambiguous: false }), { now }).bearingAmbiguous, true);
+  const view = cubePresentation(match(), { now });
+  assert.equal(view.relativeStrength, '64%'); assert.equal(view.snr, '17.4 dB');
+});
+
+test('invalid steering and relative signal values remain unknown instead of becoming a compass bearing', () => {
+  for (const value of [-Infinity, Infinity, NaN, -1.01, 1.01, '0', null]) assert.equal(normalizeCubeState({ pan: value }).pan, null);
+  for (const value of [-Infinity, Infinity, NaN, -90.01, 90.01, '30', null]) {
+    const view = cubePresentation(match({ steer_degrees: value }), { now });
+    assert.equal(view.steerDegrees, null); assert.equal(view.rearDegrees, null);
+  }
+  for (const value of [-1, 1.01, NaN, Infinity, '0.5', null]) assert.equal(normalizeCubeState({ signal_strength: value }).signal_strength, null);
+  for (const value of [-121, 121, NaN, Infinity, '12', null]) assert.equal(normalizeCubeState({ snr_db: value }).snr_db, null);
+  for (const override of [{ audio_channels: 1 }, { audio_channels: 6 }, { direction: 'unknown' }, { direction_confidence: .119 }]) {
+    const view = cubePresentation(match(override), { now });
+    assert.equal(view.steerDegrees, null); assert.equal(view.rearDegrees, null);
+  }
+});
+
+test('navigator preferences restore a chosen layout without starting an audio session', () => {
+  assert.equal(normalizePreferences().cubeView, 'dps'); assert.equal(normalizePreferences().cubeNavigatorSize, 'compact');
+  const restored = normalizePreferences({ cubeView: 'navigator', cubeNavigatorSize: 'full', cubeEnabled: true });
+  assert.equal(restored.cubeView, 'navigator'); assert.equal(restored.cubeNavigatorSize, 'full'); assert.ok(!('cubeEnabled' in restored));
+  assert.equal(normalizePreferences({ cubeView: 'navigator', showCubeLocator: false }).cubeView, 'dps');
+  const invalid = normalizePreferences({ cubeView: 'radar', cubeNavigatorSize: 'huge' });
+  assert.equal(invalid.cubeView, 'dps'); assert.equal(invalid.cubeNavigatorSize, 'compact');
+  const theme = importTheme(exportTheme(restored));
+  assert.ok(!('cubeView' in theme)); assert.ok(!('cubeNavigatorSize' in theme));
+});
+
+test('quiet audio diagnostics require received frames and never become a Cube match', () => {
+  const listening = { enabled: true, status: 'listening', sample_rate: 48000, received_audio_frames: 96000, audio_present: false, input_level_db: -108 };
+  const quiet = cubePresentation(listening, { now });
+  assert.equal(quiet.quietInput, true); assert.equal(quiet.matched, false); assert.equal(quiet.steerDegrees, null); assert.equal(quiet.relativeStrength, '—');
+  for (const override of [{ received_audio_frames: 95999 }, { sample_rate: 0 }, { audio_present: true }, { enabled: false }, { status: 'waiting_game' }, { status: 'error' }]) assert.equal(cubePresentation({ ...listening, ...override }, { now }).quietInput, false);
+  assert.equal(cubePresentation(listening, { now, readError: 'offline' }).quietInput, false);
+  assert.equal(cubePresentation(match({ ...listening, status: 'detected' }), { now }).quietInput, false);
+  const state = normalizeCubeState({ input_level_db: -121, received_audio_frames: -1, stream_discontinuities: NaN, timestamp_uncertain_packets: '9', audio_present: 1 });
+  assert.equal(state.input_level_db, null); assert.equal(state.received_audio_frames, 0); assert.equal(state.stream_discontinuities, 0); assert.equal(state.timestamp_uncertain_packets, 0); assert.equal(state.audio_present, false);
 });

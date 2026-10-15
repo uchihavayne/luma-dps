@@ -28,6 +28,7 @@ These links document the comparison. They are not proposed footer links or autom
 | Event clocks | Nine ready EU clocks, fixed public calendar subscriptions/cache, individual reminders and finite ICS | Community schedules are planned times; Nahma is provisional; unverified Arena/Beritra clocks are not invented |
 | World bosses | Server map-slot alive/respawn observations and selectable compact countdowns | Unknown slots retain IDs; passed deadlines do not prove an actual spawn |
 | Appearance and OBS | Four original layouts, editable palettes/backgrounds/fonts, independent row/summary choices and optional token-protected same-PC browser source | Native drag/resize/DPI still needs final executable checks; second-PC LAN mode is not included |
+| Hidden Cube | Opt-in AION2-only sound matching, built-in/local reference, dedicated compact/detailed compass, matched stereo steering and relative signal/noise | Stereo front/back ambiguity remains visible; no GPS position or calibrated distance; live Cube and other-game-sound checks remain pending |
 | Odyle and world rankings | Explicit manual Odyle planner and local personal progress | Automatic inventory and a shared verified world-ranking service are not implemented |
 
 This is a capability comparison, not a claim that every premium feature or every encounter is supported. The historical requirements below also include ideas that remain future work.
@@ -97,3 +98,5 @@ No external skill/NPC/icon catalog was imported by this comparison. Current safe
 ## Release gate
 
 The critical live gate is one synchronized 60-second solo dummy run against Combat Analyzer, plus an open-world run with nearby strangers and a real-party run. Verify names, self/party/observed totals, direct/DoT attribution, exact cutoff and capture health. Healing, buffs, gear, boss windup and map timers need separate targeted replay/live cases. Counted unit tests are evidence for the tested behavior; they do not certify untested content or full premium parity.
+
+The 0.11.0 Cube compass additionally needs a real Cube scene with audible stereo game output, camera turns and nearby negative sounds. Reference/noise replays and a successful but effectively silent native stream do not satisfy that gate. Confirm stable relative steering, prompt clearing when the match ends, and no unqualified front/back claim from centered or ambiguous evidence alone.

@@ -44,7 +44,7 @@ let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, 
 const scheduleTimings = new Map();
 let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0;
 const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') === '1';
-if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
+if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
 const words = {
   tr: {
@@ -115,6 +115,12 @@ Object.assign(words.tr, { summaryMetric: 'Üst özet göstergesi', summaryDps: '
 Object.assign(words.en, { summaryMetric: 'Header summary metric', summaryDps: 'Damage per second (DPS)', summaryDamage: 'Total damage', summaryBoth: 'Show both', rowMetric: 'Player row metric', rowDps: 'Damage per second (DPS)', rowDamage: 'Total damage', rowBoth: 'DPS and total damage' });
 Object.assign(words.tr, { rateCaption: 'SANİYELİK DPS', totalCaption: 'TOPLAM HASAR', rowBoth: 'Toplam hasar ve DPS (K/sn)' });
 Object.assign(words.en, { rateCaption: 'DAMAGE / SECOND', totalCaption: 'TOTAL DAMAGE', rowBoth: 'Total damage and DPS (K/s)' });
+Object.assign(words.tr, { cubeCompass: 'Ses pusulası', cubeOpen: 'Hidden Cube ses pusulasını aç', cubeDps: 'DPS görünümüne dön', cubeExpand: 'Ayrıntılı pusula', cubeCompact: 'Küçük pusula', cubeAudioSettings: 'Küp ses ayarları', cubeHide: 'Pusula göstergesini gizle', cubeHideListening: 'Pusula göstergesini gizle · dinleme sürer', cubeStereoAmbiguity: 'Ses pusulası · ön/arka belirsiz', cubeTurn: 'Kamerayı döndürerek karşılaştır', cubeRelativeStrength: 'Göreli sinyal', cubeSnr: 'Sinyal / gürültü', cubeLeft: 'SOL', cubeRight: 'SAĞ', cubeIndicator: 'DPS görünümünde Küp durumunu göster', cubeShow: 'Pusulayı göster', cubeSize: 'Pusula düzeni', cubeCompactLabel: 'Küçük', cubeFullLabel: 'Ayrıntılı' });
+Object.assign(words.en, { cubeCompass: 'Audio compass', cubeOpen: 'Open Hidden Cube audio compass', cubeDps: 'Return to DPS view', cubeExpand: 'Detailed compass', cubeCompact: 'Compact compass', cubeAudioSettings: 'Cube audio settings', cubeHide: 'Hide compass indicator', cubeHideListening: 'Hide compass indicator · listening continues', cubeStereoAmbiguity: 'Audio compass · front/back ambiguous', cubeTurn: 'Turn the camera to compare', cubeRelativeStrength: 'Relative signal', cubeSnr: 'Signal / noise', cubeLeft: 'LEFT', cubeRight: 'RIGHT', cubeIndicator: 'Show Cube status in DPS view', cubeShow: 'Show compass', cubeSize: 'Compass layout', cubeCompactLabel: 'Compact', cubeFullLabel: 'Detailed' });
+Object.assign(words.tr, { cubeQuiet: 'Oyun sesi çok düşük; oyunu öne getir ve ses çıkışını kontrol et.', cubeQuietSystem: 'Ses çıkışı çok düşük; çalan sesi ve çıkış cihazını kontrol et.', cubeInput: 'Seçilen ses kaynağının düzeyi', cubeDiagnostics: 'Ses tanılama', cubeFrames: 'Alınan ses kareleri', cubeUncertain: 'Zaman damgası belirsiz paketler', cubeGaps: 'Akış kesintileri' });
+Object.assign(words.en, { cubeQuiet: 'Game audio is very quiet; bring the game forward and check its audio output.', cubeQuietSystem: 'Output audio is very quiet; check the playing audio and output device.', cubeInput: 'Selected audio source level', cubeDiagnostics: 'Audio diagnostics', cubeFrames: 'Received audio frames', cubeUncertain: 'Packets with uncertain timestamps', cubeGaps: 'Stream discontinuities' });
+Object.assign(words.tr, { cubeThresholdHelp: 'Düşük eşik daha fazla adayı kabul eder; yanlış eşleşmeler artabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.' });
+Object.assign(words.en, { cubeThresholdHelp: 'A lower threshold accepts more candidates and can increase false matches. A higher threshold is more selective. Stop listening before changing it.' });
 const num = n => compactNumber(n, prefs.locale, prefs.numberPrecision);
 const rate = n => formatRate(n, prefs.locale, prefs.numberPrecision);
 const fullNumber = n => new Intl.NumberFormat(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { maximumFractionDigits: 1 }).format(n);
@@ -372,22 +378,70 @@ function settingsContent(section = settingsTab) {
   return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}` }[settingsSection(section)])();
 }
 
+function cubeCompassMarkup() {
+  const svg = $('#cube-compass .cube-compass-svg').outerHTML.replace(/\s+id="[^"]*"/g, '');
+  return `<div class="cube-compass cube-settings-compass" data-cube-compass role="img" aria-label="${t('cubeCompass')}">${svg}<span class="cube-compass-left">${t('cubeLeft')}</span><span class="cube-compass-right">${t('cubeRight')}</span></div>`;
+}
+
 function cubeContent() {
   const disabled = !native || cubePending || cubeState.enabled;
   return `<h3 class="section-title">${t('cubeTitle')}</h3><p class="help">${t('cubeIntro')}</p>${!native ? `<p class="settings-hint">${t('cubePreview')}</p>` : ''}
     <div class="cube-locator" id="cube-locator"><div class="cube-status-line"><span id="cube-status-dot" class="cube-status-dot" aria-hidden="true"></span><strong id="cube-status-label"></strong><span id="cube-source-label" class="tag"></span></div>
-    <div id="cube-direction-display" class="cube-direction-display" data-direction="unknown"><span class="cube-direction-arrow" id="cube-direction-arrow" aria-hidden="true">◇</span><div><strong id="cube-direction-label">—</strong><span id="cube-trend-label">—</span></div></div>
-    <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div></div><p class="help cube-detail" id="cube-detail" hidden></p></div>
-    <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button></div>
+    <div id="cube-direction-display" class="cube-direction-display" data-direction="unknown">${cubeCompassMarkup()}<div><strong id="cube-direction-label">—</strong><span>${t('cubeStereoAmbiguity')}</span><span id="cube-trend-label">—</span></div></div>
+    <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeRelativeStrength')}</span><strong id="cube-relative-strength">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div><div><span>${t('cubeSnr')}</span><strong id="cube-snr">—</strong></div></div><p class="help cube-detail" id="cube-detail" hidden></p></div>
+    <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button>${button('show-cube-navigator', 'cubeShow', '', true)}</div>
+    <label class="field"><span>${t('cubeSize')}</span><select name="cubeNavigatorSize"><option value="compact" ${prefs.cubeNavigatorSize === 'compact' ? 'selected' : ''}>${t('cubeCompactLabel')}</option><option value="full" ${prefs.cubeNavigatorSize === 'full' ? 'selected' : ''}>${t('cubeFullLabel')}</option></select></label>
     <div class="field-grid"><label class="field"><span>${t('cubeSource')}</span><select name="cubeSource" ${disabled ? 'disabled' : ''}><option value="game" ${prefs.cubeSource === 'game' ? 'selected' : ''}>${t('cubeGame')}</option><option value="system" ${prefs.cubeSource === 'system' ? 'selected' : ''}>${t('cubeSystem')}</option></select></label><label class="field cube-threshold"><span>${t('cubeThreshold')} <output id="cube-threshold-value">${Math.round(prefs.cubeThreshold * 100)}%</output></span><input name="cubeThreshold" type="range" min="0.6" max="0.97" step="0.01" value="${prefs.cubeThreshold}" ${disabled ? 'disabled' : ''} aria-describedby="cube-threshold-help"></label></div>
     <p class="help" id="cube-source-help">${t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')}</p><p class="help" id="cube-threshold-help">${t('cubeThresholdHelp')} ${t('cubeSimilarityHelp')}</p><label class="check-field"><input name="showCubeLocator" type="checkbox" ${prefs.showCubeLocator ? 'checked' : ''}>${t('cubeIndicator')}</label>
     <div class="cube-limits"><p>${t('cubeLimit')}</p><p>${t('cubeRelative')}</p></div>
+    <details class="cube-diagnostics"><summary>${t('cubeDiagnostics')}</summary><div><span>${t('cubeInput')}</span><strong id="cube-input-level">—</strong></div><div><span>${t('cubeFrames')}</span><strong id="cube-input-frames">0</strong></div><div><span>${t('cubeUncertain')}</span><strong id="cube-uncertain-packets">0</strong></div><div><span>${t('cubeGaps')}</span><strong id="cube-stream-gaps">0</strong></div></details>
     <h3 class="section-title">${t('cubeReference')}</h3><div class="cube-reference-line"><strong id="cube-reference-name">${esc(cubeState.reference.name || t('cubeBuiltin'))}</strong><span id="cube-reference-duration">${cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : ''}</span></div><label class="field"><span>${t('cubeImport')}</span><input name="cubeReferenceFile" type="file" accept=".m4a,.wav,audio/mp4,audio/wav,audio/x-wav" ${disabled ? 'disabled' : ''}></label><p class="help">${t('cubeImportHelp')}</p><div class="button-row">${button('reset-cube-reference', 'cubeReset', disabled ? 'disabled' : '', true)}</div><p class="help" id="cube-format-label">${t('cubeUnknownFormat')}</p>`;
 }
 
 function renderCubeLive() {
   const view = cubePresentation(cubeState, { now: cubeDemo ? cubeState.last_detection_ms : Date.now(), locale: prefs.locale, live: native, readError: cubeReadError });
-  const chip = $('#cube-chip'); chip.hidden = !prefs.showCubeLocator;
+  const navigatorVisible = prefs.showCubeLocator && prefs.cubeView === 'navigator';
+  $('#meter').dataset.cubeView = navigatorVisible ? 'navigator' : 'dps';
+  $('#meter').dataset.cubeSize = prefs.cubeNavigatorSize;
+  $('#cube-navigator').hidden = !navigatorVisible;
+  $('#cube-navigator').dataset.status = view.status;
+  $('#cube-back-dps').hidden = !navigatorVisible;
+  $('#cube-back-dps').title = t('cubeDps'); $('#cube-back-dps').setAttribute('aria-label', t('cubeDps'));
+  $('#cube-entry').setAttribute('aria-pressed', String(navigatorVisible));
+  $('#dps-entry').setAttribute('aria-pressed', String(!navigatorVisible));
+  $('#cube-entry').dataset.listening = String(cubeState.enabled);
+  $('#cube-entry').title = `${t('cubeOpen')} · ${view.label}`; $('#cube-entry').setAttribute('aria-label', $('#cube-entry').title);
+  $('#dps-entry').title = t('cubeDps'); $('#dps-entry').setAttribute('aria-label', t('cubeDps'));
+  setText($('#cube-entry-label'), prefs.locale === 'tr' ? 'KÜP' : 'CUBE');
+  for (const [id, key] of [['cube-nav-size', prefs.cubeNavigatorSize === 'full' ? 'cubeCompact' : 'cubeExpand'], ['cube-nav-settings', 'cubeAudioSettings'], ['cube-nav-minimize', 'cubeDps'], ['cube-nav-dismiss', cubeState.enabled ? 'cubeHideListening' : 'cubeHide']]) {
+    $(`#${id}`).title = t(key); $(`#${id}`).setAttribute('aria-label', t(key));
+  }
+  $('#cube-nav-size').setAttribute('aria-pressed', String(prefs.cubeNavigatorSize === 'full'));
+  $('#cube-navigator').setAttribute('aria-label', `Hidden Cube · ${t('cubeCompass')}`);
+  setText($('#cube-nav-source'), view.sourceLabel);
+  setText($('#cube-nav-status'), view.matched ? view.label : t('cubeCompass'));
+  setText($('#cube-nav-direction'), view.matched ? view.directionLabel : view.label);
+  setText($('#cube-nav-guidance'), t('cubeStereoAmbiguity'));
+  setText($('#cube-nav-trend'), view.matched ? view.trendLabel : t('cubeTurn'));
+  setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
+  setText($('#cube-nav-similarity-label'), t('cubeSimilarity')); setText($('#cube-nav-strength-label'), t('cubeRelativeStrength'));
+  const quietMessage = view.quietInput ? t(cubeState.source === 'system' ? 'cubeQuietSystem' : 'cubeQuiet') : '';
+  const detailText = quietMessage || view.detail;
+  $('#cube-navigator').dataset.quiet = String(view.quietInput);
+  setText($('#cube-nav-guidance'), quietMessage || t('cubeStereoAmbiguity'));
+  $('#cube-nav-guidance').title = quietMessage || t('cubeTurn');
+  const navDetail = $('#cube-nav-detail'); navDetail.hidden = view.status !== 'error' || !view.detail; setText(navDetail, view.detail); navDetail.title = view.detail;
+  const navToggle = $('#cube-nav-toggle'); navToggle.disabled = !native || cubePending; setText(navToggle, t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart'));
+  for (const compass of $$('[data-cube-compass]')) {
+    compass.dataset.known = String(view.steerDegrees !== null); compass.dataset.status = view.status;
+    compass.dataset.ambiguous = String(view.rearDegrees !== null);
+    compass.style.setProperty('--cube-steer', `${view.steerDegrees ?? 0}deg`);
+    compass.style.setProperty('--cube-rear', `${view.rearDegrees ?? 180}deg`);
+    compass.style.setProperty('--cube-signal', `${(view.signalStrength ?? 0) * 100}`);
+    setAttribute(compass, 'aria-label', `${t('cubeCompass')} · ${view.label}${view.matched ? ` · ${view.directionLabel}` : ''} · ${t('cubeStereoAmbiguity')}`);
+    setText(compass.querySelector('.cube-compass-left'), t('cubeLeft')); setText(compass.querySelector('.cube-compass-right'), t('cubeRight'));
+  }
+  const chip = $('#cube-chip'); chip.hidden = !prefs.showCubeLocator || navigatorVisible;
   chip.dataset.status = view.status; chip.dataset.direction = view.direction;
   setText($('#cube-chip-text'), view.short);
   chip.title = `${t('cubeTitle')} · ${view.label}${view.matched ? ` · ${view.directionLabel} · ${t('cubeSimilarity')}: ${view.similarity}` : ''}${!native ? ` · ${t('cubePreview')}` : ''}`;
@@ -396,14 +450,30 @@ function renderCubeLive() {
   panel.dataset.status = view.status;
   setText($('#cube-status-label'), view.label); setText($('#cube-source-label'), view.sourceLabel);
   const direction = $('#cube-direction-display'); direction.dataset.direction = view.direction; direction.dataset.matched = String(view.matched);
-  setText($('#cube-direction-arrow'), { left: '←', right: '→', center: '↔', unknown: '◇' }[view.direction]);
   setText($('#cube-direction-label'), view.directionLabel); setText($('#cube-trend-label'), view.trendLabel);
   setText($('#cube-similarity'), view.similarity); setText($('#cube-strength'), view.strength);
-  const detail = $('#cube-detail'); detail.hidden = !view.detail; setText(detail, view.detail);
+  setText($('#cube-relative-strength'), view.relativeStrength); setText($('#cube-snr'), view.snr);
+  const detail = $('#cube-detail'); detail.hidden = !detailText; setText(detail, detailText);
   const toggle = $('#cube-toggle'); toggle.disabled = !native || cubePending; setText(toggle, t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart'));
   for (const control of $$('[name=cubeSource],[name=cubeThreshold],[name=cubeReferenceFile],[data-action=reset-cube-reference]')) control.disabled = !native || cubePending || cubeState.enabled;
   setText($('#cube-reference-name'), cubeState.reference.name || t('cubeBuiltin')); setText($('#cube-reference-duration'), cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : '');
   setText($('#cube-format-label'), cubeState.sample_rate ? `${t('cubeAudioFormat')}: ${cubeState.sample_rate.toLocaleString(prefs.locale)} Hz · ${cubeState.audio_channels} ${cubeState.audio_channels === 1 ? 'mono' : 'ch'}${cubeState.audio_channels === 1 ? ` · ${t('cubeNoDirection')}` : ''}` : t('cubeUnknownFormat'));
+  setText($('#cube-input-level'), cubeState.enabled && cubeState.input_level_db !== null ? `${cubeState.input_level_db.toFixed(1)} dBFS` : '—');
+  setText($('#cube-input-frames'), cubeState.received_audio_frames.toLocaleString(prefs.locale));
+  setText($('#cube-uncertain-packets'), cubeState.timestamp_uncertain_packets.toLocaleString(prefs.locale));
+  setText($('#cube-stream-gaps'), cubeState.stream_discontinuities.toLocaleString(prefs.locale));
+}
+
+function setCubeView(view, { hide = false, focus = true } = {}) {
+  if (drawer) closeDrawer();
+  savePreferences({ cubeView: view, showCubeLocator: !hide });
+  if (focus) $(view === 'navigator' ? '#cube-nav-minimize' : '#cube-entry').focus();
+  if (view === 'navigator') readCubeState();
+}
+
+async function toggleCubeListening() {
+  if (!cubeState.enabled) setCubeView('navigator');
+  await cubeCommand(cubeState.enabled ? 'stop_cube_locator' : 'start_cube_locator', cubeState.enabled ? {} : { source: prefs.cubeSource, threshold: prefs.cubeThreshold });
 }
 
 function applyCubeSnapshot(value) {
@@ -855,7 +925,15 @@ $('.drawer-header').addEventListener('pointerdown', event => {
 $('#analysis-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis'); });
 $('#training-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'training'); });
 $('#event-chip').addEventListener('click', () => { if (prefs.activeEventId.startsWith('boss:')) { snapshot = null; openDrawer('analysis', 'worldBosses'); } else openDrawer('settings', 'calendar'); });
-$('#cube-chip').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
+$('#cube-chip').addEventListener('click', () => setCubeView('navigator'));
+$('#cube-entry').addEventListener('click', () => setCubeView('navigator'));
+$('#dps-entry').addEventListener('click', () => setCubeView('dps'));
+$('#cube-back-dps').addEventListener('click', () => setCubeView('dps'));
+$('#cube-nav-minimize').addEventListener('click', () => setCubeView('dps'));
+$('#cube-nav-dismiss').addEventListener('click', () => setCubeView('dps', { hide: true }));
+$('#cube-nav-settings').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
+$('#cube-nav-size').addEventListener('click', () => savePreferences({ cubeNavigatorSize: prefs.cubeNavigatorSize === 'full' ? 'compact' : 'full' }));
+$('#cube-nav-toggle').addEventListener('click', toggleCubeListening);
 $('#combat-warning').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'effects'); });
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
 $('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; snapshot = null; openDrawer('analysis', 'skills'); } });
@@ -875,6 +953,7 @@ $('#resize-button').addEventListener('keydown', event => {
 });
 document.addEventListener('pointerdown', enableAudio, { passive: true });
 document.addEventListener('keydown', event => {
+  if (!drawer && event.key === 'Escape' && prefs.cubeView === 'navigator') { event.preventDefault(); setCubeView('dps'); return; }
   if (!drawer) return;
   if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); }
   if (event.key === 'Tab') {
@@ -889,6 +968,7 @@ $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
+  if (name === 'cubeNavigatorSize') { savePreferences({ cubeNavigatorSize: element.value }); return; }
   if (name === 'cubeSource') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeSource: element.value }); setText($('#cube-source-help'), t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')); return; }
   if (name === 'cubeThreshold') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeThreshold: Number(element.value) }); element.value = prefs.cubeThreshold; setText($('#cube-threshold-value'), `${Math.round(prefs.cubeThreshold * 100)}%`); return; }
   if (name === 'cubeReferenceFile') {
@@ -949,7 +1029,8 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
-  if (actionName === 'toggle-cube') { await cubeCommand(cubeState.enabled ? 'stop_cube_locator' : 'start_cube_locator', cubeState.enabled ? {} : { source: prefs.cubeSource, threshold: prefs.cubeThreshold }); return; }
+  if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
+  if (actionName === 'show-cube-navigator') { setCubeView('navigator'); return; }
   if (actionName === 'reset-cube-reference') { if (!cubeState.enabled) await cubeCommand('reset_cube_reference', {}); return; }
   if (actionName === 'open-alerts' || actionName === 'open-training') { snapshot = null; openDrawer('analysis', actionName === 'open-alerts' ? 'alerts' : 'training'); }
   if (actionName === 'retry-history') { const pending = historyCache?.retry(); refreshDrawer(); await pending; if (drawer === 'analysis' && tab === 'history') refreshDrawer(); }

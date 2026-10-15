@@ -16,6 +16,17 @@ export function normalizeCubeState(value = {}) {
     score: bounded(input.score, 0, 1, 0),
     direction: ['left', 'right', 'center'].includes(input.direction) ? input.direction : 'unknown',
     direction_confidence: bounded(input.direction_confidence, 0, 1, 0),
+    pan: finite(input.pan) && input.pan >= -1 && input.pan <= 1 ? input.pan : null,
+    steer_degrees: finite(input.steer_degrees) && input.steer_degrees >= -90 && input.steer_degrees <= 90 ? input.steer_degrees : null,
+    // Stereo level differences cannot distinguish a front source from its rear mirror.
+    bearing_ambiguous: true,
+    snr_db: finite(input.snr_db) && input.snr_db >= -120 && input.snr_db <= 120 ? input.snr_db : null,
+    signal_strength: finite(input.signal_strength) && input.signal_strength >= 0 && input.signal_strength <= 1 ? input.signal_strength : null,
+    input_level_db: finite(input.input_level_db) && input.input_level_db >= -120 && input.input_level_db <= 0 ? input.input_level_db : null,
+    audio_present: input.audio_present === true,
+    received_audio_frames: Number.isSafeInteger(input.received_audio_frames) && input.received_audio_frames >= 0 ? input.received_audio_frames : 0,
+    timestamp_uncertain_packets: Number.isSafeInteger(input.timestamp_uncertain_packets) && input.timestamp_uncertain_packets >= 0 ? input.timestamp_uncertain_packets : 0,
+    stream_discontinuities: Number.isSafeInteger(input.stream_discontinuities) && input.stream_discontinuities >= 0 ? input.stream_discontinuities : 0,
     strength_db: finite(input.strength_db) && input.strength_db >= -160 && input.strength_db <= 40 ? input.strength_db : null,
     trend: ['approaching', 'receding', 'steady'].includes(input.trend) ? input.trend : 'unknown',
     last_detection_ms: finite(input.last_detection_ms) && input.last_detection_ms > 0 ? input.last_detection_ms : null,
@@ -47,9 +58,16 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
     ? { approaching: 'Sinyal güçleniyor', receding: 'Sinyal zayıflıyor', steady: 'Sinyal dengeli', unknown: 'Değişim için dinleniyor' }
     : { approaching: 'Signal getting stronger', receding: 'Signal getting weaker', steady: 'Signal steady', unknown: 'Listening for a change' };
   const prefix = tr ? 'Küp' : 'Cube';
+  const quietInput = !readError && state.enabled && status === 'listening' && !state.audio_present && state.sample_rate > 0 && state.received_audio_frames >= state.sample_rate * 2;
   const short = matched ? `${{ left: '←', right: '→', center: '↔', unknown: '◇' }[direction]} ${prefix}` : `${prefix} · ${tr ? { off: 'kapalı', waiting_game: 'bekliyor', listening: 'ara', error: 'hata' }[status] : { off: 'off', waiting_game: 'wait', listening: 'listen', error: 'error' }[status]}`;
   return {
-    status, matched, direction, label: labels[status], short,
+    status, matched, direction, label: labels[status], short, quietInput,
+    steerDegrees: direction !== 'unknown' ? state.steer_degrees : null,
+    rearDegrees: direction !== 'unknown' && state.steer_degrees !== null && state.bearing_ambiguous ? 180 - state.steer_degrees : null,
+    bearingAmbiguous: state.bearing_ambiguous,
+    signalStrength: matched ? state.signal_strength : null,
+    relativeStrength: matched && state.signal_strength !== null ? `${Math.round(state.signal_strength * 100)}%` : '—',
+    snr: matched && state.snr_db !== null ? `${state.snr_db.toFixed(1)} dB` : '—',
     detail: readError || state.message,
     directionLabel: matched ? directions[direction] : '—',
     similarity: matched ? `${Math.round(state.score * 100)}%` : '—',
