@@ -2,6 +2,18 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.12.0 preview · 2026-10-15
+
+- Keep the DPS roster and Hidden Cube compass in one overlay. Remove the DPS/Cube page switch; a fresh Cube match opens the compass beside the player list and an expired match hides it without replacing the damage view.
+- Start AION2-only Cube listening automatically, wait for the game when absent and migrate older preferences to the automatic default. An explicit stop disables the saved automatic-listening preference. Automatic listening never selects system output or a microphone.
+- Separate roster visibility from the header/report scope. Show received nearby players by default while retaining a personal summary, and show separate personal, party and nearby rates in the footer. Unknown self identity no longer hides other received actors.
+- Filter a known party roster to its members. If membership has not arrived, display nearby rows with an explicit notice and keep the unknown party total unavailable; nearby presence does not create party membership.
+- Add smooth relative-DPS bar colors, with class-color and theme-accent choices. Keep received names, total damage, per-second DPS and configurable shares in the roster.
+- Raise the compact overlay minimum to 320 × 200 so controls and player rows have space together. Migrate shorter saved windows without resetting their themes or other appearance choices.
+- Add transport regressions for nearby actors, late received names, per-player DPS and a split late party roster. All 132 engine tests pass; production engine parsing is unchanged.
+
+Live gate: the final executable still needs synchronized solo/nearby/party combat checks and a real Cube scene with audible stereo output, camera turns and other-game-sound negatives. Automated coverage does not establish full premium-feature parity or detection accuracy in every scene. This remains a preview.
+
 ## 0.11.0 preview · 2026-10-15
 
 - Add a prominent DPS/CUBE header switch and a compass in the meter body, with compact/detailed layouts, a smooth steering needle, relative signal and signal/noise readings. Minimize or Escape returns to DPS; listening remains an explicit choice and starts off on every launch.

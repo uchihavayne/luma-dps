@@ -30,6 +30,15 @@ export function ownPlayer(state) {
   return (state?.players || []).find(player => sameId(player.id, state?.local_player_id)) || null;
 }
 
+export function meterScopes(state, preferences = {}) {
+  const summaryScope = ['personal', 'party', 'observed'].includes(preferences.damageScope) ? preferences.damageScope : 'personal';
+  const rosterScope = ['personal', 'party', 'observed'].includes(preferences.rosterScope) ? preferences.rosterScope : 'observed';
+  const summaries = Object.fromEntries(['personal', 'party', 'observed'].map(scope => [scope, scopedEncounter(state, scope)]));
+  const requested = summaries[rosterScope];
+  const fallback = rosterScope === 'party' && !requested.known && summaries.observed.players.length > 0;
+  return { summary: summaries[summaryScope], roster: fallback ? summaries.observed : requested, summaries, rosterScope, fallback };
+}
+
 export function skillSummary(player, elapsedMs = 0) {
   const skills = player?.skills || [];
   const hits = skills.reduce((sum, skill) => sum + (nonnegative(skill.hits) ?? 0), 0);

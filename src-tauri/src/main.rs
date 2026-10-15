@@ -24,6 +24,8 @@ use std::{
 };
 use tauri::{Emitter, Manager, State, WebviewWindow};
 
+const MIN_METER_HEIGHT: f64 = 200.0;
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
@@ -36,6 +38,8 @@ struct Preferences {
     target_mode: String,
     width: f64,
     height: f64,
+    #[serde(rename = "cubeAutoListen")]
+    cube_auto_listen: bool,
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
 }
@@ -50,12 +54,34 @@ impl Default for Preferences {
             target_mode: "all".into(),
             width: 420.0,
             height: 240.0,
+            cube_auto_listen: true,
             extra: Default::default(),
         }
     }
 }
 
 impl Preferences {
+    fn migrate_legacy_dimensions(mut self) -> Self {
+        if (116.0..MIN_METER_HEIGHT).contains(&self.height) {
+            self.height = MIN_METER_HEIGHT;
+        }
+        self
+    }
+
+    fn automatic_cube_capture(&self) -> Option<(&'static str, f32)> {
+        self.cube_auto_listen.then(|| {
+            let threshold = self
+                .extra
+                .get("cubeThreshold")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && (0.6..=0.97).contains(value))
+                .unwrap_or(0.82) as f32;
+            // Automatic listening never broadens capture to other applications,
+            // including when an older preference saved a system-output source.
+            ("game", threshold)
+        })
+    }
+
     fn validate(&self) -> Result<(), String> {
         if let Some(name) = self.extra.get("characterName") {
             validate_character_name(name.as_str().ok_or("Character name must be text")?)?;
@@ -75,7 +101,7 @@ impl Preferences {
             || !self.width.is_finite()
             || !(320.0..=1600.0).contains(&self.width)
             || !self.height.is_finite()
-            || !(116.0..=1600.0).contains(&self.height)
+            || !(MIN_METER_HEIGHT..=1600.0).contains(&self.height)
             || !matches!(self.target_mode.as_str(), "all" | "boss" | "both")
         {
             return Err("Invalid meter preferences".into());
@@ -105,7 +131,7 @@ fn drawer_geometry(
     if !scale_factor.is_finite()
         || scale_factor <= 0.0
         || (work_area.size.width as f64) < (320.0 * scale_factor).ceil()
-        || (work_area.size.height as f64) < (116.0 * scale_factor).ceil()
+        || (work_area.size.height as f64) < (MIN_METER_HEIGHT * scale_factor).ceil()
     {
         return Err("The monitor work area is unavailable or too small for the panel".into());
     }
@@ -116,7 +142,7 @@ fn drawer_geometry(
             .min(work_area.size.width as f64) as u32,
         (700.0 * scale_factor)
             .round()
-            .max((116.0 * scale_factor).ceil())
+            .max((MIN_METER_HEIGHT * scale_factor).ceil())
             .min(work_area.size.height as f64) as u32,
     );
     let left = i64::from(work_area.position.x);
@@ -272,7 +298,7 @@ fn resized_meter_dimensions(
     }
     Some(tauri::LogicalSize::new(
         width.clamp(320.0, 1600.0),
-        height.clamp(116.0, 1600.0),
+        height.clamp(MIN_METER_HEIGHT, 1600.0),
     ))
 }
 
@@ -317,6 +343,84 @@ fn snapshot(shared: &Shared) -> Result<Value, String> {
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+
+    #[test]
+    fn legacy_small_windows_keep_preferences_and_gain_visible_roster_space() {
+        let preferences: Preferences = serde_json::from_value(serde_json::json!({
+            "height": 116.0, "width": 350.0, "theme": "violet", "opacity": 0.88,
+            "cubeAutoListen": false, "characterName": "Saved name"
+        }))
+        .unwrap();
+        let migrated = preferences.migrate_legacy_dimensions();
+        assert_eq!(migrated.height, MIN_METER_HEIGHT);
+        assert_eq!(migrated.width, 350.0);
+        assert_eq!(migrated.theme, "violet");
+        assert_eq!(migrated.opacity, 0.88);
+        assert!(!migrated.cube_auto_listen);
+        assert_eq!(migrated.extra["characterName"], "Saved name");
+        assert!(migrated.validate().is_ok());
+        let minimum = resized_meter_dimensions(tauri::PhysicalSize::new(320, 116), 1.0).unwrap();
+        assert_eq!(minimum.height, MIN_METER_HEIGHT);
+    }
+
+    #[test]
+    fn cube_automatic_listening_migrates_legacy_settings_and_respects_explicit_stop() {
+        let default = Preferences::default();
+        assert_eq!(default.automatic_cube_capture(), Some(("game", 0.82)));
+        let legacy: Preferences = serde_json::from_value(serde_json::json!({
+            "cubeSource": "system", "cubeThreshold": 0.73
+        }))
+        .unwrap();
+        assert_eq!(legacy.automatic_cube_capture(), Some(("game", 0.73)));
+        let stopped: Preferences = serde_json::from_value(serde_json::json!({
+            "cubeAutoListen": false, "cubeSource": "system"
+        }))
+        .unwrap();
+        assert_eq!(stopped.automatic_cube_capture(), None);
+        assert_eq!(
+            serde_json::to_value(stopped).unwrap()["cubeAutoListen"],
+            false
+        );
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("0.7"),
+        ] {
+            let preferences: Preferences = serde_json::from_value(serde_json::json!({
+                "cubeThreshold": invalid
+            }))
+            .unwrap();
+            assert_eq!(preferences.automatic_cube_capture(), Some(("game", 0.82)));
+        }
+    }
+
+    #[test]
+    fn stopping_cube_audio_is_not_blocked_by_a_settings_write_error() {
+        let mut shared = fixture_shared(MeterEngine::default(), Preferences::default());
+        let blocked_directory = std::env::temp_dir().join(format!(
+            "luma-cube-blocked-settings-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::write(&blocked_directory, b"temporary settings-error fixture").unwrap();
+        shared.data_dir = blocked_directory.clone();
+        let service =
+            cube_locator::Service::new(std::env::temp_dir().join("luma-cube-validation-only"))
+                .unwrap();
+        let stopped = AtomicBool::new(false);
+        let result = change_cube_listening(&shared, false, || {
+            stopped.store(true, Ordering::Relaxed);
+            service.stop()
+        });
+        assert!(result.is_err());
+        assert!(stopped.load(Ordering::Relaxed));
+        assert!(!shared.preferences.lock().unwrap().cube_auto_listen);
+        assert_eq!(
+            serde_json::to_value(service.snapshot().unwrap()).unwrap()["enabled"],
+            false
+        );
+        fs::remove_file(blocked_directory).unwrap();
+    }
 
     fn fixture_shared(engine: MeterEngine, preferences: Preferences) -> Shared {
         Shared {
@@ -673,26 +777,72 @@ fn get_cube_state(
     service.snapshot()
 }
 
+fn change_cube_listening(
+    shared: &Shared,
+    enabled: bool,
+    operation: impl FnOnce() -> Result<cube_locator::CubeState, String>,
+) -> Result<cube_locator::CubeState, String> {
+    let _change = shared
+        .preference_change
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    let mut current = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    let mut staged = current.clone();
+    staged.cube_auto_listen = enabled;
+    let saved = persist(shared, &staged);
+    if saved.is_ok() || !enabled {
+        *current = staged;
+    }
+    drop(current);
+    if enabled {
+        saved?;
+        operation()
+    } else {
+        // Stop even if saving fails: an explicit request to stop audio takes
+        // precedence over a local storage error.
+        let state = operation();
+        saved?;
+        state
+    }
+}
+
 #[tauri::command]
 async fn start_cube_locator(
     service: State<'_, Arc<cube_locator::Service>>,
+    shared: State<'_, Arc<Shared>>,
     source: String,
     threshold: f32,
 ) -> Result<cube_locator::CubeState, String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.start(&source, threshold))
-        .await
-        .map_err(|error| error.to_string())?
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if !matches!(source.as_str(), "game" | "system")
+            || !threshold.is_finite()
+            || !(0.6..=0.97).contains(&threshold)
+        {
+            return Err("Invalid Cube source or sensitivity".into());
+        }
+        change_cube_listening(&shared, true, || service.start(&source, threshold))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
 async fn stop_cube_locator(
     service: State<'_, Arc<cube_locator::Service>>,
+    shared: State<'_, Arc<Shared>>,
 ) -> Result<cube_locator::CubeState, String> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.stop())
-        .await
-        .map_err(|error| error.to_string())?
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        change_cube_listening(&shared, false, || service.stop())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -939,6 +1089,7 @@ fn get_preferences(shared: State<Arc<Shared>>) -> Result<Preferences, String> {
 fn set_preferences(
     window: WebviewWindow,
     shared: State<Arc<Shared>>,
+    cube: State<Arc<cube_locator::Service>>,
     mut preferences: Preferences,
 ) -> Result<Preferences, String> {
     let _change = shared
@@ -997,6 +1148,16 @@ fn set_preferences(
     preferences.width = current.width;
     preferences.height = current.height;
     *current = preferences.clone();
+    drop(current);
+    if preferences.cube_auto_listen != previous.cube_auto_listen {
+        // The saved preference expresses the user's intent; capture health is
+        // reported independently through CubeState and retryable errors.
+        if let Some((source, threshold)) = preferences.automatic_cube_capture() {
+            let _ = cube.start(source, threshold);
+        } else {
+            let _ = cube.stop();
+        }
+    }
     Ok(preferences)
 }
 
@@ -1232,7 +1393,7 @@ fn resize_by(
     window
         .set_size(tauri::LogicalSize::new(
             (size.width as f64 / factor + dx).clamp(320.0, 1600.0),
-            (size.height as f64 / factor + dy).clamp(116.0, 1600.0),
+            (size.height as f64 / factor + dy).clamp(MIN_METER_HEIGHT, 1600.0),
         ))
         .map_err(|e| e.to_string())
 }
@@ -1531,8 +1692,14 @@ fn main() {
                 .filter(|metadata| metadata.len() <= 4 * 1024 * 1024)
                 .and_then(|_| fs::read(preferences_path).ok())
                 .and_then(|bytes| serde_json::from_slice::<Preferences>(&bytes).ok())
+                .map(Preferences::migrate_legacy_dimensions)
                 .filter(|value| value.validate().is_ok())
                 .unwrap_or_default();
+            if let Some((source, threshold)) = preferences.automatic_cube_capture() {
+                // This starts only the background worker. It waits for AION2
+                // and never opens a microphone or another process's output.
+                let _ = cube.start(source, threshold);
+            }
             let mut engine = MeterEngine::default();
             let restored_history = local_history::load(&data_dir.join("history.json"));
             if let Ok(records) = &restored_history {

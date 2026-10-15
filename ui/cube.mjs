@@ -40,6 +40,10 @@ export function acceptsCubeSnapshot(current, incoming) {
   return !Number.isSafeInteger(current?.revision) || incoming.revision > current.revision;
 }
 
+export function cubeDockVisible(presentation, preferences = {}) {
+  return preferences.showCubeLocator !== false && presentation?.matched === true;
+}
+
 export function cubePresentation(input, { now = Date.now(), locale = 'tr', live = true, readError = '' } = {}) {
   const state = normalizeCubeState(input);
   const tr = locale !== 'en';

@@ -14,30 +14,10 @@
       <div class="brand" id="drag-region"><span class="brand-mark" aria-hidden="true">◈</span><span>LUMA <small>DPS</small></span></div>
       <button id="identity-button" class="identity-button" aria-label="Karakterini seç"><span aria-hidden="true">◎</span><span id="identity-name">Karakter</span></button>
       <span id="connection" class="connection" role="status" aria-live="polite"><i aria-hidden="true"></i><span>—</span></span>
-      <div class="meter-view-switch" role="group" aria-label="DPS / Hidden Cube"><button id="dps-entry" aria-pressed="true">DPS</button><button id="cube-entry" class="cube-entry" aria-label="Hidden Cube ses pusulasını aç" title="Hidden Cube ses pusulasını aç" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></svg><span id="cube-entry-label">KÜP</span></button></div>
+      <button id="cube-entry" class="cube-entry" aria-label="Hidden Cube ses ayarları" title="Hidden Cube ses ayarları"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></svg><i aria-hidden="true"></i></button>
       <button id="settings-button" class="icon-button" aria-label="Ayarlar" title="Ayarlar">⚙</button>
       <button id="close-window" class="icon-button close-window" aria-label="Pencereyi kapat" title="Pencereyi kapat">×</button>
     </header>
-    <section id="cube-navigator" class="cube-navigator" aria-label="Hidden Cube pusulası" hidden>
-      <div class="cube-nav-heading"><div class="cube-nav-name"><i class="cube-status-dot" aria-hidden="true"></i><strong>HIDDEN CUBE</strong><span id="cube-nav-source"></span></div><div class="cube-nav-controls"><button id="cube-nav-size" class="icon-button" aria-label="Pusulayı büyüt" title="Pusulayı büyüt">⤢</button><button id="cube-nav-settings" class="icon-button" aria-label="Ses ayarları" title="Ses ayarları">⚙</button><button id="cube-nav-minimize" class="icon-button" aria-label="DPS görünümüne dön" title="DPS görünümüne dön">−</button><button id="cube-nav-dismiss" class="icon-button" aria-label="Pusulayı kapat" title="Pusulayı kapat">×</button></div></div>
-      <div class="cube-nav-body">
-        <div class="cube-compass" id="cube-compass" role="img" aria-label="Stereo ses yönü" data-cube-compass>
-          <svg class="cube-compass-svg" viewBox="0 0 160 160" aria-hidden="true">
-            <circle class="cube-compass-surface" cx="80" cy="80" r="74"/>
-            <circle class="cube-compass-outer" cx="80" cy="80" r="70"/>
-            <circle class="cube-compass-inner" cx="80" cy="80" r="52"/>
-            <path class="cube-compass-guides" d="M80 8v12M80 140v12M8 80h12M140 80h12M29 29l7 7M124 124l7 7M29 131l7-7M124 36l7-7"/>
-            <path class="cube-compass-front" d="M30.5 30.5A70 70 0 0 1 129.5 30.5"/>
-            <circle class="cube-compass-strength" cx="80" cy="80" r="62" pathLength="100"/>
-            <g class="cube-compass-sweep"><path d="M80 80V28A52 52 0 0 1 117 43Z"/></g>
-            <g class="cube-compass-ghost" id="cube-rear-needle"><path d="M80 76V31"/><path d="m80 22-7 13 7-4 7 4z"/></g>
-            <g class="cube-compass-needle" id="cube-steer-needle"><path d="M80 84V31"/><path d="m80 20-9 16 9-5 9 5z"/></g>
-            <circle class="cube-compass-core" cx="80" cy="80" r="11"/><path class="cube-compass-gem" d="m80 73 7 7-7 7-7-7z"/>
-          </svg><span class="cube-compass-left" id="cube-compass-left">SOL</span><span class="cube-compass-right" id="cube-compass-right">SAĞ</span>
-        </div>
-        <div class="cube-nav-information"><span id="cube-nav-status" class="cube-nav-status" role="status" aria-live="polite">Dinleme kapalı</span><strong id="cube-nav-direction">Küp sesi bekleniyor</strong><span id="cube-nav-guidance" class="cube-nav-guidance">Stereo · ön/arka belirsiz</span><span id="cube-nav-trend" class="cube-nav-trend"></span><div class="cube-nav-readings"><span><b id="cube-nav-similarity">—</b><small id="cube-nav-similarity-label">Benzerlik</small></span><span><b id="cube-nav-strength">—</b><small id="cube-nav-strength-label">Sinyal</small></span></div><button id="cube-nav-toggle" class="action-button">Dinlemeyi başlat</button></div>
-      </div><p id="cube-nav-detail" class="cube-nav-detail" hidden></p>
-    </section>
     <section class="encounter-header">
       <div class="target-label" id="target-label">HEDEF</div>
       <div class="target-line"><h1 id="target-name">—</h1><span id="combat-time" class="combat-time">00:00</span></div>
@@ -57,12 +37,27 @@
       </div>
       <label class="sort-label"><span class="sr-only" id="sort-label">Sıralama</span><select id="sort" aria-labelledby="sort-label"><option value="dps">DPS ↓</option><option value="damage">Hasar ↓</option><option value="name">A–Z</option></select></label>
     </section>
-    <div class="list-heading"><span id="player-label">OYUNCU</span><span class="heading-total" id="heading-total">TOPLAM HASAR · DPS</span></div>
-    <section id="players" class="players" aria-label="Oyuncular"></section>
+    <section class="roster-stage" aria-label="Oyuncular ve yakın Küp sinyali">
+      <div class="roster-list"><div class="list-heading"><span id="player-label">OYUNCU</span><span class="heading-total" id="heading-total">TOPLAM HASAR · DPS</span></div><section id="players" class="players" aria-label="Oyuncular"></section></div>
+      <aside id="cube-navigator" class="cube-navigator" aria-label="Hidden Cube pusulası" hidden>
+        <div class="cube-nav-heading"><strong>HIDDEN CUBE</strong><button id="cube-nav-size" class="icon-button" aria-label="Pusulayı büyüt" title="Pusulayı büyüt">⤢</button></div>
+        <span id="cube-nav-source" class="cube-nav-source"></span>
+        <div class="cube-compass" id="cube-compass" role="img" aria-label="Stereo ses yönü" data-cube-compass>
+          <svg class="cube-compass-svg" viewBox="0 0 160 160" aria-hidden="true">
+            <circle class="cube-compass-surface" cx="80" cy="80" r="74"/><circle class="cube-compass-outer" cx="80" cy="80" r="70"/><circle class="cube-compass-inner" cx="80" cy="80" r="52"/>
+            <path class="cube-compass-guides" d="M80 8v12M80 140v12M8 80h12M140 80h12M29 29l7 7M124 124l7 7M29 131l7-7M124 36l7-7"/><path class="cube-compass-front" d="M30.5 30.5A70 70 0 0 1 129.5 30.5"/>
+            <circle class="cube-compass-strength" cx="80" cy="80" r="62" pathLength="100"/>
+            <g class="cube-compass-ghost"><path d="M80 76V31"/><path d="m80 22-7 13 7-4 7 4z"/></g><g class="cube-compass-needle"><path d="M80 84V31"/><path d="m80 20-9 16 9-5 9 5z"/></g>
+            <circle class="cube-compass-core" cx="80" cy="80" r="11"/><path class="cube-compass-gem" d="m80 73 7 7-7 7-7-7z"/>
+          </svg><span class="cube-compass-left">SOL</span><span class="cube-compass-right">SAĞ</span>
+        </div>
+        <strong id="cube-nav-direction" class="cube-nav-direction"></strong><span id="cube-nav-guidance" class="cube-nav-guidance">Stereo · ön/arka belirsiz</span><span id="cube-nav-trend" class="cube-nav-trend"></span>
+        <div class="cube-nav-readings"><span><b id="cube-nav-similarity">—</b><small id="cube-nav-similarity-label">Benzerlik</small></span><span><b id="cube-nav-strength">—</b><small id="cube-nav-strength-label">Sinyal</small></span></div>
+      </aside>
+    </section>
     <footer class="footer">
       <div class="footer-controls"><button id="pause-button" class="icon-button" aria-label="Duraklat" title="Duraklat">Ⅱ</button><button id="reset-button" class="icon-button" aria-label="Sıfırla" title="Sıfırla">↺</button><button id="lock-button" class="icon-button" aria-label="Kilitle" aria-pressed="false" title="Kilitle">◇</button><button id="training-button" class="icon-button" aria-label="Süreli antrenman" title="Süreli antrenman">◷</button></div>
-      <button id="cube-back-dps" class="text-button" hidden>← DPS</button>
-      <button id="cube-chip" class="cube-chip" aria-label="Hidden Cube ses bulucu" title="Hidden Cube ses bulucu"><span id="cube-chip-text">Küp · kapalı</span><i aria-hidden="true"></i></button>
+      <div id="roster-summary" class="roster-summary" aria-label="DPS kapsamları"><span data-summary-scope="personal"><small>BEN</small><strong>—</strong></span><span data-summary-scope="party"><small>TAKIM</small><strong>—</strong></span><span data-summary-scope="observed"><small>YAKIN</small><strong>—</strong></span></div>
       <button id="analysis-button" class="text-button">Analiz ↗</button>
       <button id="resize-button" class="resize-button" aria-label="Pencereyi yeniden boyutlandır" title="Pencereyi yeniden boyutlandır"><span aria-hidden="true">◢</span></button>
     </footer>

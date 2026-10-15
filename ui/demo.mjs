@@ -11,3 +11,11 @@ export const DEMO_STATE = Object.freeze({
   ],
   targets: [{ id: 'demo-target', name: 'Demo • Astral sentinel', is_boss: true, damage: 2390000 }, { id: 'demo-add', name: 'Demo • Echo', is_boss: false, damage: 466000 }], history: [], cooldowns: [],
 });
+
+export const DEMO_PARTY_STATE = Object.freeze({
+  ...DEMO_STATE,
+  party_member_ids: ['demo-1', 'demo-3', 'demo-4'], party_membership_source: 'server',
+  party_total_damage: 1935000, party_dps: 13163.2653, party_elapsed_ms: 147000,
+  party_targets: [{ id: 'demo-target', name: 'Demo • Astral sentinel', is_boss: true, damage: 1935000 }],
+  players: DEMO_STATE.players.map(player => ({ ...player, in_party: ['demo-1', 'demo-3', 'demo-4'].includes(player.id) })),
+});

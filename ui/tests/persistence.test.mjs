@@ -107,3 +107,51 @@ test('reads form a barrier and new edits cannot be merged ahead of the refreshed
   first.resolve(); await Promise.all([...saves, reading]);
   assert.deepEqual(order, [1, 2, 'read', 4]);
 });
+
+test('an explicit capture stop waits for pending preferences and separates later edits from older merged writes', async () => {
+  const first = deferred(), order = []; let writes = 0;
+  const writer = createPreferenceCommitter({}, { write: async value => { order.push(value.edit); if (++writes === 1) await first.promise; } });
+  const older = [writer.save({ edit: 1, cubeAutoListen: true }), writer.save({ edit: 2, cubeAutoListen: true })];
+  let stopped = false;
+  const stopping = writer.run(async () => { order.push('stop'); stopped = true; });
+  const newer = [writer.save({ edit: 3, cubeAutoListen: false }), writer.save({ edit: 4, cubeAutoListen: false })];
+  await Promise.resolve(); assert.equal(stopped, false); assert.deepEqual(order, [1]);
+  first.resolve(); await Promise.all([...older, stopping, ...newer]);
+  assert.deepEqual(order, [1, 2, 'stop', 4]); assert.equal(stopped, true);
+});
+
+test('a failed stop persistence cannot let a queued stale preference or rollback restart captured audio', async () => {
+  const first = deferred(), order = [], written = [], rejected = [];
+  let intent = null, preferences = { theme: 'original', cubeAutoListen: true }, audioRunning = true;
+  const protectIntent = value => intent === null ? value : { ...value, cubeAutoListen: intent };
+  const writer = createPreferenceCommitter(preferences, {
+    write: async value => {
+      const actual = protectIntent(value); written.push(actual); order.push(actual.theme);
+      if (written.length === 1) await first.promise;
+      if (actual.theme === 'newest') throw new Error('settings disk is full');
+      audioRunning = actual.cubeAutoListen;
+    },
+    onRejected: (_, rollback) => { rejected.push(rollback); if (rollback) preferences = protectIntent(rollback); },
+  });
+  const older = [writer.save({ theme: 'old-in-flight', cubeAutoListen: true }), writer.save({ theme: 'old-queued', cubeAutoListen: true })];
+  await Promise.resolve();
+  intent = false; preferences = { ...preferences, cubeAutoListen: false };
+  const stopping = writer.run(async () => { order.push('explicit-stop'); audioRunning = false; throw new Error('stop succeeded but saving failed'); });
+  const expectedFailure = assert.rejects(stopping, /saving failed/);
+  const newest = writer.save({ ...preferences, theme: 'newest' });
+  first.resolve(); await Promise.all([...older, expectedFailure, newest]);
+  assert.deepEqual(order, ['old-in-flight', 'old-queued', 'explicit-stop', 'newest']);
+  assert.equal(audioRunning, false); assert.equal(preferences.cubeAutoListen, false);
+  assert.ok(written.slice(1).every(value => value.cubeAutoListen === false));
+  assert.equal(rejected.length, 1); assert.equal(rejected[0].cubeAutoListen, true);
+});
+
+test('a failed older write cannot roll back a newer capture action even without a later settings edit', async () => {
+  const first = deferred(), rejected = [], order = [];
+  const writer = createPreferenceCommitter({ cubeAutoListen: true }, { write: () => first.promise, onRejected: (_, rollback) => rejected.push(rollback) });
+  const old = writer.save({ cubeAutoListen: true, theme: 'old' });
+  const stop = writer.run(async () => { order.push('stop'); });
+  first.reject(new Error('older save failed'));
+  assert.equal(await old, false); await stop;
+  assert.deepEqual(rejected, [null]); assert.deepEqual(order, ['stop']);
+});

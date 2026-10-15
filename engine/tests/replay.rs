@@ -196,3 +196,125 @@ fn a_tls_like_sequence_inside_game_payload_has_identical_whole_and_split_results
     assert_eq!(whole.live_state(2000).total_damage, 106);
     assert_eq!(parts.live_state(2000).total_damage, 106);
 }
+
+fn player_identity(opcode: u8, id: u32, name: &str) -> Vec<u8> {
+    let mut payload = vec![opcode, 0x36];
+    payload.extend(encode(id));
+    payload.extend(0u32.to_le_bytes());
+    payload.extend([1, name.len() as u8]);
+    payload.extend(name.as_bytes());
+    if opcode == 0x33 {
+        payload.extend(1304u16.to_le_bytes());
+        payload.extend(14u32.to_le_bytes());
+    }
+    frame(&payload)
+}
+
+fn tick_damage(source: u32, amount: u32) -> Vec<u8> {
+    let mut payload = vec![5, 0x38];
+    payload.extend(encode(10));
+    payload.push(2);
+    payload.extend(encode(source));
+    payload.push(0);
+    payload.extend(14_090_000u32.to_le_bytes());
+    payload.extend(encode(amount));
+    frame(&payload)
+}
+
+fn receive(engine: &mut MeterEngine, sequence: &mut u32, payload: &[u8], now: u64) {
+    engine.ingest_tcp(&tcp(*sequence, 13328, 51000, payload), true, now);
+    *sequence += payload.len() as u32;
+}
+
+#[test]
+fn nearby_ungrouped_rows_keep_received_names_and_rates_when_self_is_unresolved() {
+    let mut engine = MeterEngine::default();
+    let mut sequence = 100;
+    receive(&mut engine, &mut sequence, &tick_damage(2, 200), 1000);
+    receive(&mut engine, &mut sequence, &tick_damage(3, 300), 2000);
+    assert_eq!(engine.live_state(3000).players[0].name, "#3");
+
+    for (opcode, id, name) in [(0x44, 2, "Yakın"), (0x45, 3, "弓手")] {
+        receive(
+            &mut engine,
+            &mut sequence,
+            &player_identity(opcode, id, name),
+            2500,
+        );
+    }
+    let state = engine.live_state(3000);
+    assert_eq!(state.local_player_id, None);
+    assert_eq!(state.personal_total_damage, None);
+    assert_eq!(state.party_total_damage, None);
+    assert_eq!(state.total_damage, 500);
+    assert_eq!(state.dps, 250.0);
+    assert_eq!(state.players.len(), 2);
+    assert_eq!(state.players[0].name, "弓手");
+    assert_eq!(state.players[0].dps, 150.0);
+    assert_eq!(state.players[1].name, "Yakın");
+    assert_eq!(state.players[1].dps, 100.0);
+    assert!(state.players.iter().all(|row| row.identity_confirmed));
+    assert!(state.players.iter().all(|row| !row.in_party));
+    assert_eq!(state.diagnostics.rejected_frames, 0);
+}
+
+#[test]
+fn a_late_party_roster_preserves_nearby_rows_and_only_sums_its_named_members() {
+    let mut engine = MeterEngine::default();
+    let mut sequence = 100;
+    for (opcode, id, name) in [(0x33, 1, "Local"), (0x44, 2, "Friend"), (0x45, 3, "Nearby")] {
+        receive(
+            &mut engine,
+            &mut sequence,
+            &player_identity(opcode, id, name),
+            0,
+        );
+    }
+    for (id, amount) in [(1, 100), (2, 200), (3, 900)] {
+        receive(&mut engine, &mut sequence, &tick_damage(id, amount), 1000);
+    }
+    let mut roster = vec![2, 0x97];
+    roster.extend(42u32.to_le_bytes());
+    roster.extend([5, b'P', b'a', b'r', b't', b'y', 2]);
+    roster.extend([0; 17]);
+    roster.push(2);
+    for (slot, name) in [(1, "Local"), (2, "Friend")] {
+        roster.extend([12, slot]);
+        roster.extend((1304u64 << 48 | u64::from(slot)).to_le_bytes());
+        roster.push(name.len() as u8);
+        roster.extend(name.as_bytes());
+        roster.extend(14u32.to_le_bytes());
+        roster.extend(50u32.to_le_bytes());
+        roster.extend(5000u32.to_le_bytes());
+        roster.extend(1304u16.to_le_bytes());
+        roster.extend(1304u16.to_le_bytes());
+        roster.push(4);
+        roster.extend(850_000u64.to_le_bytes());
+        roster.extend([0, 1, 1]);
+    }
+    let bytes = frame(&roster);
+    let split = bytes.len() / 2;
+    receive(&mut engine, &mut sequence, &bytes[..split], 1500);
+    assert_eq!(engine.live_state(1500).party_total_damage, None);
+    receive(&mut engine, &mut sequence, &bytes[split..], 1500);
+
+    let state = engine.live_state(3000);
+    assert_eq!(state.local_player_name, "Local");
+    assert_eq!(state.total_damage, 1200);
+    assert_eq!(state.personal_total_damage, Some(100));
+    assert_eq!(state.party_membership_source, "server");
+    assert_eq!(state.party_member_ids, vec![1, 2]);
+    assert_eq!(state.party_total_damage, Some(300));
+    assert_eq!(state.party_dps, Some(150.0));
+    assert_eq!(state.players.len(), 3);
+    let friend = state.players.iter().find(|row| row.id == 2).unwrap();
+    assert_eq!(friend.name, "Friend");
+    assert_eq!(friend.class_name, "Ranger");
+    assert_eq!(friend.dps, 100.0);
+    assert!(friend.in_party);
+    let nearby = state.players.iter().find(|row| row.id == 3).unwrap();
+    assert_eq!(nearby.name, "Nearby");
+    assert_eq!(nearby.dps, 450.0);
+    assert!(!nearby.in_party);
+    assert_eq!(state.diagnostics.rejected_frames, 0);
+}

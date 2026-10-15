@@ -36,11 +36,11 @@ export const DEFAULTS = Object.freeze({
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
   alerts: { dpsGoal: 0, eventLeadMinutes: 5, sound: false, incomingWarnings: true }, importedHistory: [],
-  damageScope: 'personal', characterName: '', layout: 'studio', density: 'comfortable', showClass: true, showShares: true, rowMetric: 'both',
+  damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'studio', density: 'comfortable', showClass: true, showShares: true, rowMetric: 'both',
   numberPrecision: 2,
   summaryMetric: 'both',
   calendarVersion: 1, calendarRegion: 'EU', builtInReminders: {},
-  showCubeLocator: true, cubeSource: 'game', cubeThreshold: .82, cubeView: 'dps', cubeNavigatorSize: 'compact',
+  showCubeLocator: true, cubeAutoListen: true, cubeSource: 'game', cubeThreshold: .82, cubeView: 'dps', cubeNavigatorSize: 'compact',
 });
 
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -74,13 +74,15 @@ export function normalizePreferences(input = {}) {
     textScale: bounded(p.textScale, 0.85, 1.2, 1), opacity: bounded(p.opacity, 0.65, 1, 0.96),
     sort: oneOf(p.sort, ['dps', 'damage', 'name'], 'dps'), mode: oneOf(p.mode, ['all', 'boss', 'both'], 'all'), locked: Boolean(p.locked),
     damageScope: oneOf(p.damageScope, ['personal', 'party', 'observed'], 'personal'), characterName: str(p.characterName, 64).trim(),
+    rosterScope: oneOf(p.rosterScope, ['personal', 'party', 'observed'], 'observed'),
+    rowColorMode: oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'performance'),
     layout: oneOf(p.layout, Object.keys(LAYOUTS), 'studio'), density: oneOf(p.density, ['comfortable', 'compact'], 'comfortable'),
     showClass: p.showClass !== false, showShares: p.showShares !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'),
     calendarVersion: 1, calendarRegion: oneOf(p.calendarRegion, ['EU'], 'EU'), builtInReminders,
-    showCubeLocator: p.showCubeLocator !== false, cubeSource: oneOf(p.cubeSource, ['game', 'system'], 'game'), cubeThreshold: bounded(p.cubeThreshold, .6, .97, .82),
-    cubeView: p.showCubeLocator === false ? 'dps' : oneOf(p.cubeView, ['dps', 'navigator'], 'dps'), cubeNavigatorSize: oneOf(p.cubeNavigatorSize, ['compact', 'full'], 'compact'),
+    showCubeLocator: p.showCubeLocator !== false, cubeAutoListen: p.cubeAutoListen !== false, cubeSource: oneOf(p.cubeSource, ['game', 'system'], 'game'), cubeThreshold: bounded(p.cubeThreshold, .6, .97, .82),
+    cubeView: 'dps', cubeNavigatorSize: oneOf(p.cubeNavigatorSize, ['compact', 'full'], 'compact'),
     customColors: Object.fromEntries(['bg', 'panel', 'text', 'accent'].map(key => [key, color(custom[key], THEMES.custom[key])])),
     background: validBackground(p.background), events,
     activeEventId,
@@ -118,12 +120,12 @@ export function importTheme(text) {
   if (!parsed || parsed.type !== 'luma-theme' || parsed.version !== 1 || !parsed.theme || typeof parsed.theme !== 'object') throw new Error('Invalid Luma theme');
   const p = normalizePreferences(parsed.theme);
   if (parsed.theme.background && !p.background) throw new Error('Invalid raster background');
-  return Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
+  return Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
 }
 
 export function exportTheme(prefs) {
   const p = normalizePreferences(prefs);
-  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
+  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
 }
 
 export function recurringEvent(event, now = Date.now()) {
@@ -324,3 +326,17 @@ export function importHistory(text) {
 
 export const CLASS_COLORS = Object.freeze({ gladiator: '#e7a076', templar: '#dfc680', assassin: '#bd94ef', ranger: '#8bd498', sorcerer: '#8dbdfa', spiritmaster: '#b0a4ef', cleric: '#efdd9f', chanter: '#7fd8d0', unknown: '#a1b8ce' });
 export const classColor = name => CLASS_COLORS[String(name).toLowerCase()] || CLASS_COLORS.unknown;
+
+export function playerBarColor(player, maximumDps, mode = 'performance', accent = THEMES.aurora.accent) {
+  if (mode === 'class') return classColor(player?.class_name);
+  if (mode === 'accent') return color(accent, THEMES.aurora.accent);
+  const rate = typeof player?.dps === 'number' && Number.isFinite(player.dps) ? Math.max(0, player.dps) : 0;
+  const maximum = typeof maximumDps === 'number' && Number.isFinite(maximumDps) ? Math.max(0, maximumDps) : 0;
+  if (!maximum || !rate) return CLASS_COLORS.unknown;
+  const ratio = Math.min(1, rate / maximum);
+  const stops = [[0, [116, 157, 201]], [.4, [118, 177, 218]], [.7, [140, 200, 159]], [1, [236, 194, 105]]];
+  const upper = stops.findIndex(([position]) => position >= ratio);
+  const [start, from] = stops[Math.max(0, upper - 1)], [end, to] = stops[upper];
+  const blend = end > start ? (ratio - start) / (end - start) : 0;
+  return `#${from.map((channel, index) => Math.round(channel + (to[index] - channel) * blend).toString(16).padStart(2, '0')).join('')}`;
+}

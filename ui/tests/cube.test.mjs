@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS } from '../cube.mjs';
+import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS } from '../cube.mjs';
 import { normalizePreferences, exportTheme, importTheme } from '../model.mjs';
 
 const now = 1791939600000;
@@ -9,6 +9,8 @@ const match = overrides => ({ revision: 10, enabled: true, status: 'detected', s
 test('a fresh installation exposes the Cube control and keeps live listening out of persisted settings', () => {
   const preferences = normalizePreferences({ cubeEnabled: true, enabled: true });
   assert.equal(preferences.showCubeLocator, true); assert.equal(preferences.cubeSource, 'game'); assert.equal(preferences.cubeThreshold, .82);
+  assert.equal(preferences.cubeAutoListen, true);
+  assert.equal(normalizePreferences({ cubeAutoListen: false }).cubeAutoListen, false);
   assert.ok(!('cubeEnabled' in preferences)); assert.ok(!('enabled' in preferences));
   assert.equal(normalizeCubeState().enabled, false); assert.equal(normalizeCubeState().status, 'off');
   assert.equal(cubePresentation({}, { now }).similarity, '—');
@@ -18,8 +20,8 @@ test('Cube settings are bounded and theme import cannot enable output capture or
   const preferences = normalizePreferences({ showCubeLocator: false, cubeSource: 'microphone', cubeThreshold: 2 });
   assert.equal(preferences.showCubeLocator, false); assert.equal(preferences.cubeSource, 'game'); assert.equal(preferences.cubeThreshold, .97);
   assert.equal(normalizePreferences({ cubeThreshold: -.8 }).cubeThreshold, .6);
-  const restored = importTheme(exportTheme({ cubeSource: 'system', cubeThreshold: .6, showCubeLocator: false }));
-  assert.ok(!('cubeSource' in restored)); assert.ok(!('cubeThreshold' in restored)); assert.ok(!('showCubeLocator' in restored));
+  const restored = importTheme(exportTheme({ cubeSource: 'system', cubeThreshold: .6, showCubeLocator: false, cubeAutoListen: false }));
+  assert.ok(!('cubeSource' in restored)); assert.ok(!('cubeThreshold' in restored)); assert.ok(!('showCubeLocator' in restored)); assert.ok(!('cubeAutoListen' in restored));
 });
 
 test('ordered snapshots reject a stale poll after a newer live frame, including a stopped session', () => {
@@ -80,6 +82,18 @@ test('transport errors clear match cues and browser samples are explicitly disti
   assert.equal(cubePresentation(match({ source: 'system' }), { now, locale: 'en' }).sourceLabel, 'SYSTEM OUTPUT');
 });
 
+test('the contextual compass appears only for a current match and never changes the DPS view', () => {
+  const view = cubePresentation(match(), { now });
+  assert.equal(cubeDockVisible(view), true);
+  for (const cubeView of ['dps', 'navigator', 'invalid']) assert.equal(cubeDockVisible(view, { cubeView, showCubeLocator: true }), true);
+  assert.equal(cubeDockVisible(view, { showCubeLocator: false }), false);
+  for (const input of [null, {}, { matched: false }, { matched: 'true' }, { matched: 1 }]) assert.equal(cubeDockVisible(input), false);
+  for (const input of [match({ last_detection_ms: now - CUBE_MATCH_LIFETIME_MS - 1 }), match({ status: 'listening' }), match({ status: 'off', enabled: false }), match({ status: 'waiting_game' }), match({ status: 'error' })]) {
+    assert.equal(cubeDockVisible(cubePresentation(input, { now })), false);
+  }
+  assert.equal(cubeDockVisible(cubePresentation(match(), { now, readError: 'offline' })), false);
+});
+
 test('malformed native data is bounded, sanitized and never converted into a location', () => {
   const state = normalizeCubeState(match({ score: Infinity, direction_confidence: 400, strength_db: NaN, reference: { name: 'a\u0000b', seconds: 999 }, message: 'x\n'.repeat(500), audio_channels: -2, sample_rate: -1, distance: 4 }));
   assert.equal(state.score, 0); assert.equal(state.direction_confidence, 1); assert.equal(state.strength_db, null);
@@ -122,10 +136,10 @@ test('invalid steering and relative signal values remain unknown instead of beco
   }
 });
 
-test('navigator preferences restore a chosen layout without starting an audio session', () => {
+test('legacy Cube view preferences migrate into one DPS view while preserving the dock size', () => {
   assert.equal(normalizePreferences().cubeView, 'dps'); assert.equal(normalizePreferences().cubeNavigatorSize, 'compact');
   const restored = normalizePreferences({ cubeView: 'navigator', cubeNavigatorSize: 'full', cubeEnabled: true });
-  assert.equal(restored.cubeView, 'navigator'); assert.equal(restored.cubeNavigatorSize, 'full'); assert.ok(!('cubeEnabled' in restored));
+  assert.equal(restored.cubeView, 'dps'); assert.equal(restored.cubeNavigatorSize, 'full'); assert.ok(!('cubeEnabled' in restored));
   assert.equal(normalizePreferences({ cubeView: 'navigator', showCubeLocator: false }).cubeView, 'dps');
   const invalid = normalizePreferences({ cubeView: 'radar', cubeNavigatorSize: 'huge' });
   assert.equal(invalid.cubeView, 'dps'); assert.equal(invalid.cubeNavigatorSize, 'compact');

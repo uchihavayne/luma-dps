@@ -5,6 +5,15 @@ export function createPreferenceCommitter(initial, { write, onConfirmed, onRejec
   return {
     confirm(preferences) { lastConfirmed = structuredClone(preferences); },
     invalidate() { epoch += 1; },
+    run(operation) {
+      // Side effects such as stopping capture must follow every older write.
+      // Later edits may not merge into a batch ahead of this operation.
+      queued = null;
+      epoch += 1;
+      const pending = tail.then(operation);
+      tail = pending.catch(() => {});
+      return pending;
+    },
     load(read) {
       queued = null; // A read is a barrier; later edits must stay after it.
       const revision = epoch;

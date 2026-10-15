@@ -278,17 +278,16 @@ impl Service {
                     if selected == "game" {
                         match audio_capture::find_game_process() {
                             Ok(None) => {
-                                service.update(generation, |state| {
-                                    state.status = "waiting_game".into();
-                                    state.message.clear();
-                                    state.clear_signal();
-                                });
+                                service.capture_waiting(generation, "waiting_game", "");
                                 wait_cancelled(&worker_stop, 1000);
                                 continue;
                             }
                             Err(error) => {
-                                service.worker_error(generation, error);
-                                return;
+                                // A temporarily inaccessible or ambiguous game
+                                // process does not cancel automatic listening.
+                                service.capture_waiting(generation, "error", &error);
+                                wait_cancelled(&worker_stop, 3000);
+                                continue;
                             }
                             Ok(Some(_)) => {}
                         }
@@ -382,21 +381,12 @@ impl Service {
                     }
                     detector.reset();
                     match result {
-                        Err(error) => service.update(generation, |state| {
-                            state.status = "error".into();
-                            state.message = error.chars().take(400).collect();
-                            state.clear_signal();
-                            state.input_level_db = None;
-                            state.audio_present = false;
-                        }),
-                        Ok(()) => service.update(generation, |state| {
-                            state.status = "error".into();
-                            state.message =
-                                "Audio capture ended; retrying the selected source".into();
-                            state.clear_signal();
-                            state.input_level_db = None;
-                            state.audio_present = false;
-                        }),
+                        Err(error) => service.capture_waiting(generation, "error", &error),
+                        Ok(()) => service.capture_waiting(
+                            generation,
+                            "error",
+                            "Audio capture ended; retrying the selected source",
+                        ),
                     }
                     // Re-open after output-device changes; never change the selected source.
                     wait_cancelled(&worker_stop, 3000);
@@ -417,6 +407,20 @@ impl Service {
             threshold,
         });
         self.snapshot()
+    }
+
+    fn capture_waiting(&self, generation: u64, status: &str, message: &str) {
+        self.update(generation, |state| {
+            state.status = status.into();
+            state.message = message.chars().take(400).collect();
+            state.clear_signal();
+            state.input_level_db = None;
+            state.audio_present = false;
+            state.last_audio_at = None;
+            state.last_detection_ms = None;
+            state.audio_channels = 0;
+            state.sample_rate = 0;
+        });
     }
 
     fn worker_error(&self, generation: u64, error: String) {
@@ -652,6 +656,42 @@ mod tests {
         assert!(state.input_level_db.is_none());
         assert!(!state.audio_present);
         assert_eq!(service.snapshot().unwrap().revision, state.revision);
+    }
+
+    #[test]
+    fn retrying_capture_keeps_listening_requested_without_a_stale_match() {
+        let service = Service::new(std::env::temp_dir().join("luma-cube-validation-only")).unwrap();
+        service.update(0, |state| {
+            state.enabled = true;
+            state.status = "detected".into();
+            state.last_detection_ms = Some(1234);
+            state.last_audio_at = Some(Instant::now());
+            state.pan = Some(0.8);
+            state.steer_degrees = Some(45.0);
+            state.audio_present = true;
+            state.input_level_db = Some(-12.0);
+            state.audio_channels = 2;
+            state.sample_rate = 44_100;
+        });
+        for (status, message) in [("error", "Game process unavailable"), ("waiting_game", "")] {
+            service.capture_waiting(0, status, message);
+            let state = service.snapshot().unwrap();
+            assert!(state.enabled);
+            assert_eq!(state.status, status);
+            assert_eq!(state.message, message);
+            assert!(state.last_detection_ms.is_none());
+            assert!(state.last_audio_at.is_none());
+            assert!(state.pan.is_none());
+            assert!(state.steer_degrees.is_none());
+            assert!(state.input_level_db.is_none());
+            assert!(!state.audio_present);
+            assert_eq!(state.audio_channels, 0);
+            assert_eq!(state.sample_rate, 0);
+        }
+        service.stop().unwrap();
+        service.capture_waiting(0, "error", "A late capture failure");
+        assert!(!service.snapshot().unwrap().enabled);
+        assert_eq!(service.snapshot().unwrap().status, "off");
     }
 
     #[test]

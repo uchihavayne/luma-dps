@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeState, normalizePreferences, normalizeEncounter, importTheme, exportTheme, compactNumber, formatRate, playerMetricLabel } from '../model.mjs';
-import { scopedEncounter, ownPlayer, skillSummary, sortedSkills } from '../scope.mjs';
+import { normalizeState, normalizePreferences, normalizeEncounter, importTheme, exportTheme, compactNumber, formatRate, playerMetricLabel, playerBarColor, classColor } from '../model.mjs';
+import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from '../scope.mjs';
 
 const nearby = () => normalizeState({
   total_damage: 9000, dps: 900, elapsed_ms: 10000,
@@ -16,6 +16,41 @@ test('personal is the default and never silently totals nearby damage before ide
   assert.equal(scoped.known, false); assert.equal(scoped.damage, null); assert.equal(scoped.dps, null);
   assert.deepEqual(scoped.players, []); assert.deepEqual(scoped.targets, []);
   assert.equal(ownPlayer(state), null);
+});
+
+test('the default roster shows nearby names and DPS independently of an unidentified personal summary', () => {
+  const prefs = normalizePreferences({ damageScope: 'personal' });
+  const view = meterScopes(nearby(), prefs);
+  assert.equal(prefs.rosterScope, 'observed');
+  assert.deepEqual(view.roster.players.map(player => player.name), ['Stranger', 'Me']);
+  assert.deepEqual(view.roster.players.map(player => player.dps), [700, 200]);
+  assert.equal(view.summary.known, false); assert.equal(view.summary.damage, null);
+  assert.equal(view.summaries.observed.damage, 9000);
+  assert.equal(view.summaries.party.known, false);
+});
+
+test('own, party and nearby totals remain distinct while roster filtering changes', () => {
+  const state = normalizeState({ ...nearby(), local_player_id: 2, local_identity_source: 'server', personal_total_damage: 2000, personal_dps: 200, party_member_ids: [2], party_membership_source: 'server', party_total_damage: 2000, party_dps: 200 });
+  const defaults = normalizePreferences();
+  const all = meterScopes(state, defaults);
+  assert.equal(all.roster.players.length, 2); assert.equal(all.summary.damage, 2000);
+  const party = meterScopes(state, { ...defaults, rosterScope: 'party' });
+  assert.deepEqual(party.roster.players.map(player => player.name), ['Me']);
+  assert.equal(party.summary.damage, 2000); assert.equal(party.summaries.observed.damage, 9000);
+  assert.equal(party.fallback, false);
+  const waiting = meterScopes(nearby(), { rosterScope: 'party' });
+  assert.equal(waiting.fallback, true); assert.equal(waiting.roster.scope, 'observed');
+  assert.equal(waiting.summaries.party.damage, null); assert.equal(waiting.roster.players.length, 2);
+});
+
+test('performance color follows relative DPS and class or theme choices remain independent', () => {
+  const player = { dps: 800, class_name: 'Ranger' };
+  assert.match(playerBarColor(player, 1000), /^#[0-9a-f]{6}$/);
+  assert.notEqual(playerBarColor(player, 1000), playerBarColor({ ...player, dps: 200 }, 1000));
+  assert.equal(playerBarColor(player, 1000), playerBarColor({ ...player, dps: 1600 }, 2000));
+  assert.equal(playerBarColor(player, 1000, 'class'), classColor('Ranger'));
+  assert.equal(playerBarColor(player, 1000, 'accent', '#123456'), '#123456');
+  for (const dps of [null, NaN, Infinity, -1, 0]) assert.match(playerBarColor({ dps }, 0), /^#[0-9a-f]{6}$/);
 });
 
 test('an explicit local actor shows only personal damage even when a stranger has the highest damage', () => {

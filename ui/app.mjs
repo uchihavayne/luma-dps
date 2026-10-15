@@ -1,17 +1,18 @@
 import { THEMES, FONTS, LAYOUTS, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
-import { scopedEncounter, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
+import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
+import { playerBarColor } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
 import { characterSnapshot, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from './character.mjs';
 import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from './game-reports.mjs';
 import * as scheduling from './events.mjs';
-import { DEMO_STATE } from './demo.mjs';
+import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
 import { createPreferenceCommitter } from './persistence.mjs';
 import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl } from './dom.mjs';
 import { createHistoryCache } from './history.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
-import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
+import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -22,7 +23,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&'
 const uid = () => globalThis.crypto?.randomUUID?.() || `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 let prefs = normalizePreferences();
 try { prefs = normalizePreferences(JSON.parse(localStorage.getItem('luma-independent-preferences') || '{}')); } catch {}
-let state = normalizeState(demo ? DEMO_STATE : {});
+let state = normalizeState(demo ? new URLSearchParams(location.search).get('partyDemo') === '1' ? DEMO_PARTY_STATE : DEMO_STATE : {});
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
@@ -42,7 +43,7 @@ let calendarHorizonDays = 7;
 let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true;
 let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, scheduledCacheKey = '', scheduledCache = [], scheduleTimingSecond = -1;
 const scheduleTimings = new Map();
-let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0;
+let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0, cubeAutoListenIntent = null;
 const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') === '1';
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
@@ -55,8 +56,8 @@ const words = {
   },
 };
 const t = key => words[prefs.locale][key] || key;
-Object.assign(words.tr, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube ses bulucu', cubeIntro: 'Oyunun çıkış sesindeki Küp örneğini yerel olarak eşleştirir. Dinleme her açılışta kapalıdır; mikrofon kullanılmaz ve canlı ses kaydedilmez.', cubeStart: 'Dinlemeyi başlat', cubeStop: 'Dinlemeyi durdur', cubeBusy: 'Hazırlanıyor…', cubeSource: 'Dinlenecek ses', cubeGame: 'Yalnızca AION2', cubeSystem: 'Bu cihazın ses çıkışı', cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Oyun açıldığında dinleme başlar. Kulaklık veya stereo çıkış ile sol/sağ gösterilebilir.', cubeSystemHelp: 'Sistem çıkışı seçildi: diğer uygulamalar ve Luma uyarıları da duyulur. Desteklenmeyen oyun ses yakalamasında bu seçeneği kendin kullanabilirsin.', cubeThreshold: 'Eşleşme eşiği', cubeThresholdHelp: 'Düşük eşik sessiz örnekleri daha kolay kabul eder, yanlış eşleşmeleri de artırabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.', cubeIndicator: 'Küçük barda Küp göstergesini göster', cubeSimilarity: 'Ses benzerliği', cubeSimilarityHelp: 'Yüzde, örnekle benzerlik puanıdır; kesinlik veya olasılık değildir.', cubeDirection: 'Stereo yön', cubeStrength: 'Eşleşen sinyal', cubeTrend: 'Sinyal değişimi', cubeLimit: 'Ses üzerinden kesin metre, harita konumu ve ön/arka hesaplanamaz. Stereo sol/sağ ve sinyal değişimi gösterilir; kamerayı döndürerek yönü karşılaştır.', cubeRelative: 'Sinyal güçlenmesi yalnızca göreli bir ipucudur. Oyun ses seviyesi, çevre sesleri ve kameranın yönü de değeri değiştirir.', cubeReference: 'Ses örneği', cubeBuiltin: 'Yerleşik Hidden Cube örneği', cubeImport: 'Kendi ses örneğini seç', cubeImportHelp: 'M4A veya WAV · en çok 8 MB ve 30 saniye. Örnek bu cihazda saklanır; internete gönderilmez. İçeriği yalnızca Küp sesi olan temiz bir kayıt kullan.', cubeReset: 'Yerleşik örneğe dön', cubeImported: 'Küp ses örneği kaydedildi', cubeImportInvalid: 'Ses örneği okunamadı. Desteklenen, en çok 8 MB bir ses dosyası seç.', cubePreview: 'Tarayıcı örneği · Canlı ses dinlenmiyor.', cubeAudioFormat: 'Ses biçimi', cubeUnknownFormat: 'Ses çıkışı bekleniyor', cubeNoDirection: 'Sol/sağ için stereo ses gerekir.', cubeReadFailed: 'Ses bulucunun durumu okunamadı', cubeActiveControls: 'Ses kaynağını veya örneği değiştirmek için önce dinlemeyi durdur.' });
-Object.assign(words.en, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube sound locator', cubeIntro: 'Locally matches the Cube reference against game output. Listening starts off each launch; no microphone is used and live audio is not saved.', cubeStart: 'Start listening', cubeStop: 'Stop listening', cubeBusy: 'Preparing…', cubeSource: 'Audio source', cubeGame: 'AION2 only', cubeSystem: 'This device’s audio output', cubeGameHelp: 'Separates AION2 audio from other apps. Listening begins when the game opens. Headphones or stereo output can provide left/right cues.', cubeSystemHelp: 'System output is selected: other apps and Luma alerts are included. Choose this explicitly if game-only audio capture is unavailable.', cubeThreshold: 'Match threshold', cubeThresholdHelp: 'A lower threshold can accept quieter samples and more false matches. A higher threshold is more selective. Stop listening before changing it.', cubeIndicator: 'Show Cube indicator in the compact bar', cubeSimilarity: 'Sound similarity', cubeSimilarityHelp: 'The percentage is a reference similarity score, not certainty or probability.', cubeDirection: 'Stereo direction', cubeStrength: 'Matched signal', cubeTrend: 'Signal change', cubeLimit: 'Audio cannot provide exact metres, map position or front/back. Stereo left/right and signal changes are shown; turn the camera to compare directions.', cubeRelative: 'A stronger signal is only a relative cue. Game volume, other sounds and camera direction also affect it.', cubeReference: 'Sound reference', cubeBuiltin: 'Built-in Hidden Cube reference', cubeImport: 'Choose your sound reference', cubeImportHelp: 'M4A or WAV · up to 8 MB and 30 seconds. The reference stays on this device and is never uploaded. Use a clean recording containing only the Cube sound.', cubeReset: 'Restore built-in reference', cubeImported: 'Cube reference saved', cubeImportInvalid: 'The audio reference could not be read. Choose a supported audio file up to 8 MB.', cubePreview: 'Browser sample · No live audio is being captured.', cubeAudioFormat: 'Audio format', cubeUnknownFormat: 'Waiting for audio output', cubeNoDirection: 'Left/right requires stereo audio.', cubeReadFailed: 'The sound locator state could not be read', cubeActiveControls: 'Stop listening before changing the source or reference.' });
+Object.assign(words.tr, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube ses bulucu', cubeIntro: 'Oyunun çıkış sesindeki Küp örneğini yerel olarak eşleştirir. AION2 sesi arka planda otomatik dinlenir. Eşleşince pusula DPS listesinin yanında belirir; mikrofon kullanılmaz ve canlı ses kaydedilmez.', cubeStart: 'Dinlemeyi başlat', cubeStop: 'Dinlemeyi durdur', cubeBusy: 'Hazırlanıyor…', cubeSource: 'Dinlenecek ses', cubeGame: 'Yalnızca AION2', cubeSystem: 'Bu cihazın ses çıkışı', cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Oyun açıldığında dinleme başlar. Kulaklık veya stereo çıkış ile sol/sağ gösterilebilir.', cubeSystemHelp: 'Sistem çıkışı seçildi: diğer uygulamalar ve Luma uyarıları da duyulur. Desteklenmeyen oyun ses yakalamasında bu seçeneği kendin kullanabilirsin.', cubeThreshold: 'Eşleşme eşiği', cubeThresholdHelp: 'Düşük eşik sessiz örnekleri daha kolay kabul eder, yanlış eşleşmeleri de artırabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.', cubeIndicator: 'Küçük barda Küp göstergesini göster', cubeSimilarity: 'Ses benzerliği', cubeSimilarityHelp: 'Yüzde, örnekle benzerlik puanıdır; kesinlik veya olasılık değildir.', cubeDirection: 'Stereo yön', cubeStrength: 'Eşleşen sinyal', cubeTrend: 'Sinyal değişimi', cubeLimit: 'Ses üzerinden kesin metre, harita konumu ve ön/arka hesaplanamaz. Stereo sol/sağ ve sinyal değişimi gösterilir; kamerayı döndürerek yönü karşılaştır.', cubeRelative: 'Sinyal güçlenmesi yalnızca göreli bir ipucudur. Oyun ses seviyesi, çevre sesleri ve kameranın yönü de değeri değiştirir.', cubeReference: 'Ses örneği', cubeBuiltin: 'Yerleşik Hidden Cube örneği', cubeImport: 'Kendi ses örneğini seç', cubeImportHelp: 'M4A veya WAV · en çok 8 MB ve 30 saniye. Örnek bu cihazda saklanır; internete gönderilmez. İçeriği yalnızca Küp sesi olan temiz bir kayıt kullan.', cubeReset: 'Yerleşik örneğe dön', cubeImported: 'Küp ses örneği kaydedildi', cubeImportInvalid: 'Ses örneği okunamadı. Desteklenen, en çok 8 MB bir ses dosyası seç.', cubePreview: 'Tarayıcı örneği · Canlı ses dinlenmiyor.', cubeAudioFormat: 'Ses biçimi', cubeUnknownFormat: 'Ses çıkışı bekleniyor', cubeNoDirection: 'Sol/sağ için stereo ses gerekir.', cubeReadFailed: 'Ses bulucunun durumu okunamadı', cubeActiveControls: 'Ses kaynağını veya örneği değiştirmek için önce dinlemeyi durdur.' });
+Object.assign(words.en, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube sound locator', cubeIntro: 'Locally matches the Cube reference against game output. AION2 audio is monitored automatically in the background. A matching sound opens the compass beside the DPS list; no microphone is used and live audio is not saved.', cubeStart: 'Start listening', cubeStop: 'Stop listening', cubeBusy: 'Preparing…', cubeSource: 'Audio source', cubeGame: 'AION2 only', cubeSystem: 'This device’s audio output', cubeGameHelp: 'Separates AION2 audio from other apps. Listening begins when the game opens. Headphones or stereo output can provide left/right cues.', cubeSystemHelp: 'System output is selected: other apps and Luma alerts are included. Choose this explicitly if game-only audio capture is unavailable.', cubeThreshold: 'Match threshold', cubeThresholdHelp: 'A lower threshold can accept quieter samples and more false matches. A higher threshold is more selective. Stop listening before changing it.', cubeIndicator: 'Show Cube indicator in the compact bar', cubeSimilarity: 'Sound similarity', cubeSimilarityHelp: 'The percentage is a reference similarity score, not certainty or probability.', cubeDirection: 'Stereo direction', cubeStrength: 'Matched signal', cubeTrend: 'Signal change', cubeLimit: 'Audio cannot provide exact metres, map position or front/back. Stereo left/right and signal changes are shown; turn the camera to compare directions.', cubeRelative: 'A stronger signal is only a relative cue. Game volume, other sounds and camera direction also affect it.', cubeReference: 'Sound reference', cubeBuiltin: 'Built-in Hidden Cube reference', cubeImport: 'Choose your sound reference', cubeImportHelp: 'M4A or WAV · up to 8 MB and 30 seconds. The reference stays on this device and is never uploaded. Use a clean recording containing only the Cube sound.', cubeReset: 'Restore built-in reference', cubeImported: 'Cube reference saved', cubeImportInvalid: 'The audio reference could not be read. Choose a supported audio file up to 8 MB.', cubePreview: 'Browser sample · No live audio is being captured.', cubeAudioFormat: 'Audio format', cubeUnknownFormat: 'Waiting for audio output', cubeNoDirection: 'Left/right requires stereo audio.', cubeReadFailed: 'The sound locator state could not be read', cubeActiveControls: 'Stop listening before changing the source or reference.' });
 Object.assign(words.tr, { settingsSections: 'Ayar bölümleri', analysisSections: 'Analiz bölümleri', combatSettings: 'Savaş', about: 'Hakkında', autoSaveHelp: 'Görünüm değişiklikleri otomatik kaydedilir.', keyboardHelp: 'Bölümler arasında ← → ile geç. Esc ile kapat.', panelResizeFailed: 'Pencere boyutu değiştirilemedi. Ayarlarını kullanmaya devam edebilirsin.', bossAdvanced: 'Hedef kimlikleri', bossSettingsHelp: 'Boss olarak işaretlediğin hedefler Boss filtresinde görünür. Liste, bu oturumda görülen hedefleri içerir.' });
 Object.assign(words.en, { settingsSections: 'Settings sections', analysisSections: 'Analysis sections', combatSettings: 'Combat', about: 'About', autoSaveHelp: 'Appearance changes are saved automatically.', keyboardHelp: 'Use ← → between sections. Esc closes the panel.', panelResizeFailed: 'The window could not resize. You can continue using your settings.', bossAdvanced: 'Target IDs', bossSettingsHelp: 'Targets you mark as bosses appear in the Boss filter. This list contains targets observed in this session.' });
 Object.assign(words.tr, { historyReadFailed: 'Geçmiş okunamadı. Daha önce yüklenen kayıtlar korunuyor.', historyRetry: 'Yeniden dene', timingUnavailable: 'Süre kaydı yok; DPS hesaplanamaz.' });
@@ -115,12 +116,16 @@ Object.assign(words.tr, { summaryMetric: 'Üst özet göstergesi', summaryDps: '
 Object.assign(words.en, { summaryMetric: 'Header summary metric', summaryDps: 'Damage per second (DPS)', summaryDamage: 'Total damage', summaryBoth: 'Show both', rowMetric: 'Player row metric', rowDps: 'Damage per second (DPS)', rowDamage: 'Total damage', rowBoth: 'DPS and total damage' });
 Object.assign(words.tr, { rateCaption: 'SANİYELİK DPS', totalCaption: 'TOPLAM HASAR', rowBoth: 'Toplam hasar ve DPS (K/sn)' });
 Object.assign(words.en, { rateCaption: 'DAMAGE / SECOND', totalCaption: 'TOTAL DAMAGE', rowBoth: 'Total damage and DPS (K/s)' });
-Object.assign(words.tr, { cubeCompass: 'Ses pusulası', cubeOpen: 'Hidden Cube ses pusulasını aç', cubeDps: 'DPS görünümüne dön', cubeExpand: 'Ayrıntılı pusula', cubeCompact: 'Küçük pusula', cubeAudioSettings: 'Küp ses ayarları', cubeHide: 'Pusula göstergesini gizle', cubeHideListening: 'Pusula göstergesini gizle · dinleme sürer', cubeStereoAmbiguity: 'Ses pusulası · ön/arka belirsiz', cubeTurn: 'Kamerayı döndürerek karşılaştır', cubeRelativeStrength: 'Göreli sinyal', cubeSnr: 'Sinyal / gürültü', cubeLeft: 'SOL', cubeRight: 'SAĞ', cubeIndicator: 'DPS görünümünde Küp durumunu göster', cubeShow: 'Pusulayı göster', cubeSize: 'Pusula düzeni', cubeCompactLabel: 'Küçük', cubeFullLabel: 'Ayrıntılı' });
-Object.assign(words.en, { cubeCompass: 'Audio compass', cubeOpen: 'Open Hidden Cube audio compass', cubeDps: 'Return to DPS view', cubeExpand: 'Detailed compass', cubeCompact: 'Compact compass', cubeAudioSettings: 'Cube audio settings', cubeHide: 'Hide compass indicator', cubeHideListening: 'Hide compass indicator · listening continues', cubeStereoAmbiguity: 'Audio compass · front/back ambiguous', cubeTurn: 'Turn the camera to compare', cubeRelativeStrength: 'Relative signal', cubeSnr: 'Signal / noise', cubeLeft: 'LEFT', cubeRight: 'RIGHT', cubeIndicator: 'Show Cube status in DPS view', cubeShow: 'Show compass', cubeSize: 'Compass layout', cubeCompactLabel: 'Compact', cubeFullLabel: 'Detailed' });
+Object.assign(words.tr, { cubeCompass: 'Ses pusulası', cubeOpen: 'Hidden Cube ses pusulasını aç', cubeDps: 'DPS görünümüne dön', cubeExpand: 'Ayrıntılı pusula', cubeCompact: 'Küçük pusula', cubeAudioSettings: 'Küp ses ayarları', cubeHide: 'Pusula göstergesini gizle', cubeHideListening: 'Pusula göstergesini gizle · dinleme sürer', cubeStereoAmbiguity: 'Ses pusulası · ön/arka belirsiz', cubeTurn: 'Kamerayı döndürerek karşılaştır', cubeRelativeStrength: 'Göreli sinyal', cubeSnr: 'Sinyal / gürültü', cubeLeft: 'SOL', cubeRight: 'SAĞ', cubeIndicator: 'Küp algılanınca DPS yanında pusulayı göster', cubeShow: 'Pusulayı göster', cubeSize: 'Pusula düzeni', cubeCompactLabel: 'Küçük', cubeFullLabel: 'Ayrıntılı' });
+Object.assign(words.en, { cubeCompass: 'Audio compass', cubeOpen: 'Open Hidden Cube audio compass', cubeDps: 'Return to DPS view', cubeExpand: 'Detailed compass', cubeCompact: 'Compact compass', cubeAudioSettings: 'Cube audio settings', cubeHide: 'Hide compass indicator', cubeHideListening: 'Hide compass indicator · listening continues', cubeStereoAmbiguity: 'Audio compass · front/back ambiguous', cubeTurn: 'Turn the camera to compare', cubeRelativeStrength: 'Relative signal', cubeSnr: 'Signal / noise', cubeLeft: 'LEFT', cubeRight: 'RIGHT', cubeIndicator: 'Show a compass beside DPS when a Cube is detected', cubeShow: 'Show compass', cubeSize: 'Compass layout', cubeCompactLabel: 'Compact', cubeFullLabel: 'Detailed' });
+Object.assign(words.tr, { cubeAutoListen: 'Küp sesini arka planda otomatik dinle', cubeAutoHelp: 'Luma açıkken yalnızca AION2 sesi dinlenir. Küp sesi eşleştiğinde pusula DPS listesinin yanında açılır. İstersen dinlemeyi kapatabilirsin.', cubeCueLeft: 'Sola dön', cubeCueRight: 'Sağa dön', cubeCueBalanced: 'Stereo dengeli', cubeCueUnknown: 'Dönerek ara' });
+Object.assign(words.en, { cubeAutoListen: 'Automatically listen for Cube audio in the background', cubeAutoHelp: 'Only AION2 audio is monitored while Luma is open. A matching Cube sound opens the compass beside the DPS list. You can turn listening off.', cubeCueLeft: 'Turn left', cubeCueRight: 'Turn right', cubeCueBalanced: 'Stereo balanced', cubeCueUnknown: 'Turn to locate' });
 Object.assign(words.tr, { cubeQuiet: 'Oyun sesi çok düşük; oyunu öne getir ve ses çıkışını kontrol et.', cubeQuietSystem: 'Ses çıkışı çok düşük; çalan sesi ve çıkış cihazını kontrol et.', cubeInput: 'Seçilen ses kaynağının düzeyi', cubeDiagnostics: 'Ses tanılama', cubeFrames: 'Alınan ses kareleri', cubeUncertain: 'Zaman damgası belirsiz paketler', cubeGaps: 'Akış kesintileri' });
 Object.assign(words.en, { cubeQuiet: 'Game audio is very quiet; bring the game forward and check its audio output.', cubeQuietSystem: 'Output audio is very quiet; check the playing audio and output device.', cubeInput: 'Selected audio source level', cubeDiagnostics: 'Audio diagnostics', cubeFrames: 'Received audio frames', cubeUncertain: 'Packets with uncertain timestamps', cubeGaps: 'Stream discontinuities' });
 Object.assign(words.tr, { cubeThresholdHelp: 'Düşük eşik daha fazla adayı kabul eder; yanlış eşleşmeler artabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.' });
 Object.assign(words.en, { cubeThresholdHelp: 'A lower threshold accepts more candidates and can increase false matches. A higher threshold is more selective. Stop listening before changing it.' });
+Object.assign(words.tr, { rosterScope: 'Oyuncu listesi', rosterPersonal: 'Yalnız ben', rosterParty: 'Takım', rosterObserved: 'Yakındakiler', summaryScope: 'Üst özet ve rapor kapsamı', rowColorMode: 'DPS çubuğu renkleri', colorPerformance: 'DPS oranına göre', colorClass: 'Sınıfa göre', colorAccent: 'Tema rengi', shortPersonal: 'BEN', shortParty: 'TAKIM', shortObserved: 'YAKIN', partyFallback: 'Takım kadrosu henüz alınmadı · yakındaki oyuncular gösteriliyor.' });
+Object.assign(words.en, { rosterScope: 'Player list', rosterPersonal: 'Only me', rosterParty: 'Party', rosterObserved: 'Nearby', summaryScope: 'Header summary and report scope', rowColorMode: 'DPS bar colors', colorPerformance: 'By relative DPS', colorClass: 'By class', colorAccent: 'Theme accent', shortPersonal: 'ME', shortParty: 'PARTY', shortObserved: 'NEARBY', partyFallback: 'Party roster has not arrived yet · showing nearby players.' });
 const num = n => compactNumber(n, prefs.locale, prefs.numberPrecision);
 const rate = n => formatRate(n, prefs.locale, prefs.numberPrecision);
 const fullNumber = n => new Intl.NumberFormat(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { maximumFractionDigits: 1 }).format(n);
@@ -189,13 +194,14 @@ function storeLocalPreferences(value) {
   catch { toast(t('failed'), true); }
 }
 
+const protectCubeIntent = value => cubeAutoListenIntent === null ? value : { ...value, cubeAutoListen: cubeAutoListenIntent };
 const preferenceCommitter = native ? createPreferenceCommitter(prefs, {
-  write: value => invoke('set_preferences', { preferences: value }),
-  onConfirmed: storeLocalPreferences,
+  write: value => invoke('set_preferences', { preferences: protectCubeIntent(value) }),
+  onConfirmed: value => storeLocalPreferences(protectCubeIntent(value)),
   onRejected: (error, rollback) => {
     if (rollback) {
       const focusName = document.activeElement?.name;
-      prefs = normalizePreferences(rollback); applyAppearance(); renderMeter();
+      prefs = normalizePreferences(protectCubeIntent(rollback)); applyAppearance(); renderMeter();
       if (drawer) refreshDrawer(focusName);
     }
     toast(`${t('failed')}: ${String(error).slice(0, 100)}`, true);
@@ -212,9 +218,9 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
-  $('#target-label').textContent = t('target'); $('#dps-label').textContent = t('rateCaption'); $('#damage-label').textContent = t('totalCaption'); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
-  $('#scope-label').textContent = t('scope'); $('#damage-scope').value = prefs.damageScope;
-  for (const option of $('#damage-scope').options) option.textContent = t(option.value);
+  $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
+  $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
+  for (const option of $('#damage-scope').options) option.textContent = t({personal:'rosterPersonal', party:'rosterParty', observed:'rosterObserved'}[option.value]);
   const own = ownPlayer(state);
   $('#identity-name').textContent = state.local_player_name || own?.name || prefs.characterName || t('character');
   $('#identity-button').classList.toggle('identified', ['server', 'manual', 'name-match'].includes(state.local_identity_source));
@@ -246,7 +252,14 @@ function renderMeter() {
   connection.dataset.status = status.kind;
   setText(connection.querySelector('span'), status.label);
   connection.title = `${status.message}\n${status.detail}`;
-  const scoped = scopedEncounter(state, prefs.damageScope);
+  const scopes = meterScopes(state, prefs), scoped = scopes.summary, roster = scopes.roster;
+  for (const [scope, summary] of Object.entries(scopes.summaries)) {
+    const node = $(`[data-summary-scope="${scope}"]`);
+    if (!node) continue;
+    setText(node.querySelector('small'), t({personal:'shortPersonal', party:'shortParty', observed:'shortObserved'}[scope]));
+    setText(node.querySelector('strong'), summary.known ? rate(summary.dps) : '—');
+    node.title = `${t(`${scope}Dps`)}: ${summary.known ? rate(summary.dps) : t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summary.known ? num(summary.damage) : '—'}`;
+  }
   const targets = prefs.mode === 'boss' ? scoped.targets.filter(target => target.is_boss) : scoped.targets;
   const topTarget = [...targets].sort((a, b) => b.damage - a.damage)[0];
   $('#target-name').textContent = topTarget?.name || '—'; $('#target-name').title = topTarget?.name || '';
@@ -263,10 +276,13 @@ function renderMeter() {
   $('#boss-summary').hidden = prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
   const notice = $('#notice'); notice.hidden = false;
   for (const tone of ['demo', 'error', 'warning']) notice.classList.toggle(tone, status.tone === tone);
-  const scopeMessage = !scoped.known ? t(prefs.damageScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
-  setText(notice, scopeMessage && ['traffic', 'combat', 'combat_active', 'demo'].includes(status.kind) ? scopeMessage : status.message);
-  notice.title = `${status.message}\n${status.detail}`;
-  renderPlayers(status, scoped);
+  const scopeMessage = scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
+  setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo'].includes(status.kind) ? scopeMessage : status.message);
+  notice.title = `${scopeMessage ? `${scopeMessage}\n` : ''}${status.message}\n${status.detail}`;
+  $('#damage-scope').title = scopes.fallback ? t('partyFallback') : t('rosterScope');
+  $('#players').setAttribute('aria-label', t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
+  if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
+  renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
   cooldownFingerprint = nextCooldownFingerprint;
@@ -285,7 +301,7 @@ function renderPlayers(status, scoped) {
     reconcileKeyedRows(container, [status], {
       key: () => 'empty',
       create: () => { const row = document.createElement('div'); row.className = 'empty'; row.innerHTML = '<span class="empty-symbol" aria-hidden="true">◈</span><strong></strong><span class="empty-help"></span>'; return row; },
-      update: row => { setText(row.querySelector('strong'), t(!scoped.known ? 'chooseCharacter' : prefs.damageScope === 'personal' ? 'personalWaiting' : prefs.damageScope === 'party' ? 'partyWaiting' : 'emptyTitle')); setText(row.querySelector('.empty-help'), !scoped.known ? t(prefs.damageScope === 'party' ? 'partyUnknown' : 'characterUnknown') : status.message); },
+      update: row => { setText(row.querySelector('strong'), t(!scoped.known ? 'chooseCharacter' : prefs.rosterScope === 'personal' ? 'personalWaiting' : prefs.rosterScope === 'party' ? 'partyWaiting' : 'emptyTitle')); setText(row.querySelector('.empty-help'), !scoped.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : status.message); },
     });
     return;
   }
@@ -305,6 +321,8 @@ function renderPlayers(status, scoped) {
     },
     update: (row, { player }, index) => {
       const color = classColor(player.class_name), share = String(Math.min(1, player.dps / maxDps));
+      const barColor = playerBarColor(player, maxDps, prefs.rowColorMode, (prefs.theme === 'custom' ? prefs.customColors : THEMES[prefs.theme]).accent);
+      if (row.style.getPropertyValue('--bar-color') !== barColor) row.style.setProperty('--bar-color', barColor);
       if (row.style.getPropertyValue('--class-color') !== color) row.style.setProperty('--class-color', color);
       if (row.style.getPropertyValue('--share') !== share) row.style.setProperty('--share', share);
       setAttribute(row, 'data-player', player.id);
@@ -360,6 +378,7 @@ async function exportReport(records) {
 
 function appearanceSettingsContent() {
   return `<p class="settings-hint">${t('autoSaveHelp')}</p><label class="field"><span>${t('language')}</span><select name="locale"><option value="tr" ${prefs.locale === 'tr' ? 'selected' : ''}>Türkçe</option><option value="en" ${prefs.locale === 'en' ? 'selected' : ''}>English</option></select></label>
+    <div class="field-grid"><label class="field"><span>${t('summaryScope')}</span><select name="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}" ${prefs.damageScope === value ? 'selected' : ''}>${t(value)}</option>`).join('')}</select></label><label class="field"><span>${t('rowColorMode')}</span><select name="rowColorMode">${['performance', 'class', 'accent'].map(value => `<option value="${value}" ${prefs.rowColorMode === value ? 'selected' : ''}>${t({performance:'colorPerformance', class:'colorClass', accent:'colorAccent'}[value])}</option>`).join('')}</select></label></div>
     <h3 class="section-title">${t('layout')}</h3><div class="layout-grid">${Object.entries(LAYOUTS).map(([id, layout]) => `<button class="layout-card" data-layout="${id}" aria-pressed="${prefs.layout === id}"><span class="layout-preview preview-${id}" aria-hidden="true"><i></i><b></b><em></em><em></em><em></em></span><strong>${layout.name}</strong><span>${esc(layout.description[prefs.locale])}</span></button>`).join('')}</div><p class="help">${t('layoutHelp')}</p>
     <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label></div>
     <h3 class="section-title">${t('theme')}</h3><div class="theme-grid" role="group" aria-label="${t('theme')}">${Object.entries(THEMES).map(([id, theme]) => `<button class="theme-swatch" data-theme="${id}" style="--swatch-bg:${theme.bg};--swatch-text:${theme.text};--swatch-accent:${theme.accent}" aria-pressed="${prefs.theme === id}"><i aria-hidden="true"></i>${theme.name}</button>`).join('')}</div><h3 class="section-title">${t('typography')}</h3>
@@ -385,14 +404,16 @@ function cubeCompassMarkup() {
 
 function cubeContent() {
   const disabled = !native || cubePending || cubeState.enabled;
+  const source = cubeState.enabled ? cubeState.source : prefs.cubeSource;
   return `<h3 class="section-title">${t('cubeTitle')}</h3><p class="help">${t('cubeIntro')}</p>${!native ? `<p class="settings-hint">${t('cubePreview')}</p>` : ''}
     <div class="cube-locator" id="cube-locator"><div class="cube-status-line"><span id="cube-status-dot" class="cube-status-dot" aria-hidden="true"></span><strong id="cube-status-label"></strong><span id="cube-source-label" class="tag"></span></div>
     <div id="cube-direction-display" class="cube-direction-display" data-direction="unknown">${cubeCompassMarkup()}<div><strong id="cube-direction-label">—</strong><span>${t('cubeStereoAmbiguity')}</span><span id="cube-trend-label">—</span></div></div>
     <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeRelativeStrength')}</span><strong id="cube-relative-strength">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div><div><span>${t('cubeSnr')}</span><strong id="cube-snr">—</strong></div></div><p class="help cube-detail" id="cube-detail" hidden></p></div>
-    <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button>${button('show-cube-navigator', 'cubeShow', '', true)}</div>
+    <label class="check-field"><input name="cubeAutoListen" type="checkbox" ${prefs.cubeAutoListen ? 'checked' : ''} ${!native || cubePending ? 'disabled' : ''}>${t('cubeAutoListen')}</label><p class="help">${t('cubeAutoHelp')}</p>
+    <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button></div>
     <label class="field"><span>${t('cubeSize')}</span><select name="cubeNavigatorSize"><option value="compact" ${prefs.cubeNavigatorSize === 'compact' ? 'selected' : ''}>${t('cubeCompactLabel')}</option><option value="full" ${prefs.cubeNavigatorSize === 'full' ? 'selected' : ''}>${t('cubeFullLabel')}</option></select></label>
-    <div class="field-grid"><label class="field"><span>${t('cubeSource')}</span><select name="cubeSource" ${disabled ? 'disabled' : ''}><option value="game" ${prefs.cubeSource === 'game' ? 'selected' : ''}>${t('cubeGame')}</option><option value="system" ${prefs.cubeSource === 'system' ? 'selected' : ''}>${t('cubeSystem')}</option></select></label><label class="field cube-threshold"><span>${t('cubeThreshold')} <output id="cube-threshold-value">${Math.round(prefs.cubeThreshold * 100)}%</output></span><input name="cubeThreshold" type="range" min="0.6" max="0.97" step="0.01" value="${prefs.cubeThreshold}" ${disabled ? 'disabled' : ''} aria-describedby="cube-threshold-help"></label></div>
-    <p class="help" id="cube-source-help">${t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')}</p><p class="help" id="cube-threshold-help">${t('cubeThresholdHelp')} ${t('cubeSimilarityHelp')}</p><label class="check-field"><input name="showCubeLocator" type="checkbox" ${prefs.showCubeLocator ? 'checked' : ''}>${t('cubeIndicator')}</label>
+    <div class="field-grid"><label class="field"><span>${t('cubeSource')}</span><select name="cubeSource" ${disabled ? 'disabled' : ''}><option value="game" ${source === 'game' ? 'selected' : ''}>${t('cubeGame')}</option><option value="system" ${source === 'system' ? 'selected' : ''}>${t('cubeSystem')}</option></select></label><label class="field cube-threshold"><span>${t('cubeThreshold')} <output id="cube-threshold-value">${Math.round(prefs.cubeThreshold * 100)}%</output></span><input name="cubeThreshold" type="range" min="0.6" max="0.97" step="0.01" value="${prefs.cubeThreshold}" ${disabled ? 'disabled' : ''} aria-describedby="cube-threshold-help"></label></div>
+    <p class="help" id="cube-source-help">${t(source === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')}</p><p class="help" id="cube-threshold-help">${t('cubeThresholdHelp')} ${t('cubeSimilarityHelp')}</p><label class="check-field"><input name="showCubeLocator" type="checkbox" ${prefs.showCubeLocator ? 'checked' : ''}>${t('cubeIndicator')}</label>
     <div class="cube-limits"><p>${t('cubeLimit')}</p><p>${t('cubeRelative')}</p></div>
     <details class="cube-diagnostics"><summary>${t('cubeDiagnostics')}</summary><div><span>${t('cubeInput')}</span><strong id="cube-input-level">—</strong></div><div><span>${t('cubeFrames')}</span><strong id="cube-input-frames">0</strong></div><div><span>${t('cubeUncertain')}</span><strong id="cube-uncertain-packets">0</strong></div><div><span>${t('cubeGaps')}</span><strong id="cube-stream-gaps">0</strong></div></details>
     <h3 class="section-title">${t('cubeReference')}</h3><div class="cube-reference-line"><strong id="cube-reference-name">${esc(cubeState.reference.name || t('cubeBuiltin'))}</strong><span id="cube-reference-duration">${cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : ''}</span></div><label class="field"><span>${t('cubeImport')}</span><input name="cubeReferenceFile" type="file" accept=".m4a,.wav,audio/mp4,audio/wav,audio/x-wav" ${disabled ? 'disabled' : ''}></label><p class="help">${t('cubeImportHelp')}</p><div class="button-row">${button('reset-cube-reference', 'cubeReset', disabled ? 'disabled' : '', true)}</div><p class="help" id="cube-format-label">${t('cubeUnknownFormat')}</p>`;
@@ -400,38 +421,29 @@ function cubeContent() {
 
 function renderCubeLive() {
   const view = cubePresentation(cubeState, { now: cubeDemo ? cubeState.last_detection_ms : Date.now(), locale: prefs.locale, live: native, readError: cubeReadError });
-  const navigatorVisible = prefs.showCubeLocator && prefs.cubeView === 'navigator';
-  $('#meter').dataset.cubeView = navigatorVisible ? 'navigator' : 'dps';
+  const navigatorVisible = cubeDockVisible(view, prefs);
+  $('#meter').dataset.cubeDock = String(navigatorVisible);
   $('#meter').dataset.cubeSize = prefs.cubeNavigatorSize;
   $('#cube-navigator').hidden = !navigatorVisible;
   $('#cube-navigator').dataset.status = view.status;
-  $('#cube-back-dps').hidden = !navigatorVisible;
-  $('#cube-back-dps').title = t('cubeDps'); $('#cube-back-dps').setAttribute('aria-label', t('cubeDps'));
-  $('#cube-entry').setAttribute('aria-pressed', String(navigatorVisible));
-  $('#dps-entry').setAttribute('aria-pressed', String(!navigatorVisible));
   $('#cube-entry').dataset.listening = String(cubeState.enabled);
-  $('#cube-entry').title = `${t('cubeOpen')} · ${view.label}`; $('#cube-entry').setAttribute('aria-label', $('#cube-entry').title);
-  $('#dps-entry').title = t('cubeDps'); $('#dps-entry').setAttribute('aria-label', t('cubeDps'));
-  setText($('#cube-entry-label'), prefs.locale === 'tr' ? 'KÜP' : 'CUBE');
-  for (const [id, key] of [['cube-nav-size', prefs.cubeNavigatorSize === 'full' ? 'cubeCompact' : 'cubeExpand'], ['cube-nav-settings', 'cubeAudioSettings'], ['cube-nav-minimize', 'cubeDps'], ['cube-nav-dismiss', cubeState.enabled ? 'cubeHideListening' : 'cubeHide']]) {
-    $(`#${id}`).title = t(key); $(`#${id}`).setAttribute('aria-label', t(key));
-  }
+  $('#cube-entry').dataset.status = view.status;
+  $('#cube-entry').title = `${t('cubeAudioSettings')} · ${view.label}${view.quietInput ? ` · ${t(cubeState.source === 'system' ? 'cubeQuietSystem' : 'cubeQuiet')}` : ''}`; $('#cube-entry').setAttribute('aria-label', $('#cube-entry').title);
+  $('#cube-nav-size').title = t(prefs.cubeNavigatorSize === 'full' ? 'cubeCompact' : 'cubeExpand');
+  $('#cube-nav-size').setAttribute('aria-label', $('#cube-nav-size').title);
   $('#cube-nav-size').setAttribute('aria-pressed', String(prefs.cubeNavigatorSize === 'full'));
   $('#cube-navigator').setAttribute('aria-label', `Hidden Cube · ${t('cubeCompass')}`);
   setText($('#cube-nav-source'), view.sourceLabel);
-  setText($('#cube-nav-status'), view.matched ? view.label : t('cubeCompass'));
-  setText($('#cube-nav-direction'), view.matched ? view.directionLabel : view.label);
+  $('#cube-nav-source').hidden = native;
+  setText($('#cube-nav-direction'), view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : view.label);
   setText($('#cube-nav-guidance'), t('cubeStereoAmbiguity'));
   setText($('#cube-nav-trend'), view.matched ? view.trendLabel : t('cubeTurn'));
   setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
   setText($('#cube-nav-similarity-label'), t('cubeSimilarity')); setText($('#cube-nav-strength-label'), t('cubeRelativeStrength'));
   const quietMessage = view.quietInput ? t(cubeState.source === 'system' ? 'cubeQuietSystem' : 'cubeQuiet') : '';
   const detailText = quietMessage || view.detail;
-  $('#cube-navigator').dataset.quiet = String(view.quietInput);
-  setText($('#cube-nav-guidance'), quietMessage || t('cubeStereoAmbiguity'));
-  $('#cube-nav-guidance').title = quietMessage || t('cubeTurn');
-  const navDetail = $('#cube-nav-detail'); navDetail.hidden = view.status !== 'error' || !view.detail; setText(navDetail, view.detail); navDetail.title = view.detail;
-  const navToggle = $('#cube-nav-toggle'); navToggle.disabled = !native || cubePending; setText(navToggle, t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart'));
+  $('#cube-navigator').title = `${view.label} · ${view.directionLabel} · ${t('cubeStereoAmbiguity')} · ${t('cubeSimilarity')}: ${view.similarity} · ${t('cubeRelativeStrength')}: ${view.relativeStrength}`;
+  $('#cube-nav-guidance').title = t('cubeTurn');
   for (const compass of $$('[data-cube-compass]')) {
     compass.dataset.known = String(view.steerDegrees !== null); compass.dataset.status = view.status;
     compass.dataset.ambiguous = String(view.rearDegrees !== null);
@@ -441,11 +453,6 @@ function renderCubeLive() {
     setAttribute(compass, 'aria-label', `${t('cubeCompass')} · ${view.label}${view.matched ? ` · ${view.directionLabel}` : ''} · ${t('cubeStereoAmbiguity')}`);
     setText(compass.querySelector('.cube-compass-left'), t('cubeLeft')); setText(compass.querySelector('.cube-compass-right'), t('cubeRight'));
   }
-  const chip = $('#cube-chip'); chip.hidden = !prefs.showCubeLocator || navigatorVisible;
-  chip.dataset.status = view.status; chip.dataset.direction = view.direction;
-  setText($('#cube-chip-text'), view.short);
-  chip.title = `${t('cubeTitle')} · ${view.label}${view.matched ? ` · ${view.directionLabel} · ${t('cubeSimilarity')}: ${view.similarity}` : ''}${!native ? ` · ${t('cubePreview')}` : ''}`;
-  chip.setAttribute('aria-label', chip.title);
   const panel = $('#cube-locator'); if (!panel) return;
   panel.dataset.status = view.status;
   setText($('#cube-status-label'), view.label); setText($('#cube-source-label'), view.sourceLabel);
@@ -455,6 +462,9 @@ function renderCubeLive() {
   setText($('#cube-relative-strength'), view.relativeStrength); setText($('#cube-snr'), view.snr);
   const detail = $('#cube-detail'); detail.hidden = !detailText; setText(detail, detailText);
   const toggle = $('#cube-toggle'); toggle.disabled = !native || cubePending; setText(toggle, t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart'));
+  const automatic = $('[name=cubeAutoListen]'); if (automatic) { automatic.checked = prefs.cubeAutoListen; automatic.disabled = !native || cubePending; }
+  const sourceControl = $('[name=cubeSource]'); if (sourceControl && cubeState.enabled) sourceControl.value = cubeState.source;
+  setText($('#cube-source-help'), t((cubeState.enabled ? cubeState.source : prefs.cubeSource) === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp'));
   for (const control of $$('[name=cubeSource],[name=cubeThreshold],[name=cubeReferenceFile],[data-action=reset-cube-reference]')) control.disabled = !native || cubePending || cubeState.enabled;
   setText($('#cube-reference-name'), cubeState.reference.name || t('cubeBuiltin')); setText($('#cube-reference-duration'), cubeState.reference.seconds > 0 ? `${cubeState.reference.seconds.toFixed(1)} s` : '');
   setText($('#cube-format-label'), cubeState.sample_rate ? `${t('cubeAudioFormat')}: ${cubeState.sample_rate.toLocaleString(prefs.locale)} Hz · ${cubeState.audio_channels} ${cubeState.audio_channels === 1 ? 'mono' : 'ch'}${cubeState.audio_channels === 1 ? ` · ${t('cubeNoDirection')}` : ''}` : t('cubeUnknownFormat'));
@@ -464,16 +474,40 @@ function renderCubeLive() {
   setText($('#cube-stream-gaps'), cubeState.stream_discontinuities.toLocaleString(prefs.locale));
 }
 
-function setCubeView(view, { hide = false, focus = true } = {}) {
-  if (drawer) closeDrawer();
-  savePreferences({ cubeView: view, showCubeLocator: !hide });
-  if (focus) $(view === 'navigator' ? '#cube-nav-minimize' : '#cube-entry').focus();
-  if (view === 'navigator') readCubeState();
+async function toggleCubeListening() {
+  await setCubeListening(!cubeState.enabled, { source: prefs.cubeSource });
 }
 
-async function toggleCubeListening() {
-  if (!cubeState.enabled) setCubeView('navigator');
-  await cubeCommand(cubeState.enabled ? 'stop_cube_locator' : 'start_cube_locator', cubeState.enabled ? {} : { source: prefs.cubeSource, threshold: prefs.cubeThreshold });
+async function setCubeListening(enabled, { source = 'game' } = {}) {
+  if (!native || cubePending) return;
+  cubePending = true;
+  cubeAutoListenIntent = enabled;
+  prefs = normalizePreferences({ ...prefs, cubeAutoListen: enabled });
+  applyAppearance(); renderMeter();
+  try {
+    await preferenceCommitter.run(async () => {
+      let commandError = null;
+      try {
+        const value = await invoke(enabled ? 'start_cube_locator' : 'stop_cube_locator', enabled ? { source, threshold: prefs.cubeThreshold } : {});
+        applyCubeSnapshot(value);
+      } catch (error) { commandError = error; }
+      // A failed stop may only mean the setting could not be saved. The native
+      // stop still runs, and its in-memory preference is authoritative here.
+      try {
+        const actual = normalizePreferences(await invoke('get_preferences'));
+        cubeAutoListenIntent = actual.cubeAutoListen;
+        prefs = normalizePreferences({ ...prefs, cubeAutoListen: actual.cubeAutoListen });
+      } catch (error) {
+        if (!enabled) { cubeAutoListenIntent = false; prefs = normalizePreferences({ ...prefs, cubeAutoListen: false }); }
+        commandError ||= error;
+      }
+      try { applyCubeSnapshot(await invoke('get_cube_state')); }
+      catch (error) { cubeReadError = `${t('cubeReadFailed')}: ${String(error).replace(/[\u0000-\u001f]/g, '').slice(0, 180)}`; commandError ||= error; }
+      if (commandError) toast(`${t('failed')}: ${String(commandError).slice(0, 160)}`, true);
+    });
+    storeLocalPreferences(protectCubeIntent(prefs));
+  } catch (error) { toast(`${t('failed')}: ${String(error).slice(0, 160)}`, true); }
+  finally { cubePending = false; renderMeter(); }
 }
 
 function applyCubeSnapshot(value) {
@@ -496,7 +530,7 @@ async function cubeCommand(command, args, successMessage = '') {
   if (cubePending) return;
   cubePending = true; renderCubeLive();
   let invoked = false;
-  try { const payload = typeof args === 'function' ? await args() : args; invoked = true; const value = await action(command, payload); applyCubeSnapshot(value); await readCubeState(); if (successMessage) toast(t(successMessage)); }
+  try { const payload = typeof args === 'function' ? await args() : args; invoked = true; const value = await action(command, payload); applyCubeSnapshot(value); await readCubeState(); if (successMessage) toast(t(successMessage)); return value; }
   catch (error) { if (!invoked) toast(t(command === 'import_cube_reference' ? 'cubeImportInvalid' : 'failed'), true); }
   finally { cubePending = false; renderCubeLive(); }
 }
@@ -913,7 +947,7 @@ function tickTimers() {
 
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
-$('#damage-scope').addEventListener('change', event => { savePreferences({ damageScope: event.target.value }); });
+$('#damage-scope').addEventListener('change', event => { savePreferences({ rosterScope: event.target.value }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
 $('#drag-region').addEventListener('pointerdown', event => { if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
 $('.drawer-header').addEventListener('pointerdown', event => {
@@ -925,15 +959,8 @@ $('.drawer-header').addEventListener('pointerdown', event => {
 $('#analysis-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis'); });
 $('#training-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'training'); });
 $('#event-chip').addEventListener('click', () => { if (prefs.activeEventId.startsWith('boss:')) { snapshot = null; openDrawer('analysis', 'worldBosses'); } else openDrawer('settings', 'calendar'); });
-$('#cube-chip').addEventListener('click', () => setCubeView('navigator'));
-$('#cube-entry').addEventListener('click', () => setCubeView('navigator'));
-$('#dps-entry').addEventListener('click', () => setCubeView('dps'));
-$('#cube-back-dps').addEventListener('click', () => setCubeView('dps'));
-$('#cube-nav-minimize').addEventListener('click', () => setCubeView('dps'));
-$('#cube-nav-dismiss').addEventListener('click', () => setCubeView('dps', { hide: true }));
-$('#cube-nav-settings').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
+$('#cube-entry').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
 $('#cube-nav-size').addEventListener('click', () => savePreferences({ cubeNavigatorSize: prefs.cubeNavigatorSize === 'full' ? 'compact' : 'full' }));
-$('#cube-nav-toggle').addEventListener('click', toggleCubeListening);
 $('#combat-warning').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'effects'); });
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
 $('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; snapshot = null; openDrawer('analysis', 'skills'); } });
@@ -953,7 +980,6 @@ $('#resize-button').addEventListener('keydown', event => {
 });
 document.addEventListener('pointerdown', enableAudio, { passive: true });
 document.addEventListener('keydown', event => {
-  if (!drawer && event.key === 'Escape' && prefs.cubeView === 'navigator') { event.preventDefault(); setCubeView('dps'); return; }
   if (!drawer) return;
   if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); }
   if (event.key === 'Tab') {
@@ -968,6 +994,7 @@ $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
+  if (name === 'cubeAutoListen') { await setCubeListening(element.checked); return; }
   if (name === 'cubeNavigatorSize') { savePreferences({ cubeNavigatorSize: element.value }); return; }
   if (name === 'cubeSource') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeSource: element.value }); setText($('#cube-source-help'), t(prefs.cubeSource === 'system' ? 'cubeSystemHelp' : 'cubeGameHelp')); return; }
   if (name === 'cubeThreshold') { if (cubeState.enabled || cubePending) return; savePreferences({ cubeThreshold: Number(element.value) }); element.value = prefs.cubeThreshold; setText($('#cube-threshold-value'), `${Math.round(prefs.cubeThreshold * 100)}%`); return; }
@@ -978,7 +1005,7 @@ $('#drawer-content').addEventListener('change', async event => {
     element.value = ''; return;
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
-  if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
+  if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
   if (['showClass', 'showShares'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
@@ -1030,7 +1057,6 @@ $('#drawer-content').addEventListener('click', async event => {
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
   if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
-  if (actionName === 'show-cube-navigator') { setCubeView('navigator'); return; }
   if (actionName === 'reset-cube-reference') { if (!cubeState.enabled) await cubeCommand('reset_cube_reference', {}); return; }
   if (actionName === 'open-alerts' || actionName === 'open-training') { snapshot = null; openDrawer('analysis', actionName === 'open-alerts' ? 'alerts' : 'training'); }
   if (actionName === 'retry-history') { const pending = historyCache?.retry(); refreshDrawer(); await pending; if (drawer === 'analysis' && tab === 'history') refreshDrawer(); }
