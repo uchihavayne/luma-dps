@@ -53,7 +53,7 @@ jobs:
       - name: Frontend tests
         run: node --test ui/tests/*.test.mjs
       - name: Community API and SQLite tests
-        run: node --test community/lib/community.test.mjs
+        run: node --test community/lib/*.test.mjs
       - name: Release build
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --locked
       - name: Portable and source packages

@@ -135,7 +135,6 @@ fn anchor_opcode(frame: &[u8]) -> bool {
             | Some([0x40, 0x36])
             | Some([4, 0x8d])
             | Some([0x47, 0x38])
-            | Some([0x22, 0x38])
             | Some([0, 0x8d])
             | Some([2, 0x97])
             | Some([9, 0x38])
@@ -150,6 +149,8 @@ fn anchor_opcode(frame: &[u8]) -> bool {
             | Some([0x26, 0xe2])
             | Some([0x50, 0x36])
             | Some([0, 0x90])
+            | Some([0x0b, 0x61])
+            | Some([0x3b, 0xe3])
             | Some([0xff, 0xff])
     )
 }
@@ -168,6 +169,13 @@ fn decoded_anchor(frame: &[u8]) -> bool {
         Ok(Some(Event::PartyProfiles { members })) => !members.is_empty() && members.len() <= 12,
         Ok(Some(Event::Assistance(_))) => true,
         Ok(Some(Event::FieldBoss(_))) => true,
+        Ok(Some(Event::Resource(event))) => match event {
+            crate::resources::ResourceEvent::Snapshot { entries } => !entries.is_empty(),
+            crate::resources::ResourceEvent::Membership { expires_at_ms } => {
+                expires_at_ms.is_some()
+            }
+            crate::resources::ResourceEvent::Change { .. } => false,
+        },
         Ok(Some(Event::Character(event))) => {
             use crate::character::CharacterEvent;
             match event {

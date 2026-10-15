@@ -1,5 +1,5 @@
 export const SETTINGS_SECTIONS = ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'hiddenCube', 'about'];
-export const ANALYSIS_SECTIONS = ['overview', 'skills', 'training', 'curves', 'effects', 'build', 'worldBosses', 'gameReport', 'history', 'community', 'planner', 'alerts'];
+export const ANALYSIS_SECTIONS = ['overview', 'skills', 'training', 'curves', 'effects', 'team', 'build', 'worldBosses', 'gameReport', 'history', 'community', 'planner', 'alerts'];
 
 export function settingsSection(value) {
   return SETTINGS_SECTIONS.includes(value) ? value : 'appearance';

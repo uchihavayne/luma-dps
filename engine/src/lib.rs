@@ -1,9 +1,11 @@
 pub mod assistance;
 pub mod character;
+pub mod cooldowns;
 pub mod field_boss;
 pub mod framing;
 pub mod net;
 pub mod packets;
+pub mod resources;
 
 use packets::Event;
 #[cfg(test)]
@@ -180,6 +182,8 @@ pub struct MeterState {
     pub targets: Vec<TargetState>,
     pub history: Vec<Encounter>,
     pub cooldowns: Vec<serde_json::Value>,
+    pub observed_casts: Vec<cooldowns::CastUse>,
+    pub resources: resources::ResourceSnapshot,
     pub diagnostics: Diagnostics,
     pub target_mode: String,
     pub history_revision: u64,
@@ -196,6 +200,7 @@ pub struct MeterState {
     pub party_member_ids: Vec<u64>,
     pub party_member_names: Vec<String>,
     pub party_membership_source: String,
+    pub party_identity_roster: serde_json::Value,
     pub party_total_damage: Option<u64>,
     pub party_dps: Option<f64>,
     pub party_elapsed_ms: u64,
@@ -231,15 +236,6 @@ struct Identity {
     reported_max_hp: Option<u64>,
     health_observed_at_ms: Option<u64>,
 }
-struct Cooldown {
-    actor_id: u64,
-    expires: Option<u64>,
-    charges: Option<u32>,
-    observed_at_ms: u64,
-    charges_observed_at_ms: Option<u64>,
-    server_ready: bool,
-}
-
 type Aggregate = BTreeMap<(u64, u64), BTreeMap<u32, SkillState>>;
 struct Completed {
     aggregates: Aggregate,
@@ -273,6 +269,7 @@ pub struct MeterEngine {
     character_name: String,
     alias_bound_id: Option<u64>,
     party_names: Option<Vec<String>>,
+    party_sync_confirmed: bool,
     party_classes: BTreeMap<String, u32>,
     manual_party_ids: Option<Vec<u64>>,
     pair_activity: BTreeMap<(u64, u64), SourceActivity>,
@@ -291,7 +288,8 @@ pub struct MeterEngine {
     encounter_build: Option<character::CharacterBuild>,
     encounter_build_taken: bool,
     bosses: Vec<u64>,
-    cooldowns: BTreeMap<u32, Cooldown>,
+    cooldowns: cooldowns::Ledger,
+    resources: resources::ResourceStore,
     aggregates: Aggregate,
     alive_targets: std::collections::BTreeSet<u64>,
     hit_count: usize,
@@ -322,6 +320,7 @@ impl Default for MeterEngine {
             character_name: String::new(),
             alias_bound_id: None,
             party_names: None,
+            party_sync_confirmed: false,
             party_classes: BTreeMap::new(),
             manual_party_ids: None,
             pair_activity: BTreeMap::new(),
@@ -340,7 +339,8 @@ impl Default for MeterEngine {
             encounter_build: None,
             encounter_build_taken: false,
             bosses: Vec::new(),
-            cooldowns: BTreeMap::new(),
+            cooldowns: cooldowns::Ledger::default(),
+            resources: resources::ResourceStore::default(),
             aggregates: BTreeMap::new(),
             alive_targets: Default::default(),
             hit_count: 0,
@@ -384,6 +384,8 @@ impl MeterEngine {
             self.frames.discard(&segment.connection);
             self.prefixes.remove(&segment.connection);
             self.cooldowns.clear();
+            self.resources.clear();
+            self.party_sync_confirmed = false;
             self.assistance.clear();
             self.character.clear_pets();
             self.character_revision = self.character_revision.wrapping_add(1);
@@ -472,8 +474,12 @@ impl MeterEngine {
             }
             if self.own_id == Some(id) {
                 self.own_id = None;
-                self.alias_bound_id = None
+                self.alias_bound_id = None;
+                self.resources.clear();
+                self.party_sync_confirmed = false;
+                self.character_revision = self.character_revision.wrapping_add(1);
             }
+            self.cooldowns.remove_actor(id);
             self.assistance.remove_actor(id, now);
             if let Some(ids) = &mut self.manual_party_ids {
                 ids.retain(|value| *value != id)
@@ -482,6 +488,10 @@ impl MeterEngine {
     }
     pub fn ingest_event(&mut self, event: Event, now: u64) {
         match event {
+            Event::Resource(event) => {
+                self.resources.ingest(event, now);
+                self.character_revision = self.character_revision.wrapping_add(1);
+            }
             Event::Character(event) => {
                 self.character.ingest(event, now);
                 self.character_revision = self.character_revision.wrapping_add(1);
@@ -492,6 +502,14 @@ impl MeterEngine {
                 self.field_bosses.ingest(event, now);
             }
             Event::Assistance(event) => {
+                if let assistance::AssistEvent::Cast(value) = &event {
+                    self.cooldowns.observe_cast(
+                        value.actor_id,
+                        value.skill_id,
+                        value.target_id,
+                        now,
+                    );
+                }
                 if let assistance::AssistEvent::Health {
                     actor_id,
                     current_hp,
@@ -531,6 +549,17 @@ impl MeterEngine {
                 class,
                 own,
             } => {
+                if own
+                    && self.own_id == Some(id)
+                    && self
+                        .identities
+                        .get(&id)
+                        .and_then(|entry| entry.name.as_deref())
+                        .is_some_and(|old| old != name)
+                {
+                    self.cooldowns.clear();
+                    self.party_sync_confirmed = false;
+                }
                 if self.training_targets.contains(&id) {
                     self.cancel_training()
                 }
@@ -552,6 +581,7 @@ impl MeterEngine {
                     self.manual_own_id = None;
                     self.manual_party_ids = None;
                     self.party_names = None;
+                    self.party_sync_confirmed = false;
                     self.party_classes.clear();
                     self.alias_bound_id = None;
                     self.character_name.clear();
@@ -582,6 +612,8 @@ impl MeterEngine {
                         self.cancel_training();
                     }
                     self.own_id = Some(id);
+                    self.cooldowns.bind_self(Some(id));
+                    self.resources.bind_self(id, &name, now);
                     self.character.bind_self(id, &name, None, now);
                     self.character_revision = self.character_revision.wrapping_add(1);
                     if self.manual_own_id.is_some_and(|selected| selected != id) {
@@ -676,6 +708,7 @@ impl MeterEngine {
             }
             Event::PartyRoster { names } => {
                 self.party_names = Some(names.into_iter().take(12).collect());
+                self.party_sync_confirmed = true;
                 self.party_classes.clear();
                 self.manual_party_ids = None;
                 self.dirty();
@@ -695,43 +728,19 @@ impl MeterEngine {
             }
             Event::Cooldown {
                 skill,
-                remaining_ms,
+                remaining_units,
                 charges,
             } => {
-                if let Some(actor_id) = self.local_in(&self.identities).0 {
-                    if skill == 0
-                        || remaining_ms.is_some_and(|duration| duration > 3_600_000)
-                        || charges.is_some_and(|count| count > 100)
-                    {
-                        return;
-                    }
+                // Actorless cooldown records belong only to a server-confirmed
+                // local character. A manual row selection is not that evidence.
+                if let Some(actor_id) = self.own_id.filter(|id| {
+                    self.identities
+                        .get(id)
+                        .is_some_and(|identity| identity.player && !identity.removed)
+                }) {
+                    self.cooldowns.bind_self(Some(actor_id));
                     self.cooldowns
-                        .retain(|_, cooldown| cooldown.actor_id == actor_id);
-                    if self.cooldowns.len() >= 256 && !self.cooldowns.contains_key(&skill) {
-                        if let Some(oldest) = self
-                            .cooldowns
-                            .iter()
-                            .min_by_key(|(_, cooldown)| cooldown.observed_at_ms)
-                            .map(|(skill, _)| *skill)
-                        {
-                            self.cooldowns.remove(&oldest);
-                        }
-                    }
-                    let old = self.cooldowns.get(&skill);
-                    let previous_charges = old.and_then(|old| old.charges);
-                    let previous_charge_time = old.and_then(|old| old.charges_observed_at_ms);
-                    self.cooldowns.insert(
-                        skill,
-                        Cooldown {
-                            actor_id,
-                            expires: remaining_ms
-                                .map(|duration| now.saturating_add(u64::from(duration))),
-                            charges: charges.or(previous_charges),
-                            observed_at_ms: now,
-                            charges_observed_at_ms: charges.map(|_| now).or(previous_charge_time),
-                            server_ready: remaining_ms == Some(0),
-                        },
-                    );
+                        .observe_local(skill, remaining_units, charges, now);
                 }
             }
             Event::Health { id, current } => {
@@ -746,6 +755,11 @@ impl MeterEngine {
                 // the scene does not change damage it already dealt.
                 self.identities.entry(id).or_default().removed = true;
                 self.assistance.remove_actor(id, now);
+                self.cooldowns.remove_actor(id);
+                if self.own_id == Some(id) {
+                    self.resources.clear();
+                    self.character_revision = self.character_revision.wrapping_add(1);
+                }
                 // A death/despawn keeps existing attribution. A later spawn
                 // reusing this id, or a connection change, invalidates it.
                 if death && self.alive_targets.remove(&id) {
@@ -874,6 +888,7 @@ impl MeterEngine {
         self.prefixes.clear();
         self.identities.clear();
         self.cooldowns.clear();
+        self.resources.clear();
         self.own_id = None;
         self.generation = self.generation.wrapping_add(1);
         self.pending_owners.clear();
@@ -890,6 +905,7 @@ impl MeterEngine {
         self.manual_own_id = None;
         self.alias_bound_id = None;
         self.party_names = None;
+        self.party_sync_confirmed = false;
         self.party_classes.clear();
         self.manual_party_ids = None;
         self.last_seen = 0;
@@ -903,6 +919,8 @@ impl MeterEngine {
         // classification, while discarding incomplete classifier prefix bytes.
         self.prefixes.retain(|_, prefix| prefix.decided);
         self.cooldowns.clear();
+        self.resources.clear();
+        self.party_sync_confirmed = false;
         self.character.clear();
         if let Some(id) = self.own_id {
             if let Some(name) = self
@@ -1107,6 +1125,7 @@ impl MeterEngine {
         members.dedup();
         self.manual_party_ids = Some(members);
         self.party_names = None;
+        self.party_sync_confirmed = false;
         self.party_classes.clear();
         self.dirty();
         Ok(())
@@ -1778,32 +1797,11 @@ impl MeterEngine {
         assist.casts.truncate(8);
         assist.effects.truncate(64);
         assist.stagger.truncate(8);
-        let cooldowns = self
-            .cooldowns
+        let cooldown_state = self.cooldowns.snapshot(now);
+        let cooldowns = cooldown_state
+            .own
             .iter()
-            .filter(|(_, cooldown)| current.local_player_id == Some(cooldown.actor_id))
-            .map(|(id, cooldown)| {
-                let readiness = if cooldown.server_ready {
-                    "server-ready"
-                } else if cooldown.expires.is_some_and(|expires| now >= expires) {
-                    "elapsed"
-                } else if cooldown.expires.is_some() {
-                    "cooling"
-                } else {
-                    "unknown"
-                };
-                serde_json::json!({
-                    "id": id, "skill_id": id, "actor_id": cooldown.actor_id,
-                    "scope": "self", "name": format!("Skill #{}", id),
-                    "remaining_ms": cooldown.expires.map(|expires| expires.saturating_sub(now)),
-                    "expires_at_ms": cooldown.expires,
-                    "charges": cooldown.charges, "max_charges": null,
-                    "observed_at_ms": cooldown.observed_at_ms,
-                    "charges_observed_at_ms": cooldown.charges_observed_at_ms,
-                    "readiness": readiness, "ready_confirmed": cooldown.server_ready,
-                    "observed": true, "source": "server"
-                })
-            })
+            .filter_map(|row| serde_json::to_value(row).ok())
             .collect();
         MeterState {
             status: if self.paused {
@@ -1832,6 +1830,8 @@ impl MeterEngine {
                 Vec::new()
             },
             cooldowns,
+            observed_casts: cooldown_state.casts,
+            resources: self.resources.snapshot(now),
             diagnostics: self.diagnostics.clone(),
             target_mode: self.target_mode.clone(),
             history_revision: self.history_revision,
@@ -1850,6 +1850,7 @@ impl MeterEngine {
             party_member_ids: current.party_member_ids,
             party_member_names: self.party_names.clone().unwrap_or_default(),
             party_membership_source: current.party_membership_source,
+            party_identity_roster: self.party_identity_roster(),
             party_total_damage: current.party_total_damage,
             party_dps: current.party_dps,
             party_elapsed_ms: current.party_elapsed_ms,
@@ -1992,6 +1993,69 @@ impl MeterEngine {
     }
     pub fn character_snapshot(&self) -> character::CharacterSnapshot {
         self.character.snapshot()
+    }
+    pub fn resources_snapshot(&self, now: u64) -> resources::ResourceSnapshot {
+        self.resources.snapshot(now)
+    }
+    pub fn party_identity_roster(&self) -> serde_json::Value {
+        let members: Vec<_> = self
+            .party_names
+            .as_ref()
+            .filter(|_| self.party_sync_confirmed)
+            .into_iter()
+            .flatten()
+            .map(|name| {
+                let matches: Vec<_> = self
+                    .identities
+                    .iter()
+                    .filter(|(_, identity)| {
+                        identity.player && !identity.removed && identity.name.as_ref() == Some(name)
+                    })
+                    .collect();
+                let actor = (matches.len() == 1).then(|| matches[0]);
+                let class = actor.and_then(|(_, row)| row.class.as_deref()).or_else(|| {
+                    self.party_classes
+                        .get(name)
+                        .and_then(|class| class_name(*class))
+                });
+                serde_json::json!({
+                    "actor_id": actor.map(|(id, _)| *id), "name": name,
+                    "class_name": class, "identity_confirmed": actor.is_some()
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "source": if self.party_sync_confirmed && self.party_names.is_some() { "server" } else { "unknown" },
+            "members": members
+        })
+    }
+    /// Explicit room-sharing input. Only the server's local-character record
+    /// can identify the sender; manual selections and aliases are excluded.
+    /// A received roster name can be known before its nearby actor is seen.
+    pub fn team_sync_payload(&self, now: u64) -> serde_json::Value {
+        let local = self.own_id.and_then(|actor_id| {
+            let identity = self.identities.get(&actor_id)?;
+            if !identity.player || identity.removed {
+                return None;
+            }
+            Some(serde_json::json!({
+                "actor_id": actor_id,
+                "name": identity.name.as_deref()?,
+                "class_name": identity.class,
+                "identity_source": "server"
+            }))
+        });
+        let own = if local.is_some() {
+            self.cooldowns.snapshot(now).own
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({
+            "schema_version": 1,
+            "local": local,
+            "cooldowns": own,
+            "party": self.party_identity_roster()
+        })
     }
 }
 
@@ -2244,7 +2308,7 @@ mod tests {
         let mut engine = MeterEngine::default();
         let update = Event::Cooldown {
             skill: 13130000,
-            remaining_ms: Some(6450),
+            remaining_units: Some(6450),
             charges: None,
         };
         engine.ingest_event(update.clone(), 1000);
@@ -2259,7 +2323,8 @@ mod tests {
             1000,
         );
         engine.ingest_event(update, 1000);
-        assert_eq!(engine.state(2000).cooldowns[0]["remaining_ms"], 5450);
+        assert_eq!(engine.state(2000).cooldowns[0]["raw_remaining_units"], 6450);
+        assert!(engine.state(2000).cooldowns[0]["estimated_remaining_ms"].is_null());
         engine.capture_loss();
         assert!(engine.state(2000).cooldowns.is_empty());
         assert_eq!(engine.state(2000).diagnostics.stream_gaps, 1);

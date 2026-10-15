@@ -9,6 +9,7 @@ mod event_schedule;
 mod local_history;
 mod native_capture;
 mod obs_server;
+mod team_sync;
 
 use luma_engine::MeterEngine;
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,37 @@ impl CommunityRuntime {
             },
         }
     }
+}
+
+struct TeamRuntime {
+    service: Result<Arc<team_sync::Service>, String>,
+}
+
+impl TeamRuntime {
+    fn service(&self) -> Result<Arc<team_sync::Service>, String> {
+        self.service.as_ref().cloned().map_err(Clone::clone)
+    }
+}
+
+fn team_own_data(payload: Value, capture_live: bool, at: u64) -> Value {
+    let local = &payload["local"];
+    let cooldowns: Vec<Value> = payload["cooldowns"].as_array().into_iter().flatten().take(64).filter_map(|row| {
+        let observed = row["observed_at_ms"].as_u64()?;
+        let age = at.checked_sub(observed)?;
+        if age > team_sync::FRESH_MS { return None; }
+        let estimate = row["estimated_remaining_ms"].as_u64().filter(|v| *v > 0)
+            .and_then(|value| value.checked_add(age)).filter(|value| *value <= 3_600_000);
+        let charges = row["charges_observed_at_ms"].as_u64()
+            .filter(|charge_at| *charge_at == observed)
+            .and_then(|_| row["charges"].as_u64());
+        Some(serde_json::json!({"skill_id":row["skill_id"],"raw_remaining_units":row["raw_remaining_units"],
+            "estimated_remaining_ms":estimate,"charges":charges,"age_ms":age,
+            "ready_confirmed":capture_live && row["ready_confirmed"] == true && row["raw_remaining_units"] == 0}))
+    }).collect();
+    serde_json::json!({"display_name":local["name"].as_str().unwrap_or(""),
+        "class_name":local["class_name"].as_str().unwrap_or("Unknown"),
+        "capture_live":capture_live && local["identity_source"] == "server",
+        "cooldowns":if capture_live {cooldowns} else {Vec::new()}})
 }
 
 fn community_record_id(value: Option<&str>) -> Result<Option<u64>, String> {
@@ -418,6 +450,27 @@ fn snapshot(shared: &Shared) -> Result<Value, String> {
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+
+    #[test]
+    fn relay_uses_only_own_allowlisted_fields_and_does_not_rejuvenate_charges() {
+        let payload = serde_json::json!({"local":{"name":"Example","class_name":"Ranger","actor_id":7,"identity_source":"server"},
+            "party":{"members":[{"name":"Private teammate"}]},"cooldowns":[{"skill_id":12,"raw_remaining_units":12000,
+                "estimated_remaining_ms":3000,"observed_at_ms":1000,"charges":2,"charges_observed_at_ms":1,"ready_confirmed":false}]});
+        let data = team_own_data(payload.clone(), true, 7000);
+        assert_eq!(data["cooldowns"][0]["estimated_remaining_ms"], 9000);
+        assert!(data["cooldowns"][0]["charges"].is_null());
+        assert_eq!(data["cooldowns"][0]["age_ms"], 6000);
+        assert!(!data.to_string().contains("actor_id"));
+        assert!(!data.to_string().contains("Private teammate"));
+        assert_eq!(
+            team_own_data(payload.clone(), true, 7001)["cooldowns"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            team_own_data(payload, false, 1000)["cooldowns"],
+            serde_json::json!([])
+        );
+    }
 
     #[test]
     fn legacy_small_windows_keep_preferences_and_gain_visible_roster_space() {
@@ -1139,6 +1192,47 @@ async fn get_community_state(
     tauri::async_runtime::spawn_blocking(move || runtime.snapshot())
         .await
         .map_err(|_| "Community state request was interrupted".into())
+}
+
+#[tauri::command]
+fn get_team_state(runtime: State<'_, Arc<TeamRuntime>>) -> Result<team_sync::Snapshot, String> {
+    Ok(runtime.service()?.snapshot())
+}
+
+#[tauri::command]
+async fn create_team_room(
+    runtime: State<'_, Arc<TeamRuntime>>,
+) -> Result<team_sync::Snapshot, String> {
+    let service = runtime.service()?;
+    tauri::async_runtime::spawn_blocking(move || service.create_room())
+        .await
+        .map_err(|_| "Team room request interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn join_team_room(
+    runtime: State<'_, Arc<TeamRuntime>>,
+    invite: String,
+) -> Result<team_sync::Snapshot, String> {
+    let service = runtime.service()?;
+    tauri::async_runtime::spawn_blocking(move || service.join_room(&invite))
+        .await
+        .map_err(|_| "Team room request interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn leave_team_room(
+    runtime: State<'_, Arc<TeamRuntime>>,
+) -> Result<team_sync::Snapshot, String> {
+    let service = runtime.service()?;
+    tauri::async_runtime::spawn_blocking(move || service.leave_confirmed())
+        .await
+        .map_err(|_| "Team room leave interrupted".to_string())?
+}
+
+#[tauri::command]
+fn get_team_invite(runtime: State<'_, Arc<TeamRuntime>>) -> Result<String, String> {
+    runtime.service()?.invite()
 }
 
 #[tauri::command]
@@ -1900,6 +1994,11 @@ fn main() {
             get_community_rankings,
             revoke_community_share,
             open_community_url,
+            get_team_state,
+            create_team_room,
+            join_team_room,
+            leave_team_room,
+            get_team_invite,
             get_history,
             get_current_encounter,
             get_assistance_state,
@@ -1994,6 +2093,30 @@ fn main() {
                 calendar: Mutex::new(Some(calendar)),
             });
             app.manage(shared.clone());
+            let weak_shared = Arc::downgrade(&shared);
+            let provider: team_sync::OwnProvider = Arc::new(move || {
+                let Some(shared) = weak_shared.upgrade() else {
+                    return Value::Null;
+                };
+                let at = now_ms();
+                let live = shared.capture.lock().ok().is_some_and(|capture| {
+                    capture.status == "capturing"
+                        && capture.game_connections > 0
+                        && capture
+                            .last_packet_at_ms
+                            .is_some_and(|last| at >= last && at - last <= team_sync::FRESH_MS)
+                });
+                let payload = shared
+                    .engine
+                    .lock()
+                    .ok()
+                    .map(|engine| engine.team_sync_payload(at))
+                    .unwrap_or(Value::Null);
+                team_own_data(payload, live, at)
+            });
+            app.manage(Arc::new(TeamRuntime {
+                service: team_sync::Service::new(provider).map(Arc::new),
+            }));
             *shared
                 .capture_worker
                 .lock()
@@ -2105,6 +2228,11 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let shared = handle.state::<Arc<Shared>>();
                 shared.stopping.store(true, Ordering::Relaxed);
+                if let Some(runtime) = handle.try_state::<Arc<TeamRuntime>>() {
+                    if let Ok(service) = runtime.service() {
+                        service.leave();
+                    }
+                }
                 if let Some(cube) = handle.try_state::<Arc<cube_locator::Service>>() {
                     let _ = cube.stop();
                 }

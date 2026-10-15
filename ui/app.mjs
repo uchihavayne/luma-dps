@@ -11,10 +11,13 @@ import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
 import { createPreferenceCommitter } from './persistence.mjs';
 import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl } from './dom.mjs';
 import { createHistoryCache } from './history.mjs';
+import { createHistoryNotebook, historyRecordKey, queryHistory, historyTrend, parseHistoryTags } from './history-tools.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
 import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
 import { communityLabels, communityUrl, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
 import { latencyPresentation, petProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
+import { resourceStatus } from './resources.mjs';
+import { teamSnapshot, renderTeam } from './team.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -31,6 +34,7 @@ let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
 let receivedStateCount = 0;
 let cooldownFingerprint = '';
+let teamState = teamSnapshot(), teamBusy = false, teamPolling = false, teamConsent = false, teamInviteDraft = '', teamInviteCopy = '', teamRequestEpoch = 0;
 let drawerContentFingerprint = '', drawerTabsFingerprint = '';
 let settingsTab = 'appearance';
 const settingsPanels = new Map(), dirtySettingsForms = new Set();
@@ -49,6 +53,8 @@ const scheduleTimings = new Map();
 let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0, cubeAutoListenIntent = null;
 let communityDraft = { recordId: '', scope: 'personal', anonymous: true, rank_opt_in: false, consent: false, context: { region: 'EU', server: '', boss: '', difficulty: '' } };
 let communityRankingDraft = communityFilters({ region: 'EU' }), communityRevokeId = '', communityOpened = false, communityCurrentRecord = null, communitySummaryText = '';
+const historyFilterDefaults = () => ({ query: '', scope: 'personal', source: '', category: '', difficulty: '', tags: '', sort: 'newest', favoritesOnly: false, from: '', to: '' });
+let historyFilters = historyFilterDefaults(), historyFilterDraft = historyFilterDefaults(), historyEditKey = '', historyEditDraft = null, historyTrendKey = '', historyNotebookError = '';
 const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') === '1';
 const telemetryDemo = demo && new URLSearchParams(location.search).get('telemetryDemo') === '1';
 if (telemetryDemo) {
@@ -57,13 +63,21 @@ if (telemetryDemo) {
     players: state.players.map(player => ({ ...player, id: player.is_local ? 7 : player.id })),
     targets: state.targets.map((target, index) => ({ ...target, id: index === 0 ? 10 : target.id })),
     assist: { stagger: [{ actor_id: 10, maximum: 1200, current: 750, broken: false, observed_at_ms: at, fresh_for_ms: 5000, fresh: true, source: 'server' }] },
-    cooldowns: [{ actor_id: 7, skill_id: 14090000, scope: 'self', source: 'server', remaining_ms: 0, readiness: 'server-ready', ready_confirmed: true, charges: 1 }],
+    cooldowns: [{ actor_id: 7, skill_id: 14090000, source: 'local-server', unit: 'server-counter', raw_remaining_units: 0, observed_at_ms: at, fresh: true, readiness: 'server-ready', ready_confirmed: true, charges: null }, { actor_id: 7, skill_id: 14080000, source: 'local-server', unit: 'server-counter', raw_remaining_units: 24000, observed_at_ms: at, fresh: true, readiness: 'estimated-cooling', estimated_rate_units_per_ms: 2.4, rate_samples: 3 }],
+    resources: { actor_id: 7, awaiting_identity: false, source: 'server-contents-ticket', snapshot_complete: true, odyle: { ticket_id: 60000001, base: 420, bonus: 80, total: 500, time_left_ms: 0, observed_at_ms: at }, membership: { source: 'server-benefit-list', observed_at_ms: at, expires_at_ms: at + 86400000 } },
+    party_identity_roster: { source: 'server', members: [{ actor_id: 9, name: 'Liora', class_name: 'Cleric', identity_confirmed: true }] }, observed_casts: [{ actor_id: 9, skill_id: 11010000, source: 'server-cast', last_observed_at_ms: at - 3000, use_count: 3, fresh: true, ready_confirmed: false }],
     capture: { status: 'capturing', game_connections: 2, network_latency: { status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 87, variation_ms: 2, observed_at_ms: at, sampled_at_ms: at, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 } },
   });
   characterData = characterSnapshot({ own: { actor_id: 7, name: state.local_player_name, source: 'server-self', observed_at_ms: at },
     pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1042, active_pet_known: true, inventory_complete: true,
       pets: [{ pet_id: 1042, level: 2, progress: 34, progress_source: 'server-delta', session_gained: 2, observed_at_ms: at }, { pet_id: 1124, level: 3, progress: null, progress_source: 'unknown', session_gained: 0, observed_at_ms: at }] },
   });
+}
+if (telemetryDemo) {
+  const at = Date.now();
+  teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
+    peers: [{ peer_id: 'b'.repeat(32), display_name: state.local_player_name || 'Aeryn', class_name: 'Ranger', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 14090000, raw_remaining_units: 0, estimated_remaining_ms: null, charges: null, age_ms: 0, ready_confirmed: true, fresh: true }] },
+      { peer_id: 'c'.repeat(32), display_name: 'Liora', class_name: 'Cleric', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 11010000, raw_remaining_units: 24000, estimated_remaining_ms: 10000, charges: null, age_ms: 0, ready_confirmed: false, fresh: true }] }] });
 }
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
@@ -76,6 +90,8 @@ const words = {
   },
 };
 const t = key => words[prefs.locale][key] || key;
+Object.assign(words.tr, { team: 'Takım', autoOdyle: 'Otomatik Odyle', odyleWaiting: 'Odyle verisi bekleniyor. Luma açıkken karaktere yeniden giriş yapmak ilk enerji listesini almayı sağlar.', odyleRegular: 'Normal enerji', odyleBonus: 'Bonus enerji', odyleTotal: 'Kullanılabilir toplam', odyleCapacity: 'Normal enerji sınırı üyelik durumundan türetilir; bonus enerji ayrı tutulur.', observedTime: 'Son alınan', counterLearning: 'Sayaç alındı · süre birimi öğreniliyor', estimatedCooldown: 'Tahmini', ownCooldownHelp: 'Sunucunun kendi karakterin için gönderdiği sayaçlar. Süre, tutarlı örneklerden öğrenilir; ~ ile gösterilir. Yalnız yeni alınan sıfır hazır bilgisini doğrular.' });
+Object.assign(words.en, { team: 'Team', autoOdyle: 'Automatic Odyle', odyleWaiting: 'Waiting for Odyle data. Logging into a character with Luma open captures the initial energy list.', odyleRegular: 'Regular energy', odyleBonus: 'Bonus energy', odyleTotal: 'Available total', odyleCapacity: 'Regular energy capacity is derived from membership state; bonus energy is separate.', observedTime: 'Last observed', counterLearning: 'Counter received · learning time unit', estimatedCooldown: 'Estimated', ownCooldownHelp: 'Server counters for your own character. Time is learned from consistent samples and marked ~. Only a newly received zero confirms readiness.' });
 Object.assign(words.tr, { petProgress: 'Pet ilerlemesi', petHelp: 'Karakterine ait alınan pet seviyesi, ilerleme ve bu oturumdaki kazanımlar. Bilinmeyen adlar kimlikleriyle görünür; gerekli ruh sayısı tahmin edilmez.', noPetProgress: 'Pet verisi henüz alınmadı. Luma açıkken karakterine giriş yaptığında veya pet ilerlemesi geldiğinde görünür.', petActive: 'Çağrılan', petGained: 'Bu oturumda alınan', petAbsolute: 'Alınan ilerleme', petUnknown: 'İlerleme alınmadı', petPrevious: 'Önceki', petNext: 'Sonraki', petPartial: 'Yalnızca alınan pet kayıtları gösteriliyor; tam envanter değil.', stagger: 'Boss dengesi', noStagger: 'Güncel denge verisi alınmadı.', staggerHelp: 'Sunucudan alınan denge çubuğu ve kırılma durumu. Yeni veri gelmezse 5 saniye sonra gösterge kaldırılır; kırılma süresi tahmin edilmez.', eventStagger: 'Denge kırıldı' });
 Object.assign(words.en, { petProgress: 'Pet progress', petHelp: 'Received pet levels, progress and gains from this session for your character. Unknown names use IDs; required soul counts are not guessed.', noPetProgress: 'No pet data received yet. It appears after login with Luma open or when pet progress arrives.', petActive: 'Summoned', petGained: 'Received this session', petAbsolute: 'Observed progress', petUnknown: 'Progress unavailable', petPrevious: 'Previous', petNext: 'Next', petPartial: 'Only observed pet records are shown, not a complete inventory.', stagger: 'Boss stagger', noStagger: 'No fresh stagger observation.', staggerHelp: 'Server-reported stagger bar and break state. The display clears after 5 seconds without new data; no break duration is predicted.', eventStagger: 'Stagger broken' });
 Object.assign(words.tr, { community: communityLabels.tr.community, copyEncounterText: 'Karşılaşma metnini kopyala' });
@@ -320,7 +336,7 @@ function renderMeter() {
   $('#players').setAttribute('aria-label', t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
   renderPlayers(status, roster);
-  const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns]);
+  const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
   cooldownFingerprint = nextCooldownFingerprint;
   tickTimers();
@@ -330,6 +346,8 @@ function renderMeter() {
   renderLatency();
   renderCombatWarning();
   renderCubeLive();
+  renderLiveTools();
+  updateTeamLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
@@ -798,7 +816,7 @@ function buildContent() {
   if (!choices.some(choice => choice.id === selectedBuild)) selectedBuild = choices[0]?.id || 'own';
   const current = choices.find(choice => choice.id === selectedBuild)?.value;
   const header = `${source(snapshot ? t('snapshot') : t('serverObserved'))}<p class="help">${t('buildHelp')}</p><div class="button-row">${button('refresh-build', 'refreshBuild', characterPending || !native || snapshot ? 'disabled' : '', true)}</div>`;
-  const pets = snapshot ? '' : petProgressContent(data.pet_progress);
+  const pets = snapshot ? '' : `<div id="automatic-odyle">${odyleContent()}</div>` + petProgressContent(data.pet_progress);
   if (!current) return header + pets + empty('noBuild');
   return `${header}${pets}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
 }
@@ -840,11 +858,14 @@ function gameReportContent() {
   return `${intro}${source(t('gameReportSource'))}<h3 class="section-title">${esc(gameReport.target_name || t('allCaption'))}</h3><div class="analysis-metrics"><div><span>${t('damage')}</span><strong>${num(total)}</strong></div><div><span>DPS</span><strong>${rate(gameReport.dps)}</strong></div><div><span>${t('gameDuration')}</span><strong>${clockTime(gameReport.duration_ms)}</strong></div><div><span>${t('gameHealing')}</span><strong>${reportMetric(gameReport.total_healing)}</strong></div><div><span>${t('gameTaken')}</span><strong>${reportMetric(gameReport.damage_taken)}</strong></div><div><span>${t('gameHps')}</span><strong>${gameReport.total_healing !== null && gameReport.duration_ms > 0 && gameReport.timing_present !== false ? rate(gameReport.total_healing * 1000 / gameReport.duration_ms) : '—'}</strong></div></div><p class="help">${t('reportClock')}: ${esc(gameReport.started_local.replace('T', ' '))} → ${esc(gameReport.ended_local.replace('T', ' '))}</p>${gameCounters(gameReport.counters)}${gameReport.skill_totals_match ? '' : `<p class="quality-warning">${t('reportSkillMismatch')}</p>`}<h3 class="section-title">${t('personalComparison')}</h3><div class="button-row">${button('refresh-comparison', 'refreshComparison', gameComparePending ? 'disabled' : '', true)}</div><p class="${comparison.comparable ? 'status-card' : 'quality-warning'}">${comparisonMessage}</p>${comparison.available ? `<div class="analysis-metrics"><div><span>Luma · ${t('personalDamage')}</span><strong>${num(comparison.luma_damage)}</strong></div><div><span>${t('gameReport')} · ${t('damage')}</span><strong>${num(comparison.game_damage)}</strong></div></div><div class="status-card">${t('difference')}: <strong>${comparison.difference >= 0 ? '+' : '−'}${num(Math.abs(comparison.difference))}</strong>${comparison.difference_percent === null ? '' : ` (${comparison.difference_percent >= 0 ? '+' : ''}${comparison.difference_percent.toFixed(2)}%)`}</div>` : ''}<h3 class="section-title">${t('skills')}</h3>${gameReport.skills.map(skill => `<div class="skill-row"><div class="skill-top"><span>Skill #${skill.id}</span><strong>${num(skill.damage)} · ${total > 0 ? (skill.damage / total * 100).toFixed(1) : '0.0'}%</strong></div><div class="skill-track" style="--skill-share:${total > 0 ? Math.min(100, skill.damage / total * 100) : 0}%"><i></i></div>${gameCounters(skill.counters)}</div>`).join('')}`;
 }
 
+let historyNotebookStorage;
+try { historyNotebookStorage = localStorage; } catch { historyNotebookError = 'storage-read-failed'; }
+const historyNotebook = createHistoryNotebook({ storage: historyNotebookStorage, onError: error => { historyNotebookError = error; } });
 const historyCache = native ? createHistoryCache({
   read: () => invoke('get_history'),
   normalizeRecord: normalizeEncounter,
-  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshDrawer(); if (drawer === 'analysis' && tab === 'community') refreshCommunityDrawer(); },
-  onRejected: () => { if (drawer === 'analysis' && tab === 'history') refreshDrawer(); },
+  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshHistoryDrawer(); if (drawer === 'analysis' && tab === 'community') refreshCommunityDrawer(); },
+  onRejected: () => { if (drawer === 'analysis' && tab === 'history') refreshHistoryDrawer(); },
 }) : null;
 const allHistory = () => [...(native ? historyCache.history : state.history).map(item => ({ item, imported: false })), ...prefs.importedHistory.map(item => ({ item, imported: true }))];
 const communityController = createCommunityController({
@@ -891,13 +912,63 @@ async function openCommunityUrl(url) {
   else if (!demo) window.open(safe, '_blank', 'noopener,noreferrer');
 }
 
+const historyWords = {
+  tr: { search: 'Geçmişte ara', searchHelp: 'Oyuncu, boss, sınıf, etiket veya not', scope: 'Ölçüm kapsamı', any: 'Tümü', source: 'Kayıt kaynağı', category: 'Kategori', difficulty: 'Zorluk', tags: 'Etiketler', tagsHelp: 'Virgülle ayır: farm, yeni ekipman', from: 'İlk tarih', to: 'Son tarih', sort: 'Sıralama', newest: 'En yeni', oldest: 'En eski', dps: 'En yüksek DPS', damage: 'En yüksek hasar', duration: 'En uzun karşılaşma', favorite: 'Favoriler önce', favoritesOnly: 'Yalnız favoriler', apply: 'Filtreleri uygula', reset: 'Temizle', matched: 'kayıt gösteriliyor', noMatches: 'Bu filtrelere uyan kayıt yok.', annotate: 'Not ve etiket', save: 'Kaydet', cancel: 'Kapat', note: 'Kişisel not', localHelp: 'Notlar, etiketler ve favoriler yalnız bu cihazda saklanır. Oyun kaydı ve paylaşılmış rapor değişmez.', saveFailed: 'Yerel not kaydedilemedi. Yazdıkların bu formda duruyor; cihaz depolamasını kontrol edip tekrar dene.', readFailed: 'Yerel notlar okunamadı. Kayıtlar kullanılabilir; önceki notlar yüklenemedi.', keyMissing: 'Bu kayıtta güvenilir tarih veya kimlik yok; yerel not eklenemiyor.', saved: 'Yerel not kaydedildi', favoriteAdd: 'Favorilere ekle', favoriteRemove: 'Favorilerden çıkar', compare: 'Gelişimi karşılaştır', trend: 'Kişisel boss gelişimi', trendHelp: 'Aynı karakter, sınıf, boss, zorluk ve kategorideki tam yerel kayıtları karşılaştırır. Grup hasarı kişisel DPS yerine geçmez.', trendEmpty: 'Karşılaştırmak için tam bir boss kaydına zorluk ekle ve “Gelişimi karşılaştır”ı seç.', trendPersonal: 'Gelişim karşılaştırması için ölçüm kapsamını Kişisel seç.', trendOne: 'Aynı koşullarda ikinci tam kayıt geldiğinde değişim gösterilir.', trendIncomplete: 'Bu kayıt tam karşılaştırma koşullarını sağlamıyor; kimlik, tek boss, süre ve hasar örnekleri doğrulanmalı.', trendDifficulty: 'Bu kayda zorluk ekleyip kaydet; aynı zorluktaki denemeler birlikte karşılaştırılır.', best: 'En iyi', median: 'Ortanca', previousChange: 'Önceki denemeye göre', noChange: 'İkinci kayıt bekleniyor', noteFor: 'Yerel not', dateError: 'Son tarih, ilk tarihten önce olamaz.', captured: 'Alınan kayıtlar', imported: 'İçe aktarılan', demo: 'Demo', recordMissing: 'Kayıt artık geçmişte bulunmuyor.', activeFilter: 'Uygulanan filtreler', trendSelected: 'Karşılaştırmada seçili' },
+  en: { search: 'Search history', searchHelp: 'Player, boss, class, tag or note', scope: 'Measurement scope', any: 'All', source: 'Record source', category: 'Category', difficulty: 'Difficulty', tags: 'Tags', tagsHelp: 'Separate with commas: farm, new gear', from: 'From date', to: 'Through date', sort: 'Sort', newest: 'Newest', oldest: 'Oldest', dps: 'Highest DPS', damage: 'Highest damage', duration: 'Longest encounter', favorite: 'Favorites first', favoritesOnly: 'Favorites only', apply: 'Apply filters', reset: 'Clear', matched: 'records shown', noMatches: 'No records match these filters.', annotate: 'Note and tags', save: 'Save', cancel: 'Close', note: 'Personal note', localHelp: 'Notes, tags and favorites stay on this device. They do not change the captured record or shared report.', saveFailed: 'The local note could not be saved. Your draft remains in this form; check device storage and retry.', readFailed: 'Local notes could not be read. Encounter records are available; previous notes did not load.', keyMissing: 'This record has no reliable date or identity; a local note cannot be attached.', saved: 'Local note saved', favoriteAdd: 'Add to favorites', favoriteRemove: 'Remove from favorites', compare: 'Compare progress', trend: 'Personal boss progress', trendHelp: 'Compares complete local records for the same character, class, boss, difficulty and category. Group damage is not substituted for personal DPS.', trendEmpty: 'Add a difficulty to a complete boss record, then choose “Compare progress”.', trendPersonal: 'Select Personal measurement scope to compare progress.', trendOne: 'A second complete record under the same conditions will show the change.', trendIncomplete: 'This record does not meet comparison requirements; identity, one boss, timing and damage samples must be confirmed.', trendDifficulty: 'Save a difficulty for this record to compare attempts at the same difficulty.', best: 'Best', median: 'Median', previousChange: 'From previous attempt', noChange: 'Waiting for a second record', noteFor: 'Local note', dateError: 'The end date cannot precede the start date.', captured: 'Received records', imported: 'Imported', demo: 'Demo', recordMissing: 'This record is no longer in history.', activeFilter: 'Applied filters', trendSelected: 'Selected for comparison' },
+};
+const historyLabel = key => historyWords[prefs.locale === 'tr' ? 'tr' : 'en'][key] || key;
+
+function captureHistoryForm(form) {
+  if (!form) return;
+  const values = Object.fromEntries(new FormData(form));
+  if (form.id === 'history-filter-form') historyFilterDraft = { ...historyFilterDraft, ...values, favoritesOnly: values.favoritesOnly === 'on' };
+  if (form.id === 'history-note-form' && values.historyKey === historyEditKey) historyEditDraft = { tags: values.historyTags || '', note: values.historyNote || '', category: values.historyCategory || '', difficulty: values.historyDifficulty || '' };
+}
+
+function refreshHistoryDrawer() {
+  if (drawer !== 'analysis' || tab !== 'history') return;
+  captureHistoryForm($('#history-filter-form')); captureHistoryForm($('#history-note-form'));
+  const active = document.activeElement, focusedForm = active?.form?.id, name = active?.name;
+  let start = null, end = null;
+  try { start = active?.selectionStart; end = active?.selectionEnd; } catch {}
+  refreshDrawer();
+  const form = focusedForm && document.getElementById(focusedForm), replacement = name && form?.elements.namedItem(name);
+  if (replacement?.focus) { replacement.focus({ preventScroll: true }); if (Number.isInteger(start)) { try { replacement.setSelectionRange(start, end); } catch {} } }
+}
+
+function historyOptions(values) {
+  const start = values.from ? new Date(`${values.from}T00:00:00`).getTime() : null;
+  const end = values.to ? new Date(`${values.to}T23:59:59.999`).getTime() : null;
+  return { ...values, from_ms: Number.isFinite(start) ? start : null, to_ms: Number.isFinite(end) ? end : null };
+}
+
+function historyTrendContent(records) {
+  const trend = historyTrend(records, { selectedKey: historyTrendKey, scope: historyFilters.scope, notebook: historyNotebook });
+  const reason = trend.reason === 'personal-only' ? 'trendPersonal' : trend.reason === 'difficulty-unresolved' ? 'trendDifficulty' : ['no-comparable-records', 'record-missing'].includes(trend.reason) ? 'trendEmpty' : 'trendIncomplete';
+  if (!trend.available) return `<section class="history-trend"><h3>${historyLabel('trend')}</h3><p class="help">${historyLabel(reason)}</p></section>`;
+  const maximum = Math.max(...trend.points.map(point => point.dps), 1), latest = trend.latest;
+  const delta = trend.change_percent === null ? historyLabel('noChange') : `${trend.change_percent >= 0 ? '+' : ''}${trend.change_percent.toFixed(1)}%`;
+  return `<section class="history-trend"><h3>${historyLabel('trend')}</h3><p class="history-trend-context">${esc(latest.character)} · ${esc(latest.class_name)} · ${esc(latest.boss)} · ${esc(latest.difficulty)}${latest.category ? ` · ${esc(latest.category)}` : ''}</p><div class="history-trend-bars" role="img" aria-label="${esc(trend.points.map(point => `${dateText(point.timestamp)}: ${rate(point.dps)}`).join('; '))}">${trend.points.map((point, index) => `<span style="--history-level:${Math.max(2, point.dps / maximum * 100).toFixed(2)}%" title="${esc(`${dateText(point.timestamp)} · ${rate(point.dps)}`)}"><i></i><small>${index + 1}</small></span>`).join('')}</div><div class="analysis-metrics history-trend-metrics"><div><span>${historyLabel('best')}</span><strong>${rate(trend.best.dps)}</strong></div><div><span>${historyLabel('median')}</span><strong>${rate(trend.median_dps)}</strong></div><div><span>${historyLabel('previousChange')}</span><strong>${esc(delta)}</strong></div></div><p class="help">${historyLabel(trend.comparable ? 'trendHelp' : 'trendOne')}</p></section>`;
+}
+
+function historyNoteContent(records) {
+  if (!historyEditKey) return '';
+  const wrapped = records.find(value => historyRecordKey(value.item, { imported: value.imported }) === historyEditKey);
+  if (!wrapped) return `<div class="quality-warning"><p>${historyLabel('recordMissing')}</p><button type="button" class="action-button secondary" data-action="history-close-note">${historyLabel('cancel')}</button></div>`;
+  const value = historyEditDraft || historyNotebook.get(historyEditKey);
+  return `<form id="history-note-form" class="history-note-form"><div class="record-top"><h3>${historyLabel('noteFor')} · ${esc(wrapped.item.name)}</h3><button type="button" class="action-button secondary" data-action="history-close-note">${historyLabel('cancel')}</button></div><input type="hidden" name="historyKey" value="${esc(historyEditKey)}"><div class="field-grid"><label class="field"><span>${historyLabel('category')}</span><input name="historyCategory" maxlength="48" value="${esc(value.category)}"></label><label class="field"><span>${historyLabel('difficulty')}</span><input name="historyDifficulty" maxlength="48" value="${esc(value.difficulty)}" placeholder="Normal / Hard / Nightmare"></label></div><label class="field"><span>${historyLabel('tags')}</span><input name="historyTags" maxlength="4096" value="${esc(Array.isArray(value.tags) ? value.tags.join(', ') : value.tags)}" placeholder="${esc(historyLabel('tagsHelp'))}"></label><label class="field"><span>${historyLabel('note')}</span><textarea name="historyNote" maxlength="1200" rows="3">${esc(value.note)}</textarea></label><p class="help">${historyLabel('localHelp')}</p><button type="submit" class="action-button">${historyLabel('save')}</button></form>`;
+}
+
 function historyContent() {
-  const records = allHistory();
-  return `<p class="help">${t('historyHelp')}</p>${historyCache?.failed ? `<div class="status-card history-error"><p>${t('historyReadFailed')}</p>${button('retry-history', 'historyRetry', '', true)}</div>` : ''}${reportToolbar(true)}<input id="history-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1">${records.length ? records.map(({ item, imported }, index) => { const scoped = scopedEncounter(item, prefs.damageScope), isImported = imported || item.provenance === 'imported-unverified'; return `<div class="record-card"><div class="record-top"><strong>${esc(item.name)}</strong>${source(isImported ? t('importedUnverified') : demo ? t('sourceDemo') : t('sourceActual'))}</div><div class="record-meta">${dateText(item.timestamp)} · ${clockTime(scoped.elapsed)} · ${t(prefs.damageScope)}<br>${scoped.known ? rate(scoped.dps) : '—'} DPS · ${scoped.known ? num(scoped.damage) : '—'} ${t('damage').toLowerCase()}${item.timing_valid === false ? `<br><span>${t('timingUnavailable')}</span>` : ''}</div><div class="button-row">${button('view-history', 'replay', `data-index="${index}"`, true)}</div></div>`; }).join('') : historyCache?.failed ? '' : empty('noHistory')}<div class="button-row">${prefs.importedHistory.length ? button('clear-imported', 'clearImported', '', true) : ''}</div>`;
+  const records = allHistory(), result = queryHistory(records, historyOptions(historyFilters), historyNotebook), draft = historyFilterDraft;
+  const select = (name, label, value, options) => `<label class="field"><span>${historyLabel(label)}</span><select name="${name}">${options.map(([key, text]) => `<option value="${esc(key)}" ${value === key ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></label>`;
+  const filter = `<form id="history-filter-form" class="history-filter-form"><label class="field history-search"><span>${historyLabel('search')}</span><input type="search" name="query" maxlength="160" value="${esc(draft.query)}" placeholder="${esc(historyLabel('searchHelp'))}"></label><div class="field-grid">${select('scope', 'scope', draft.scope, ['personal', 'party', 'observed'].map(value => [value, t(value)]))}${select('sort', 'sort', draft.sort, ['newest', 'oldest', 'dps', 'damage', 'duration', 'favorite'].map(value => [value, historyLabel(value)]))}${select('source', 'source', draft.source, [['', historyLabel('any')], ['received', historyLabel('captured')], ['imported', historyLabel('imported')], ['demo', historyLabel('demo')]])}${select('category', 'category', draft.category, [['', historyLabel('any')], ...[...new Set([...result.categories, draft.category].filter(Boolean))].map(value => [value, value])])}${select('difficulty', 'difficulty', draft.difficulty, [['', historyLabel('any')], ...[...new Set([...result.difficulties, draft.difficulty].filter(Boolean))].map(value => [value, value])])}<label class="field"><span>${historyLabel('tags')}</span><input name="tags" maxlength="4096" value="${esc(draft.tags)}" placeholder="${esc(historyLabel('tagsHelp'))}"></label><label class="field"><span>${historyLabel('from')}</span><input type="date" name="from" value="${esc(draft.from)}"></label><label class="field"><span>${historyLabel('to')}</span><input type="date" name="to" value="${esc(draft.to)}"></label></div><label class="check-field"><input type="checkbox" name="favoritesOnly" ${draft.favoritesOnly ? 'checked' : ''}>${historyLabel('favoritesOnly')}</label><div class="button-row"><button type="submit" class="action-button">${historyLabel('apply')}</button><button type="button" class="action-button secondary" data-action="history-reset-filters">${historyLabel('reset')}</button></div></form>`;
+  const cards = result.entries.map(({ item, imported, source: recordSource, index, key, annotation, scoped }) => `<article class="record-card history-record${annotation.favorite ? ' is-favorite' : ''}"><div class="record-top"><strong>${annotation.favorite ? '<span class="history-star" aria-hidden="true">★</span> ' : ''}${esc(item.name)}</strong>${source(imported ? t('importedUnverified') : recordSource === 'demo' || demo ? t('sourceDemo') : t('sourceActual'))}</div><div class="record-meta">${esc(dateText(item.timestamp || item.started_ms))} · ${clockTime(scoped.elapsed)} · ${t(historyFilters.scope)}<br>${scoped.known ? rate(scoped.dps) : '—'} DPS · ${scoped.known ? num(scoped.damage) : '—'} ${t('damage').toLowerCase()}${item.timing_valid === false ? `<br>${t('timingUnavailable')}` : ''}</div>${annotation.category || annotation.difficulty || annotation.tags.length ? `<div class="history-labels">${[annotation.category, annotation.difficulty, ...annotation.tags].filter(Boolean).map(value => `<span class="tag">${esc(value)}</span>`).join('')}</div>` : ''}${annotation.note ? `<p class="history-note-preview">${esc(Array.from(annotation.note).slice(0, 180).join(''))}${Array.from(annotation.note).length > 180 ? '…' : ''}</p>` : ''}<div class="button-row">${button('view-history', 'replay', `data-index="${index}"`, true)}<button type="button" class="action-button secondary history-favorite" data-action="history-favorite" data-key="${esc(key || '')}" aria-pressed="${annotation.favorite}" title="${esc(historyLabel(annotation.favorite ? 'favoriteRemove' : 'favoriteAdd'))}" ${key ? '' : 'disabled'}>${annotation.favorite ? '★' : '☆'}<span class="sr-only"> ${historyLabel(annotation.favorite ? 'favoriteRemove' : 'favoriteAdd')}</span></button><button type="button" class="action-button secondary" data-action="history-edit-note" data-key="${esc(key || '')}" ${key ? '' : 'disabled'}>${historyLabel('annotate')}</button><button type="button" class="action-button secondary" data-action="history-compare" data-key="${esc(key || '')}" aria-pressed="${key === historyTrendKey}" ${key ? '' : 'disabled'}>${historyLabel(key === historyTrendKey ? 'trendSelected' : 'compare')}</button></div>${key ? '' : `<p class="help">${historyLabel('keyMissing')}</p>`}</article>`).join('');
+  return `<section class="history-page"><p class="help">${t('historyHelp')}</p>${historyCache?.failed ? `<div class="status-card history-error"><p>${t('historyReadFailed')}</p>${button('retry-history', 'historyRetry', '', true)}</div>` : ''}${historyNotebookError ? `<p class="quality-warning" role="status">${historyLabel(historyNotebookError === 'storage-read-failed' ? 'readFailed' : 'saveFailed')}</p>` : ''}${reportToolbar(true)}<input id="history-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1">${filter}<p class="history-result-count" aria-live="polite">${result.matched} / ${result.total} ${historyLabel('matched')} · ${t(historyFilters.scope)}</p>${historyTrendContent(records)}${historyNoteContent(records)}<div class="history-records">${records.length ? cards || `<p class="help">${historyLabel('noMatches')}</p>` : historyCache?.failed ? '' : empty('noHistory')}</div><div class="button-row">${prefs.importedHistory.length ? button('clear-imported', 'clearImported', '', true) : ''}</div></section>`;
 }
 
 function plannerContent() {
-  return `${source(t('sourceManual'))}<p class="help">${t('manualHelp')}</p><h3 class="section-title">${t('equipment')}</h3>${prefs.equipment.length ? prefs.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>${esc(item.name)}</strong>${button('delete-equipment', 'delete', `data-id="${esc(item.id)}"`, true)}</div><div class="record-meta">${esc(item.note)}</div></div>`).join('') : empty('noEquipment')}
+  return `<div id="automatic-odyle">${odyleContent()}</div><hr class="divider">${source(t('sourceManual'))}<p class="help">${t('manualHelp')}</p><h3 class="section-title">${t('equipment')}</h3>${prefs.equipment.length ? prefs.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>${esc(item.name)}</strong>${button('delete-equipment', 'delete', `data-id="${esc(item.id)}"`, true)}</div><div class="record-meta">${esc(item.note)}</div></div>`).join('') : empty('noEquipment')}
     <form id="equipment-form">${field('equipmentName', 'equipmentName', 'text', '', 'maxlength="64" required')}<label class="field"><span>${t('note')}</span><textarea name="note" maxlength="200"></textarea></label><button class="action-button" type="submit">${t('add')}</button></form><hr class="divider">
     <h3 class="section-title">${t('cooldowns')} ${source(t('sourceManual'))}</h3><p class="help">${t('manualTimerHelp')}</p>${prefs.manualCooldowns.map(item => `<div class="record-card"><div class="record-top"><strong>${esc(item.name)}</strong><span class="manual-countdown" data-cooldown="${esc(item.id)}"></span></div><div class="record-meta">${item.seconds} s</div><div class="button-row">${button('start-cooldown', 'start', `data-id="${esc(item.id)}"`)}${button('delete-cooldown', 'delete', `data-id="${esc(item.id)}"`, true)}</div></div>`).join('')}
     <form id="cooldown-form">${field('cooldownName', 'cooldownName', 'text', '', 'maxlength="64" required')}${field('seconds', 'seconds', 'number', 60, 'min="1" max="86400" required')}<button class="action-button" type="submit">${t('add')}</button></form>
@@ -910,13 +981,81 @@ function alertsContent() {
 }
 
 function actualCooldownText(value) {
-  const cooldown = cooldownObservation(value, { localPlayerId: value?.actor_id === undefined ? undefined : state.local_player_id });
-  const label = cooldown.kind === 'confirmed' ? t('readyConfirmed') : cooldown.kind === 'elapsed' ? t('timerElapsed') : cooldown.kind === 'countdown' ? clockTime(cooldown.remaining) : '—';
+  const cooldown = cooldownObservation(value, { localPlayerId: state.local_identity_source === 'server' ? state.local_player_id : null });
+  const label = cooldown.kind === 'confirmed' ? t('readyConfirmed') : cooldown.kind === 'elapsed' ? t('timerElapsed') : cooldown.kind === 'countdown' ? `~${clockTime(cooldown.remaining)} · ${t('estimatedCooldown')}` : cooldown.raw_units !== null ? t('counterLearning') : '—';
   return `${label}${cooldown.charges === null ? '' : ` · ${t('charges')}: ${cooldown.charges}`}`;
 }
 
 function actualCooldownCards() {
-  return state.cooldowns.length ? state.cooldowns.map((value, index) => `<div class="record-card">${esc(value?.name || `Skill #${value?.skill_id ?? value?.id ?? '?'}`)} ${source(t(cooldownStatus(value).source === 'server' ? 'serverObserved' : 'sourceActual'))}<div class="record-meta actual-cooldown" data-actual-cooldown-index="${index}">${esc(actualCooldownText(value))}</div></div>`).join('') : empty('noActualCooldowns');
+  return state.cooldowns.length ? state.cooldowns.map((value, index) => `<div class="record-card">${esc(value?.name || `Skill #${value?.skill_id ?? '?'}`)} ${source(t('serverObserved'))}<div class="record-meta actual-cooldown" data-actual-cooldown-index="${index}">${esc(actualCooldownText(value))}</div></div>`).join('') : empty('noActualCooldowns');
+}
+
+function automaticOdyle() { return resourceStatus(state.resources, Date.now(), state.local_identity_source === 'server' ? state.local_player_id : null); }
+
+function odyleContent() {
+  const value = automaticOdyle();
+  return `<h3 class="section-title">${t('autoOdyle')} ${source(demo ? t('sourceDemo') : t('serverObserved'))}</h3>${value.available ? `<div class="odyle-card"><div><span>${t('odyleRegular')}</span><strong>${fullNumber(value.base)} <small>/ ${value.base_capacity ?? '—'}</small></strong></div><div><span>${t('odyleBonus')}</span><strong>+${fullNumber(value.bonus)}</strong></div><div class="odyle-total"><span>${t('odyleTotal')}</span><strong>${fullNumber(value.total)}</strong></div></div><p class="help">${t('observedTime')}: ${esc(dateText(value.observed_at_ms))}${value.base_capacity === null ? '' : `<br>${t('odyleCapacity')}`}</p>` : `<p class="help">${t('odyleWaiting')}</p>`}`;
+}
+
+function renderLiveTools() {
+  const value = automaticOdyle(), team = teamSnapshot(teamState), strip = $('#live-tools');
+  strip.hidden = !value.available && !team.enabled;
+  $('#odyle-chip').hidden = !value.available;
+  setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : '—'}`);
+  $('#odyle-chip').title = `${t('odyleRegular')}: ${value.base ?? '—'} / ${value.base_capacity ?? '—'} · ${t('odyleBonus')}: ${value.bonus ?? '—'}`;
+  $('#team-chip').hidden = !team.enabled;
+  setText($('#team-chip'), `${t('team')} · ${team.peers.filter(peer => peer.fresh).length}/${team.peers.length}`);
+  const liveOdyle = $('#automatic-odyle');
+  const fingerprint = JSON.stringify([prefs.locale, value.available, value.actor_id, value.base, value.bonus, value.base_capacity, value.observed_at_ms]);
+  if (liveOdyle && liveOdyle.dataset.fingerprint !== fingerprint) { liveOdyle.innerHTML = odyleContent(); liveOdyle.dataset.fingerprint = fingerprint; }
+}
+
+function teamContent() {
+  return `<h3 class="section-title">${t('actualCooldowns')}</h3><p class="help">${t('ownCooldownHelp')}</p><div id="actual-cooldowns">${actualCooldownCards()}</div><hr class="divider"><div id="team-live">${renderTeam(teamState, { locale: prefs.locale, state, native, busy: teamBusy, consent: teamConsent })}</div>`;
+}
+
+function updateTeamLive() {
+  const host = $('#team-live'); if (!host) return;
+  const active = host.contains(document.activeElement) ? document.activeElement : null;
+  const form = $('#team-join-form');
+  if (form) { teamInviteDraft = form.elements.teamInvite?.value || teamInviteDraft; teamConsent = form.elements.teamConsent?.checked === true; }
+  // Preserve the join form while typing. Active-room observations still expire
+  // while a copy/leave button or a details summary holds keyboard focus.
+  if (active?.closest('#team-join-form') && !teamBusy) return;
+  const focusedAction = active?.dataset.action;
+  const focusedPeer = active?.closest('[data-team-peer]')?.dataset.teamPeer;
+  const expanded = [...host.querySelectorAll('details[open]')].map(node => node.closest('[data-team-peer]')?.dataset.teamPeer);
+  const html = renderTeam(teamState, { locale: prefs.locale, state, native, busy: teamBusy, consent: teamConsent });
+  if (host.dataset.html === html) return;
+  host.innerHTML = html; host.dataset.html = html;
+  if ($('#team-invite')) $('#team-invite').value = teamInviteDraft;
+  for (const detail of host.querySelectorAll('details')) if (expanded.includes(detail.closest('[data-team-peer]')?.dataset.teamPeer)) detail.open = true;
+  if (focusedAction) [...host.querySelectorAll('[data-action]')].find(node => node.dataset.action === focusedAction)?.focus({ preventScroll: true });
+  else if (focusedPeer) [...host.querySelectorAll('[data-team-peer]')].find(node => node.dataset.teamPeer === focusedPeer)?.querySelector('summary')?.focus({ preventScroll: true });
+  if (teamInviteCopy) { const field = document.createElement('textarea'); field.readOnly = true; field.value = teamInviteCopy; field.setAttribute('aria-label', 'Luma invite'); field.className = 'team-copy-field'; host.prepend(field); field.focus(); field.select(); }
+}
+
+async function readTeamState() {
+  if (!native || teamPolling || teamBusy) return;
+  const epoch = teamRequestEpoch; teamPolling = true;
+  try { const value = await invoke('get_team_state'); if (epoch === teamRequestEpoch) teamState = teamSnapshot(value, { previous: teamState }); }
+  catch { if (epoch === teamRequestEpoch && teamState.enabled) teamState = { ...teamState, status: 'error', error: 'unavailable' }; }
+  finally { teamPolling = false; renderLiveTools(); updateTeamLive(); }
+}
+
+async function teamAction(command) {
+  if (!native || teamBusy || command !== 'leave_team_room' && !teamConsent) return;
+  teamRequestEpoch++; teamBusy = true; teamInviteCopy = ''; updateTeamLive();
+  try {
+    const value = await invoke(command, command === 'join_team_room' ? { invite: teamInviteDraft } : undefined);
+    teamState = teamSnapshot(value); teamInviteDraft = ''; teamConsent = false;
+  } catch {
+    if (command === 'leave_team_room') {
+      try { teamState = teamSnapshot(await invoke('get_team_state')); } catch {}
+      toast(prefs.locale === 'tr' ? 'Yerel paylaşım durdu. Sunucudaki kapanış doğrulanamadı; oda en geç süresi dolunca kapanır.' : 'Local sharing stopped. Remote closure could not be confirmed; the room expires automatically.', true);
+    } else toast(t('failed'), true);
+  }
+  finally { teamBusy = false; if (drawer === 'analysis' && tab === 'team') refreshDrawer(); renderLiveTools(); }
 }
 
 function renderDrawerContent() {
@@ -955,7 +1094,7 @@ function renderDrawerContent() {
   }
   contentHost.setAttribute('role', drawer === 'analysis' ? 'tabpanel' : 'region');
   contentHost.setAttribute('aria-labelledby', drawer === 'analysis' ? `drawer-tab-analysis-${tab}` : 'drawer-title');
-  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
+  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
   if (drawerContentFingerprint !== content) { $('#drawer-content').innerHTML = content; drawerContentFingerprint = content; }
   tickTimers();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -975,6 +1114,7 @@ function selectDrawerTab(name) {
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
     if (name === 'history') historyCache?.retry();
     if (name === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
+    if (name === 'team') readTeamState();
     if (name === 'curves') { historyCache?.retry(); readCurveRecord(); }
     if (name === 'effects') readAssistTimeline();
     if (name === 'build') readCharacterData();
@@ -1000,6 +1140,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   for (const element of [...$('#meter').children]) if (!['drawer', 'drawer-backdrop', 'toast'].includes(element.id)) element.inert = true;
   renderDrawerContent();
   if (kind === 'analysis' && requestedTab === 'history') historyCache?.retry();
+  if (kind === 'analysis' && requestedTab === 'team') readTeamState();
   if (kind === 'analysis' && requestedTab === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
   if (kind === 'analysis' && requestedTab === 'curves') { historyCache?.retry(); readCurveRecord(); }
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
@@ -1012,7 +1153,7 @@ function openDrawer(kind, requestedTab = 'overview') {
 
 function closeDrawer() {
   if (!drawer) return;
-  drawer = ''; snapshot = null;
+  drawer = ''; snapshot = null; teamInviteCopy = ''; teamInviteDraft = ''; teamConsent = false;
   $('#drawer').hidden = true; $('#drawer-backdrop').hidden = true;
   for (const element of [...$('#meter').children]) element.inert = false;
   if (restoreFocus?.isConnected && restoreFocus.getClientRects().length && !restoreFocus.disabled) restoreFocus.focus(); else $('#analysis-button').focus();
@@ -1063,10 +1204,14 @@ function tickTimers() {
   renderLatency();
   renderCombatWarning();
   renderCubeLive();
+  renderLiveTools();
+  updateTeamLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
+$('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
+$('#team-chip').addEventListener('click', () => openDrawer('analysis', 'team'));
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#damage-scope').addEventListener('change', event => { savePreferences({ rosterScope: event.target.value }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
@@ -1113,6 +1258,8 @@ $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || eve
 
 $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
+  if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
+  if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); if (['communityScope', 'communityRecordId', 'communityAnonymous'].includes(name)) refreshCommunityDrawer(); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
@@ -1162,6 +1309,8 @@ $('#drawer-content').addEventListener('change', async event => {
 
 $('#drawer-content').addEventListener('input', event => {
   const element = event.target;
+  if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
+  if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (element.name === 'cubeThreshold') { setText($('#cube-threshold-value'), `${Math.round(Number(element.value) * 100)}%`); return; }
@@ -1179,6 +1328,18 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
+  if (actionName === 'team-create') { await teamAction('create_team_room'); return; }
+  if (actionName === 'team-leave') { await teamAction('leave_team_room'); return; }
+  if (actionName === 'team-copy-invite') {
+    if (!native || teamBusy) return;
+    const epoch = teamRequestEpoch, room = teamState.room_id;
+    try {
+      const invite = await invoke('get_team_invite');
+      if (epoch !== teamRequestEpoch || room !== teamState.room_id || !teamState.enabled) return;
+      try { await navigator.clipboard.writeText(invite); toast(t('copied')); }
+      catch { if (epoch !== teamRequestEpoch || room !== teamState.room_id) return; teamInviteCopy = invite; const host = $('#team-live'); if (host) host.dataset.html = ''; updateTeamLive(); }
+    } catch { toast(t('failed'), true); } return;
+  }
   if (actionName === 'copy-community-summary') {
     try {
       const fromCommunity = tab === 'community', recordId = fromCommunity ? communityDraft.recordId : '', scope = fromCommunity ? communityDraft.scope : prefs.damageScope;
@@ -1241,7 +1402,17 @@ $('#drawer-content').addEventListener('click', async event => {
   }
   if (actionName === 'export-history') { try { await historyCache?.retry(); const received = native ? (await action('get_history'))?.history || [] : state.history; await exportReport([...received, ...prefs.importedHistory]); } catch {} }
   if (actionName === 'import-history') $('#history-file').click();
-  if (actionName === 'view-history') { const item = allHistory()[Number(control.dataset.index)]?.item; if (item) { snapshot = item; selectedPlayer = ownPlayer(item)?.id || scopedEncounter(item, prefs.damageScope).players[0]?.id || ''; tab = 'skills'; renderDrawerContent(); } }
+  if (actionName === 'view-history') { captureHistoryForm($('#history-filter-form')); captureHistoryForm($('#history-note-form')); const item = allHistory()[Number(control.dataset.index)]?.item; if (item) { snapshot = item; selectedPlayer = ownPlayer(item)?.id || scopedEncounter(item, prefs.damageScope).players[0]?.id || ''; tab = 'skills'; renderDrawerContent(); } }
+  if (actionName === 'history-reset-filters') { historyFilters = historyFilterDefaults(); historyFilterDraft = historyFilterDefaults(); historyTrendKey = ''; refreshDrawer(); }
+  if (actionName === 'history-close-note') { captureHistoryForm($('#history-filter-form')); historyEditKey = ''; historyEditDraft = null; refreshDrawer(); }
+  if (['history-favorite', 'history-edit-note', 'history-compare'].includes(actionName)) {
+    const key = control.dataset.key || '', record = allHistory().find(value => historyRecordKey(value.item, { imported: value.imported }) === key);
+    if (!key || !record) { toast(historyLabel('recordMissing'), true); return; }
+    captureHistoryForm($('#history-filter-form')); captureHistoryForm($('#history-note-form'));
+    if (actionName === 'history-edit-note') { if (historyEditKey !== key || !historyEditDraft) historyEditDraft = historyNotebook.get(key); historyEditKey = key; refreshDrawer(); $('#history-note-form [name="historyNote"]')?.focus({ preventScroll: true }); }
+    if (actionName === 'history-compare') { historyTrendKey = key; refreshHistoryDrawer(); }
+    if (actionName === 'history-favorite') { const result = historyNotebook.set(key, { favorite: !historyNotebook.get(key).favorite }); historyNotebookError = result.ok ? '' : result.error; refreshHistoryDrawer(); if (!result.ok) toast(historyLabel('saveFailed'), true); }
+  }
   if (actionName === 'clear-imported') { savePreferences({ importedHistory: [] }); refreshDrawer(); toast(t('clearConfirm')); }
   if (actionName === 'delete-equipment') { savePreferences({ equipment: prefs.equipment.filter(item => item.id !== id) }); refreshDrawer(); }
   if (actionName === 'start-cooldown') { savePreferences({ manualCooldowns: prefs.manualCooldowns.map(item => item.id === id ? { ...item, startedAt: Date.now() } : item) }); tickTimers(); }
@@ -1250,6 +1421,23 @@ $('#drawer-content').addEventListener('click', async event => {
 
 $('#drawer-content').addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target, values = Object.fromEntries(new FormData(form));
+  if (form.id === 'team-join-form') { teamInviteDraft = values.teamInvite || ''; teamConsent = values.teamConsent === 'on'; await teamAction('join_team_room'); return; }
+  if (form.id === 'history-filter-form') {
+    captureHistoryForm(form);
+    const options = historyOptions(historyFilterDraft);
+    if (options.from_ms !== null && options.to_ms !== null && options.from_ms > options.to_ms) { toast(historyLabel('dateError'), true); return; }
+    historyFilters = { ...historyFilterDraft }; refreshHistoryDrawer(); return;
+  }
+  if (form.id === 'history-note-form') {
+    captureHistoryForm(form);
+    const key = String(values.historyKey || '');
+    if (!key || key !== historyEditKey || !allHistory().some(value => historyRecordKey(value.item, { imported: value.imported }) === key)) { toast(historyLabel('recordMissing'), true); return; }
+    const result = historyNotebook.set(key, { ...historyEditDraft, tags: parseHistoryTags(historyEditDraft.tags) });
+    historyNotebookError = result.ok ? '' : result.error;
+    if (result.ok) { historyEditDraft = result.annotation; refreshDrawer(); toast(historyLabel('saved')); }
+    else { refreshHistoryDrawer(); toast(historyLabel('saveFailed'), true); }
+    return;
+  }
   if (form.id === 'community-share-form') {
     captureCommunityForm(form);
     if (!native || !communityDraft.consent) return;
@@ -1320,6 +1508,8 @@ if (native) {
   readWorldData();
   readEventSchedule();
   readCubeState();
+  readTeamState();
+  setInterval(() => { if (teamState.enabled || drawer === 'analysis' && tab === 'team') readTeamState(); }, 2000);
   setInterval(refreshState, 1500);
   setInterval(() => { if (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses') readWorldData(); }, 15000);
   setInterval(() => { if (drawer === 'settings') readEventSchedule(); }, 30000);

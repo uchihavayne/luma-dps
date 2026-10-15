@@ -52,21 +52,29 @@ test('pet lists deduplicate and preserve unknown progress rather than displaying
 });
 
 test('cooldown expiry differs from server-confirmed ready and keeps unknown charges unknown', () => {
-  const input = { actor_id: 7, scope: 'self', source: 'server', remaining_ms: 4000, expires_at_ms: 7000, observed_at_ms: 3000, charges: 1, readiness: 'cooling' };
+  const input = { actor_id: 7, source: 'local-server', unit: 'server-counter', raw_remaining_units: 9600, estimated_rate_units_per_ms: 2.4, rate_samples: 3, observed_at_ms: 3000, fresh: true, charges: 1, charges_observed_at_ms: 3000, readiness: 'estimated-cooling' };
   assert.equal(cooldownObservation(input, { localPlayerId: 7, now: 3500 }).remaining, 3500);
   assert.equal(cooldownObservation(input, { localPlayerId: 7, now: 7000 }).kind, 'elapsed');
-  assert.equal(cooldownObservation({ ...input, remaining_ms: 0, expires_at_ms: 3000, readiness: 'server-ready' }, { now: 7000 }).kind, 'confirmed');
-  assert.equal(cooldownObservation({ source: 'server', remaining_ms: 0 }).kind, 'elapsed');
+  assert.equal(cooldownObservation({ ...input, raw_remaining_units: 0, readiness: 'server-ready', ready_confirmed: true }, { now: 7000 }).kind, 'confirmed');
+  assert.equal(cooldownObservation({ source: 'server', remaining_ms: 0 }).kind, 'unknown');
   assert.equal(cooldownObservation({ remaining_ms: null, charges: null }).kind, 'unknown');
   assert.equal(cooldownObservation(input).max_charges, null);
 });
 
 test('cooldown actor mismatch and clock reversal cannot display another player readiness', () => {
-  const value = { actor_id: 7, source: 'server', remaining_ms: 4000, expires_at_ms: 7000, observed_at_ms: 3000, charges: 1 };
+  const value = { actor_id: 7, source: 'local-server', unit: 'server-counter', raw_remaining_units: 9600, estimated_rate_units_per_ms: 2.4, rate_samples: 3, observed_at_ms: 3000, fresh: true, charges: 1, charges_observed_at_ms: 3000, readiness: 'estimated-cooling' };
   const mismatch = cooldownObservation(value, { localPlayerId: 8, now: 3500 });
   assert.equal(mismatch.kind, 'unknown'); assert.equal(mismatch.charges, null);
   assert.equal(cooldownObservation(value, { now: 2999 }).remaining, null);
   assert.equal(cooldownObservation({ ...value, charges: 101 }).charges, null);
+});
+
+test('raw cooldown units are never milliseconds, stale ready and changed calibration are unknown', () => {
+  const value = { actor_id: 7, source: 'local-server', unit: 'server-counter', raw_remaining_units: 24000, observed_at_ms: 3000, fresh: true, readiness: 'unknown' };
+  assert.equal(cooldownObservation(value, { now: 3500 }).remaining, null);
+  assert.equal(cooldownObservation(value, { now: 3500 }).raw_units, 24000);
+  assert.equal(cooldownObservation({ ...value, readiness: 'server-ready', raw_remaining_units: 0, ready_confirmed: true }, { now: 9001 }).kind, 'unknown');
+  assert.equal(cooldownObservation({ ...value, readiness: 'estimated-cooling', estimated_rate_units_per_ms: 2.4, rate_samples: 2 }, { now: 3500 }).remaining, null);
 });
 
 test('fresh received stagger yields a bounded bar, then disappears without assuming break duration', () => {

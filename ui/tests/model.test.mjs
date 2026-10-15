@@ -41,12 +41,12 @@ test('a visible recurring timer expands the header without changing the selected
 });
 
 test('observed cooldown expiry does not imply confirmed readiness', () => {
-  assert.equal(cooldownStatus({ remaining_ms: 0, source: 'server', charges: 2 }).kind, 'elapsed');
-  assert.equal(cooldownStatus({ remaining_ms: 0, source: 'server', ready_confirmed: true }).kind, 'confirmed');
-  assert.equal(cooldownStatus({ remaining_ms: 5000, ready_confirmed: true }).kind, 'countdown');
-  assert.equal(cooldownStatus({ remaining_ms: null }).kind, 'unknown');
-  assert.equal(cooldownStatus({ remaining_ms: 0, charges: -3 }).charges, null);
-  assert.equal(cooldownStatus({ remaining_ms: 0, charges: 2 }).charges, 2);
+  const at = Date.now(), row = { actor_id: 7, source: 'local-server', unit: 'server-counter', fresh: true, observed_at_ms: at, charges_observed_at_ms: at, raw_remaining_units: 0, readiness: 'estimated-elapsed' };
+  assert.equal(cooldownStatus(row).kind, 'unknown');
+  assert.equal(cooldownStatus({ ...row, readiness: 'server-ready', ready_confirmed: true }).kind, 'confirmed');
+  assert.equal(cooldownStatus({ remaining_ms: 5000, ready_confirmed: true }).kind, 'unknown');
+  assert.equal(cooldownStatus({ ...row, charges: -3 }).charges, null);
+  assert.equal(cooldownStatus({ ...row, charges: 2 }).charges, 2);
 });
 
 test('keyboard resize uses 10 px, Shift uses 20 px, other keys produce no native resize', () => {

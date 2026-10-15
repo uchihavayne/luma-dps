@@ -52,15 +52,20 @@ export function petProgress(value, { localPlayerId } = {}) {
 
 export function cooldownObservation(value, { localPlayerId, now = Date.now() } = {}) {
   value = object(value);
-  const actor = identifier(value.actor_id), source = value.source === 'server' ? 'server' : 'received';
-  const validActor = localPlayerId === undefined || actor !== null && actor === identifier(localPlayerId);
-  const observed = integer(value.observed_at_ms), expires = integer(value.expires_at_ms);
-  let remaining = validActor ? integer(value.remaining_ms, 0, 3600000) : null;
-  if (validActor && expires !== null && observed !== null && expires >= observed && expires - observed <= 3600000) remaining = now >= observed ? Math.max(0, expires - now) : null;
-  const confirmed = source === 'server' && (value.readiness === 'server-ready' || value.ready_confirmed === true);
-  return { actor_id: actor, scope: validActor && value.scope === 'self' ? 'self' : 'unknown',
-    kind: remaining === null ? 'unknown' : remaining > 0 ? 'countdown' : confirmed ? 'confirmed' : 'elapsed', remaining,
-    charges: validActor ? integer(value.charges, 0, 100) : null, max_charges: null,
+  const actor = identifier(value.actor_id), source = value.source === 'local-server' ? 'local-server' : 'unknown';
+  const validActor = actor !== null && (localPlayerId === undefined || actor === identifier(localPlayerId));
+  const observed = integer(value.observed_at_ms), raw = integer(value.raw_remaining_units, 0, 0xffffffff);
+  const fresh = validActor && source === 'local-server' && value.unit === 'server-counter' && value.fresh === true && observed !== null && now >= observed && now - observed <= 6000;
+  const rate = value.estimated_rate_units_per_ms;
+  const estimated = fresh && raw !== null && typeof rate === 'number' && Number.isFinite(rate) && rate > 0 && integer(value.rate_samples, 3) !== null && ['estimated-cooling', 'estimated-elapsed'].includes(value.readiness);
+  const remaining = estimated ? Math.min(3600000, Math.max(0, raw / rate - (now - observed))) : null;
+  const confirmed = fresh && raw === 0 && value.readiness === 'server-ready' && value.ready_confirmed === true;
+  const chargeTime = integer(value.charges_observed_at_ms);
+  const chargesFresh = validActor && source === 'local-server' && chargeTime !== null && now >= chargeTime && now - chargeTime <= 6000;
+  return { actor_id: actor, scope: validActor && source === 'local-server' ? 'self' : 'unknown',
+    kind: confirmed ? 'confirmed' : remaining === null ? 'unknown' : remaining > 0 ? 'countdown' : 'elapsed', remaining,
+    estimated: estimated === true, raw_units: fresh ? raw : null, fresh,
+    charges: chargesFresh ? integer(value.charges, 0, 100) : null, max_charges: null,
     observed_at_ms: observed, charges_observed_at_ms: integer(value.charges_observed_at_ms), source };
 }
 

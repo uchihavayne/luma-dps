@@ -15,3 +15,13 @@ export const shares = sqliteTable('shares', {
 export const quotas = sqliteTable('quotas', {
   bucket: text('bucket').primaryKey(), count: integer('count').notNull(), expiresAt: integer('expires_at').notNull(),
 }, t => [index('quota_expiry').on(t.expiresAt)]);
+export const teamRooms = sqliteTable('team_rooms', {
+  id: text('id').primaryKey(), joinHash: text('join_hash').notNull(), hostHash: text('host_hash').notNull(),
+  createdAt: integer('created_at').notNull(), expiresAt: integer('expires_at').notNull(),
+}, t => [uniqueIndex('team_host').on(t.hostHash), index('team_expiry').on(t.expiresAt)]);
+export const teamPeers = sqliteTable('team_peers', {
+  id: text('id').primaryKey(), roomId: text('room_id').notNull(), tokenHash: text('token_hash').notNull(),
+  displayName: text('display_name').notNull(), className: text('class_name').notNull(),
+  receivedAt: integer('received_at').notNull(), sequence: integer('sequence').notNull(),
+  captureLive: integer('capture_live').notNull(), payload: text('payload').notNull(),
+}, t => [uniqueIndex('team_peer_token').on(t.roomId, t.tokenHash), index('team_active_peers').on(t.roomId, t.receivedAt)]);

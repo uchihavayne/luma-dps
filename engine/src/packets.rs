@@ -18,6 +18,7 @@ pub enum Event {
     Assistance(crate::assistance::AssistEvent),
     FieldBoss(crate::field_boss::FieldBossEvent),
     Character(crate::character::CharacterEvent),
+    Resource(crate::resources::ResourceEvent),
     Identity {
         id: u64,
         name: String,
@@ -40,7 +41,7 @@ pub enum Event {
     },
     Cooldown {
         skill: u32,
-        remaining_ms: Option<u32>,
+        remaining_units: Option<u32>,
         charges: Option<u32>,
     },
     Health {
@@ -266,6 +267,11 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             .map(|event| event.map(Event::FieldBoss))
             .map_err(|_| ReadError::Invalid);
     }
+    if matches!(opcode, [0x0b, 0x61] | [0x0c, 0x61] | [0x3b, 0xe3]) {
+        return crate::resources::decode(frame)
+            .map(|event| event.map(Event::Resource))
+            .map_err(|_| ReadError::Invalid);
+    }
     if matches!(
         opcode,
         [0x11, 0x56]
@@ -420,42 +426,29 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 return Ok(None);
             }
             let mut updates = Vec::with_capacity(count);
+            let mut skills = std::collections::BTreeSet::new();
             for _ in 0..count {
                 let skill = bytes.word()?;
                 let remaining = bytes.variable()?;
-                if skill == 0 || remaining > 3_600_000 {
+                if skill == 0 || remaining > 3_600_000 || !skills.insert(skill) {
                     return Err(ReadError::Invalid);
                 }
                 updates.push(Event::Cooldown {
                     skill,
-                    remaining_ms: Some(remaining),
+                    remaining_units: Some(remaining),
                     charges: None,
                 });
+            }
+            if bytes.offset != frame.len() {
+                return Err(ReadError::Invalid);
             }
             Ok(Some(Event::Updates(updates)))
         }
         [0x22, 0x38] => {
-            let state = bytes.byte()?;
-            let skill = bytes.word()?;
-            let charges = bytes.variable()?;
-            let remaining_ms = if state == 3 {
-                Some(bytes.variable()?)
-            } else if state == 1 {
-                None
-            } else {
-                return Ok(None);
-            };
-            if skill == 0
-                || charges > 100
-                || remaining_ms.is_some_and(|duration| duration > 3_600_000)
-            {
-                return Err(ReadError::Invalid);
-            }
-            Ok(Some(Event::Cooldown {
-                skill,
-                remaining_ms,
-                charges: Some(charges),
-            }))
+            // A single external state-1 example suggests charge information,
+            // but neither the state meanings nor the time unit are validated.
+            // Do not turn unclassified bytes into a cooldown or a ready charge.
+            Ok(None)
         }
         [0, 0x8d] => {
             let id = u64::from(bytes.variable()?);

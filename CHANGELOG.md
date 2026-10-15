@@ -2,6 +2,17 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.14.0 preview · 2026-10-15
+
+- Read EU ContentsTicket snapshots and updates for automatic Odyle. Keep regular energy, bonus and available total separate; derive the regular capacity only from received membership evidence. Login records wait for authoritative self identity; capture gaps and character changes clear old ownership.
+- Correct own cooldown semantics: raw server counters are not milliseconds. Learn a rate from consistent decreases, mark time estimates with `~`, and reserve confirmed readiness for a fresh received zero. Ignore the unvalidated `0x2238` charge layout.
+- Add explicit free team rooms in the same analysis drawer. Participants share only their own name, class and cooldown observations; room membership does not establish game-party membership. Show received completed party casts separately, including actors who have not dealt damage.
+- Keep team capabilities in memory, hash them on the service and expire rooms after two hours. Bound participant count, request size and free daily usage. Age observations through HTTP delay and clock changes; report unconfirmed remote closure honestly.
+- Add local history search, filters, favorites, notes, tags and comparisons between eligible personal boss encounters. Preserve incomplete-capture evidence and do not send annotations with shared reports.
+- Add automatic Odyle and active-room chips without replacing the DPS roster or Cube compass. Keep form focus, invitation drafts and expanded skill details stable during live updates.
+
+Replay, native client, SQLite/API and UI checks cover the implemented cases. A synchronized live Odyle and multi-player cooldown check remains pending. Full premium parity, complete catalogs, official rankings and universal protocol coverage are not claimed.
+
 ## 0.13.0 preview · 2026-10-15
 
 - Add Sharing and rankings to the existing analysis drawer: explicit aggregate-only upload, anonymous names by default, separate ranking participation, filtered community results, link copying/opening and revocation. No automatic uploads or account requirement.

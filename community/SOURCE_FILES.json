@@ -33,8 +33,8 @@
     },
     {
       "path": "app/v1/[...path]/route.ts",
-      "sha256": "2c41426445a8624c97446237a0b6b68da076e1bf3f16f1ad8f1348a3359f49ad",
-      "bytes": 257
+      "sha256": "ef37d996c1f839bf25bb082ef056f4440768670cb6c52dca28984ddb6f32926d",
+      "bytes": 391
     },
     {
       "path": "lib/community.mjs",
@@ -47,9 +47,19 @@
       "bytes": 11803
     },
     {
+      "path": "lib/rooms.mjs",
+      "sha256": "96a240c7eb0884b8d1efcf139fac2804b05053a2097cf2f0e8350e93058eb72d",
+      "bytes": 12123
+    },
+    {
+      "path": "lib/rooms.test.mjs",
+      "sha256": "1d6c4a60dc9858140df1da7bd54e33595768d0595af41a97ab2412851f423b14",
+      "bytes": 10834
+    },
+    {
       "path": "db/schema.ts",
-      "sha256": "b88358c4b2d86bc5686ea478658cfa81ad92be3d7d1c54ff5cb79e2169b23a11",
-      "bytes": 1458
+      "sha256": "0487ba5c8b60d7aa15bb1ceacdd73a7a910a6b9403f0358dc4fc2e2faabf8b17",
+      "bytes": 2347
     },
     {
       "path": "drizzle/0000_nebulous_lockheed.sql",
@@ -57,14 +67,24 @@
       "bytes": 1365
     },
     {
+      "path": "drizzle/0001_remarkable_doorman.sql",
+      "sha256": "63d3e81ae88320efea9ae0bd6122187c08ac186c7dbe6ee99cd0ebdff034e50f",
+      "bytes": 883
+    },
+    {
       "path": "drizzle/meta/_journal.json",
-      "sha256": "378d8a00d05acd3d606d10dc061e5f21d7242aa012a840a5ec76292aaabe87d2",
-      "bytes": 207
+      "sha256": "5221a3f4e52aa882fb335e1e03551442018b8fc8705c837507f6a03a12355344",
+      "bytes": 353
     },
     {
       "path": "drizzle/meta/0000_snapshot.json",
       "sha256": "d49cb5c9e8d407ddcf1bd0ffa724c9f88d06cc206effd22b9a72616ca087e36c",
       "bytes": 6191
+    },
+    {
+      "path": "drizzle/meta/0001_snapshot.json",
+      "sha256": "8cb6476b2968c7c970b28533bf8478a39c4e9ee5181455b0fd0593cf830ae6ed",
+      "bytes": 9886
     },
     {
       "path": "public/favicon.svg",
