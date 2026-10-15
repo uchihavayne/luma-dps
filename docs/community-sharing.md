@@ -1,6 +1,6 @@
 # Free sharing and community rankings
 
-This document describes the **0.13.0 preview**. Local fight text, HTML, CSV and JSON sharing works without a hosted service. The online client and report/ranking service are implemented; public service activation/configuration remains a deployment gate. An unavailable endpoint does not prevent local measuring or exporting.
+This document describes the **0.13.0 preview**. The free [Luma Community service](https://luma-dps-community.uchihavayne.chatgpt.site) is publicly available without an account. Unauthenticated publication, report retrieval, filtered rankings and revocation were verified on **15 October 2026**. Local fight text, HTML, CSV and JSON sharing works without a hosted service; an unavailable endpoint does not prevent local measuring or exporting.
 
 ## Using the same application window
 
@@ -46,7 +46,7 @@ The service validates structured summaries, arithmetic and ranking conditions. I
 
 Community reads preserve previously received results during a network error and label the failure. Upload failures never create a fake successful link; revocation failures never erase the retained deletion key. The client does not silently switch providers, scrape a competing site's logs or upload every encounter.
 
-The application uses its configured Luma HTTPS endpoint; redirects or unrelated report origins are rejected. The service limits request sizes, record shapes and traffic and expires old data. There is no paid entitlement in Luma. Public endpoint availability still depends on deployment and the hosting service's limits.
+The application uses the public [Luma HTTPS endpoint](https://luma-dps-community.uchihavayne.chatgpt.site); redirects or unrelated report origins are rejected. The service limits request sizes, record shapes and traffic and expires old data. There is no paid entitlement in Luma. Availability remains subject to the hosting service's limits.
 
 ### Initial service limits
 
