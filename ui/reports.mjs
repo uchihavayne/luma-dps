@@ -1,4 +1,5 @@
 import { formatRate } from './model.mjs';
+import { normalizeLatencyHistory, renderLatencyHistory } from './latency-history.mjs';
 
 const LIMITS = Object.freeze({ bytes: 16 * 1024 * 1024, encounters: 200, players: 100, skills: 500, targets: 100, rows: 100000, samples: 20000, collectionSamples: 100000 });
 const SCOPES = new Set(['personal', 'party', 'observed']);
@@ -96,6 +97,7 @@ function normalizeEncounter(value, budget) {
     party_member_ids: safeList(value.party_member_ids, LIMITS.players, 'Party').map(identifier).filter(id => id !== null),
     party_membership_source: ['server', 'manual'].includes(value.party_membership_source) ? value.party_membership_source : 'unresolved',
     party_total_damage: metric(value.party_total_damage), party_dps: metric(value.party_dps), party_elapsed_ms: metric(value.party_elapsed_ms),
+    ...(Object.hasOwn(value, 'party_started_ms') ? { party_started_ms: metric(value.party_started_ms) } : {}),
     players: safeList(value.players, LIMITS.players, 'Player').map(player => normalizePlayer(player, budget)),
     targets: safeList(value.targets, LIMITS.targets, 'Target').map(normalizeTarget),
     personal_targets: safeList(value.personal_targets, LIMITS.targets, 'Personal target').map(normalizeTarget),
@@ -109,6 +111,8 @@ function normalizeEncounter(value, budget) {
     stream_gaps: metric(value.stream_gaps ?? value.diagnostics?.stream_gaps),
     provenance: ['received', 'demo', 'imported-unverified'].includes(value.provenance) ? value.provenance : 'unspecified',
   };
+  const latency = normalizeLatencyHistory(value.network_latency, record);
+  if (latency) record.network_latency = latency;
   if (record.total_damage === null && record.personal_total_damage === null && record.party_total_damage === null && !(SCOPES.has(value.actor_scope) && value.actor_scope !== 'observed')) throw new Error('Encounter has no valid damage metric');
   return record;
 }
@@ -134,6 +138,16 @@ export function importEncounterCollection(input) {
   return result;
 }
 
+function scopeWindow(record, scope) {
+  const start = metric(record[`${scope}_started_ms`]), elapsed = metric(record[`${scope}_elapsed_ms`]);
+  const end = start === null || elapsed === null ? null : start + elapsed;
+  const generalEnd = record.ended_ms ?? (record.started_ms === null || record.elapsed_ms === null ? null : record.started_ms + record.elapsed_ms);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(elapsed) || elapsed <= 0 || !Number.isSafeInteger(end) || record.started_ms === null || generalEnd === null || start < record.started_ms || end > generalEnd) return null;
+  const actors = scope === 'personal' ? new Set([String(record.local_player_id)]) : new Set(record.party_member_ids.map(String));
+  if (record.damage_samples.some(sample => actors.has(String(sample.player_id)) && (sample.timestamp_ms < start || sample.timestamp_ms > end))) return null;
+  return { start, end };
+}
+
 function selectScope(record, requested) {
   const scope = scopeOf(requested ?? record.actor_scope);
   if (record.actor_scope !== 'observed' && (scope === record.actor_scope || scope === 'observed')) return { ...record };
@@ -142,21 +156,32 @@ function selectScope(record, requested) {
     const known = record.local_player_id !== null && record.local_identity_source !== 'unresolved';
     const players = known ? record.players.filter(player => player.id !== null && String(player.id) === String(record.local_player_id)).map(player => ({ ...player, dps: record.personal_dps ?? (player.damage ?? 0) * 1000 / Math.max(1000, record.personal_elapsed_ms ?? record.elapsed_ms ?? 0), share: player.damage > 0 ? 1 : 0 })) : [];
     const confirmed = known && players.length <= 1;
+    const window = confirmed ? scopeWindow(record, scope) : null;
     record = { ...record, unclassified_player_target_amount: players[0]?.unclassified_player_target_amount, unclassified_player_target_events: players[0]?.unclassified_player_target_events, received_samples: confirmed ? record.received_samples.filter(sample => String(sample.target) === String(record.local_player_id)) : [] };
-    return { ...record, actor_scope: scope, players: confirmed ? players : [], targets: confirmed ? record.personal_targets : [], damage_samples: confirmed ? record.damage_samples.filter(sample => String(sample.player_id) === String(record.local_player_id)) : [], assist: scopedAssist(record.assist, new Set(confirmed ? [String(record.local_player_id)] : []), confirmed ? record.personal_targets : []), total_damage: confirmed ? record.personal_total_damage ?? players[0]?.damage ?? 0 : null, dps: confirmed ? record.personal_dps ?? players[0]?.dps ?? 0 : null, elapsed_ms: record.personal_elapsed_ms ?? record.elapsed_ms, started_ms: record.personal_started_ms ?? record.started_ms, ended_ms: record.personal_started_ms === null || record.personal_elapsed_ms === null ? record.ended_ms : record.personal_started_ms + record.personal_elapsed_ms, party_member_ids: [], party_membership_source: 'unresolved', party_total_damage: null, party_dps: null, party_elapsed_ms: null, party_targets: [] };
+    return { ...record, actor_scope: scope, players: confirmed ? players : [], targets: confirmed ? record.personal_targets : [], damage_samples: confirmed ? record.damage_samples.filter(sample => String(sample.player_id) === String(record.local_player_id)) : [], assist: scopedAssist(record.assist, new Set(confirmed ? [String(record.local_player_id)] : []), confirmed ? record.personal_targets : []), total_damage: confirmed ? record.personal_total_damage ?? players[0]?.damage ?? 0 : null, dps: confirmed ? record.personal_dps ?? players[0]?.dps ?? 0 : null, elapsed_ms: record.personal_elapsed_ms ?? record.elapsed_ms, started_ms: window?.start ?? record.started_ms, ended_ms: window?.end ?? record.ended_ms, party_member_ids: [], party_membership_source: 'unresolved', party_total_damage: null, party_dps: null, party_elapsed_ms: null, party_targets: [], ...(Object.hasOwn(record, 'party_started_ms') ? { party_started_ms: null } : {}) };
   }
   const known = record.party_membership_source !== 'unresolved';
+  const window = known ? scopeWindow(record, scope) : null;
   const members = new Set(record.party_member_ids.map(String));
   const players = known ? record.players.filter(player => player.in_party || members.has(String(player.id))).map(player => ({ ...player, dps: (player.damage ?? 0) * 1000 / Math.max(1000, record.party_elapsed_ms ?? record.elapsed_ms ?? 0), share: record.party_total_damage > 0 ? (player.damage ?? 0) / record.party_total_damage : 0 })) : [];
   const included = new Set(players.map(player => String(player.id)));
   const scopedSum = key => players.every(player => typeof player[key] === 'number') ? players.reduce((sum, player) => sum + player[key], 0) : undefined;
   record = { ...record, unclassified_player_target_amount: known ? scopedSum('unclassified_player_target_amount') : undefined, unclassified_player_target_events: known ? scopedSum('unclassified_player_target_events') : undefined, received_samples: known ? record.received_samples.filter(sample => included.has(String(sample.target))) : [] };
-  return { ...record, actor_scope: scope, players, targets: known ? record.party_targets : [], damage_samples: known ? record.damage_samples.filter(sample => included.has(String(sample.player_id))) : [], assist: scopedAssist(record.assist, included, known ? record.party_targets : []), total_damage: known ? record.party_total_damage ?? players.reduce((sum, player) => sum + (player.damage ?? 0), 0) : null, dps: known ? record.party_dps ?? players.reduce((sum, player) => sum + (player.dps ?? 0), 0) : null, elapsed_ms: record.party_elapsed_ms ?? record.elapsed_ms };
+  return { ...record, actor_scope: scope, players, targets: known ? record.party_targets : [], damage_samples: known ? record.damage_samples.filter(sample => included.has(String(sample.player_id))) : [], assist: scopedAssist(record.assist, included, known ? record.party_targets : []), total_damage: known ? record.party_total_damage ?? players.reduce((sum, player) => sum + (player.damage ?? 0), 0) : null, dps: known ? record.party_dps ?? players.reduce((sum, player) => sum + (player.dps ?? 0), 0) : null, elapsed_ms: record.party_elapsed_ms ?? record.elapsed_ms, started_ms: window?.start ?? record.started_ms, ended_ms: window?.end ?? record.ended_ms };
 }
 
 function prepared(input, options = {}) {
   const result = collection(input);
-  result.encounters = result.encounters.map(record => selectScope(record, options.scope));
+  result.encounters = result.encounters.map(record => {
+    const selected = selectScope(record, options.scope);
+    if (record.network_latency) {
+      const end = selected.ended_ms ?? (selected.started_ms === null || selected.elapsed_ms === null ? null : selected.started_ms + selected.elapsed_ms);
+      const samples = record.network_latency.samples.filter(sample => selected.started_ms !== null && end !== null && sample.observed_at_ms >= selected.started_ms && sample.observed_at_ms <= end);
+      const latency = normalizeLatencyHistory({ ...record.network_latency, samples }, selected);
+      if (latency) selected.network_latency = latency; else delete selected.network_latency;
+    }
+    return selected;
+  });
   if (!options.anonymize) return result;
   const actors = new Map();
   const names = new Map();
@@ -179,6 +204,7 @@ function prepared(input, options = {}) {
     const shift = value => value === null ? null : Math.max(0, value - origin);
     for (const list of [record.targets, record.personal_targets, record.party_targets]) for (const target of list) if (!shiftedTargets.has(target)) { target.health_observed_at_ms = shift(target.health_observed_at_ms); shiftedTargets.add(target); }
     for (const sample of [...record.damage_samples, ...record.received_samples]) { sample.source = alias(sample.source, ''); sample.player_id = alias(sample.player_id, ''); sample.target = alias(sample.target, ''); sample.timestamp_ms = Math.max(0, sample.timestamp_ms - origin); }
+    for (const sample of record.network_latency?.samples || []) sample.observed_at_ms = shift(sample.observed_at_ms);
     for (const cast of record.assist.casts) { cast.actor_id = alias(cast.actor_id, ''); cast.target_id = alias(cast.target_id, ''); cast.started_ms = shift(cast.started_ms); cast.expires_ms = shift(cast.expires_ms); }
     for (const effect of record.assist.effects) { effect.caster_id = alias(effect.caster_id, ''); effect.recipient_id = alias(effect.recipient_id, ''); effect.started_ms = shift(effect.started_ms); effect.expires_ms = shift(effect.expires_ms); }
     for (const event of record.assist.timeline) { event.actor_id = alias(event.actor_id, ''); event.target_id = alias(event.target_id, ''); event.at_ms = shift(event.at_ms); }
@@ -188,6 +214,7 @@ function prepared(input, options = {}) {
     record.local_player_name = record.local_player_id === null ? '' : names.get(record.local_player_id) || `Player ${record.local_player_id}`;
     record.party_member_ids = record.party_member_ids.map(id => alias(id, ''));
     record.personal_started_ms = shift(record.personal_started_ms);
+    if (Object.hasOwn(record, 'party_started_ms')) record.party_started_ms = shift(record.party_started_ms);
     record.personal_damage_taken_started_ms = shift(record.personal_damage_taken_started_ms);
     for (const player of record.players) player.damage_taken_started_ms = shift(player.damage_taken_started_ms);
     if (record.character_build) {
@@ -213,9 +240,12 @@ function csvCell(value) {
 }
 
 export function exportEncounterCsv(input, options = {}) {
-  const columns = ['encounter', 'scope', 'started_ms', 'ended_ms', 'elapsed_ms', 'row_type', 'player', 'class', 'skill_or_target', 'damage', 'dps', 'share', ...STATS, 'timestamp_ms', 'source_actor', 'player_id', 'target_id', 'tick', 'critical', 'flags', 'angle', 'sample_complete'];
+  const records = prepared(input, options).encounters;
+  const latencyColumns = ['connection_rtt_source', 'connection_rtt_ms', 'connection_rtt_latest_ms', 'connection_rtt_variation_ms', 'connection_rtt_measured_connections', 'connection_rtt_minimum_ms', 'connection_rtt_maximum_ms', 'connection_rtt_average_ms', 'connection_rtt_median_ms', 'connection_rtt_p95_ms', 'connection_rtt_sample_count', 'connection_rtt_window_ms', 'connection_rtt_observed_span_ms', 'connection_rtt_partial', 'connection_rtt_truncated'];
+  const hasLatency = records.some(record => record.network_latency?.sample_count > 0);
+  const columns = ['encounter', 'scope', 'started_ms', 'ended_ms', 'elapsed_ms', 'row_type', 'player', 'class', 'skill_or_target', 'damage', 'dps', 'share', ...STATS, 'timestamp_ms', 'source_actor', 'player_id', 'target_id', 'tick', 'critical', 'flags', 'angle', 'sample_complete', ...(hasLatency ? latencyColumns : [])];
   const rows = [columns];
-  for (const record of prepared(input, options).encounters) {
+  for (const record of records) {
     const playersById = new Map(record.players.map(player => [String(player.id), player]));
     const skillsByPlayer = new Map(record.players.map(player => [String(player.id), new Map(player.skills.map(skill => [String(skill.id), skill]))]));
     const prefix = [record.id, record.actor_scope, record.started_ms, record.ended_ms, record.elapsed_ms];
@@ -232,8 +262,20 @@ export function exportEncounterCsv(input, options = {}) {
     }
     for (const event of record.assist.timeline) rows.push([...prefix, event.kind, '', '', event.skill_id === null ? '' : `Skill #${event.skill_id}`, '', '', '', ...STATS.map(() => null), event.at_ms, event.actor_id, '', event.target_id, '', '', '', '', !record.assist.retention_limited]);
     for (const stagger of record.assist.stagger || []) rows.push([...prefix, stagger.broken ? 'stagger-break-observation' : 'stagger-observation', '', '', `${stagger.current} / ${stagger.maximum ?? '?'}`, '', '', '', ...STATS.map(() => null), stagger.observed_at_ms, stagger.actor_id, '', stagger.actor_id, '', '', '', '', !record.assist.retention_limited]);
+    const latency = record.network_latency;
+    if (latency?.sample_count > 0) {
+      const shared = { encounter: record.id, scope: record.actor_scope, started_ms: record.started_ms, ended_ms: record.ended_ms, elapsed_ms: record.elapsed_ms, skill_or_target: 'Game TCP connection set', connection_rtt_source: latency.source, connection_rtt_partial: latency.partial, connection_rtt_truncated: latency.truncated, sample_complete: !latency.partial && !latency.truncated };
+      const summary = { ...shared, row_type: 'connection-rtt-summary', ...Object.fromEntries(['minimum_ms', 'maximum_ms', 'average_ms', 'median_ms', 'p95_ms', 'sample_count', 'window_ms', 'observed_span_ms'].map(key => [`connection_rtt_${key}`, latency[key]])) };
+      rows.push(columns.map(column => summary[column]));
+      for (const sample of latency.samples) {
+        const values = { ...shared, row_type: 'connection-rtt-sample', timestamp_ms: sample.observed_at_ms, connection_rtt_ms: sample.rtt_ms, connection_rtt_latest_ms: sample.latest_rtt_ms, connection_rtt_variation_ms: sample.variation_ms, connection_rtt_measured_connections: sample.measured_connections };
+        rows.push(columns.map(column => values[column]));
+      }
+    }
   }
-  return rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  const result = rows.map(row => [...row, ...Array(Math.max(0, columns.length - row.length)).fill(null)].map(csvCell).join(',')).join('\r\n') + '\r\n';
+  if (new TextEncoder().encode(result).byteLength > LIMITS.bytes) throw new Error('Report file limit exceeded');
+  return result;
 }
 
 const labels = {
@@ -253,8 +295,9 @@ export function exportEncounterHtml(input, options = {}) {
     const staggerRows = record.assist.stagger || [];
     const staggerTitle = lang === 'en' ? 'Observed boss stagger' : 'Alınan boss dengesi';
     const staggerHtml = staggerRows.length ? `<details><summary>${staggerTitle}</summary><ul>${staggerRows.map(row => `<li>${html(record.targets.find(target => String(target.id) === String(row.actor_id))?.name || `#${row.actor_id}`)} · ${number(row.current)} / ${number(row.maximum)}${row.broken ? ` · ${lang === 'en' ? 'Stagger broken' : 'Denge kırıldı'}` : ''}</li>`).join('')}</ul></details>` : '';
+    const latencyHtml = record.network_latency ? renderLatencyHistory(record, { locale: lang, scope: record.actor_scope }) : '';
 
-    return `<article><header><span class="badge">${html(l[record.actor_scope])}</span>${record.provenance === 'imported-unverified' ? `<span class="badge">${html(l.imported)}</span>` : ''}<h2>${html(title)}</h2>${record.timestamp ? `<p>${html(record.timestamp)}</p>` : ''}</header><div class="metrics"><div><small>${html(l.damage)}</small><b>${number(record.total_damage)}</b></div><div><small>DPS</small><b>${perSecond(record.dps)}</b></div><div><small>${html(l.duration)}</small><b>${record.elapsed_ms === null ? '—' : number(record.elapsed_ms / 1000)} s</b></div></div>${record.truncated || record.stream_gaps > 0 ? `<p class="warning">${html(l.incomplete)}</p>` : ''}${record.total_damage === null ? `<p class="warning">${html(l.unknownScope)}</p>` : ''}${players.length ? `<div class="table-wrap"><table><thead><tr><th>${html(l.player)}</th><th>${html(l.damage)}</th><th>DPS</th><th>${html(l.critical)}</th></tr></thead><tbody>${players.map(player => `<tr><td><strong>${html(player.name || `#${player.id ?? '?'}`)}</strong><small>${html(player.class_name)}</small></td><td>${number(player.damage)}</td><td>${perSecond(player.dps)}</td><td>${rate(player.crit_hits, player.hits)}</td></tr>`).join('')}</tbody></table></div>${players.map(player => `<details><summary>${html(player.name || `#${player.id ?? '?'}`)} · ${html(l.details)}</summary><div class="table-wrap"><table><thead><tr><th>${html(l.skill)}</th><th>${html(l.damage)}</th><th>${html(l.hits)}</th><th>${html(l.critical)}</th></tr></thead><tbody>${player.skills.slice().sort((a, b) => (b.damage ?? 0) - (a.damage ?? 0)).map(skill => `<tr><td>${html(skill.name || `Skill #${skill.id ?? '?'}`)}</td><td>${number(skill.damage)}</td><td>${number(skill.hits)}</td><td>${rate(skill.crit_hits, skill.hits)}</td></tr>`).join('')}</tbody></table></div></details>`).join('')}` : `<p>${html(l.empty)}</p>`}${record.targets.length ? `<details><summary>${html(l.target)}</summary><ul>${record.targets.map(target => `<li>${html(target.name || `#${target.id ?? '?'}`)} <b>${number(target.damage)}</b></li>`).join('')}</ul></details>` : ''}${staggerHtml}${record.note ? `<p class="note"><strong>${html(l.note)}</strong><br>${html(record.note).replaceAll('\n', '<br>')}</p>` : ''}</article>`;
+    return `<article><header><span class="badge">${html(l[record.actor_scope])}</span>${record.provenance === 'imported-unverified' ? `<span class="badge">${html(l.imported)}</span>` : ''}<h2>${html(title)}</h2>${record.timestamp ? `<p>${html(record.timestamp)}</p>` : ''}</header><div class="metrics"><div><small>${html(l.damage)}</small><b>${number(record.total_damage)}</b></div><div><small>DPS</small><b>${perSecond(record.dps)}</b></div><div><small>${html(l.duration)}</small><b>${record.elapsed_ms === null ? '—' : number(record.elapsed_ms / 1000)} s</b></div></div>${record.truncated || record.stream_gaps > 0 ? `<p class="warning">${html(l.incomplete)}</p>` : ''}${record.total_damage === null ? `<p class="warning">${html(l.unknownScope)}</p>` : ''}${players.length ? `<div class="table-wrap"><table><thead><tr><th>${html(l.player)}</th><th>${html(l.damage)}</th><th>DPS</th><th>${html(l.critical)}</th></tr></thead><tbody>${players.map(player => `<tr><td><strong>${html(player.name || `#${player.id ?? '?'}`)}</strong><small>${html(player.class_name)}</small></td><td>${number(player.damage)}</td><td>${perSecond(player.dps)}</td><td>${rate(player.crit_hits, player.hits)}</td></tr>`).join('')}</tbody></table></div>${players.map(player => `<details><summary>${html(player.name || `#${player.id ?? '?'}`)} · ${html(l.details)}</summary><div class="table-wrap"><table><thead><tr><th>${html(l.skill)}</th><th>${html(l.damage)}</th><th>${html(l.hits)}</th><th>${html(l.critical)}</th></tr></thead><tbody>${player.skills.slice().sort((a, b) => (b.damage ?? 0) - (a.damage ?? 0)).map(skill => `<tr><td>${html(skill.name || `Skill #${skill.id ?? '?'}`)}</td><td>${number(skill.damage)}</td><td>${number(skill.hits)}</td><td>${rate(skill.crit_hits, skill.hits)}</td></tr>`).join('')}</tbody></table></div></details>`).join('')}` : `<p>${html(l.empty)}</p>`}${record.targets.length ? `<details><summary>${html(l.target)}</summary><ul>${record.targets.map(target => `<li>${html(target.name || `#${target.id ?? '?'}`)} <b>${number(target.damage)}</b></li>`).join('')}</ul></details>` : ''}${staggerHtml}${latencyHtml}${record.note ? `<p class="note"><strong>${html(l.note)}</strong><br>${html(record.note).replaceAll('\n', '<br>')}</p>` : ''}</article>`;
   }).join('');
-  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${html(l.title)}</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b121b;color:#e9f1f6;font:15px system-ui,sans-serif;line-height:1.5}main{max-width:960px;margin:auto;padding:32px 18px}h1{font-size:24px;letter-spacing:-.5px}h2{font-size:20px;margin:10px 0}p{color:#b3c3ce}article{background:#14212c;border:1px solid #2a3a48;border-radius:16px;padding:22px;margin:24px 0}small{display:block;color:#a4b7c5;font-size:12px}.badge{display:inline-block;padding:3px 10px;margin:0 6px 4px 0;border:1px solid #2f6f73;border-radius:20px;font-size:12px;color:#8de2d6}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:16px 0}.metrics b{font-size:24px;font-variant-numeric:tabular-nums}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:12px 9px;border-bottom:1px solid #2a3a48}th{color:#a4b7c5;font-size:12px}details{margin:12px 0;border:1px solid #2a3a48;border-radius:9px;padding:12px}summary{cursor:pointer;color:#8de2d6}li{padding:4px}.warning{color:#f3c684}.note{overflow-wrap:anywhere}footer{font-size:12px;color:#a4b7c5}@media(max-width:480px){article{padding:14px}.metrics b{font-size:19px}.metrics{gap:8px}}@media print{:root{color-scheme:light}body,article{background:white;color:#18212b}p,small,th,footer{color:#44505c}article{break-inside:avoid}.badge,summary{color:#156c66}}</style></head><body><main><h1>${html(l.title)}</h1>${options.anonymize ? `<p>${html(l.anonymous)}</p>` : ''}${cards}<footer>${html(l.provenance)}</footer></main></body></html>`;
+  return `<!doctype html><html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>${html(l.title)}</title><style>:root{color-scheme:dark;--accent:#8de2d6}*{box-sizing:border-box}body{margin:0;background:#0b121b;color:#e9f1f6;font:15px system-ui,sans-serif;line-height:1.5}main{max-width:960px;margin:auto;padding:32px 18px}h1{font-size:24px;letter-spacing:-.5px}h2{font-size:20px;margin:10px 0}p{color:#b3c3ce}article{background:#14212c;border:1px solid #2a3a48;border-radius:16px;padding:22px;margin:24px 0}small{display:block;color:#a4b7c5;font-size:12px}.badge{display:inline-block;padding:3px 10px;margin:0 6px 4px 0;border:1px solid #2f6f73;border-radius:20px;font-size:12px;color:#8de2d6}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:16px 0}.metrics b{font-size:24px;font-variant-numeric:tabular-nums}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:12px 9px;border-bottom:1px solid #2a3a48}th{color:#a4b7c5;font-size:12px}details{margin:12px 0;border:1px solid #2a3a48;border-radius:9px;padding:12px}summary{cursor:pointer;color:#8de2d6}li{padding:4px}.warning{color:#f3c684}.note{overflow-wrap:anywhere}.latency-history{margin-top:22px;border-top:1px solid #2a3a48;padding-top:16px}.latency-history .record-top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.latency-history h3{font-size:16px;margin:0}.latency-history .tag{color:var(--accent);font-size:11px;border:1px solid #2f6f73;border-radius:12px;padding:3px 8px}.latency-history .help{font-size:12px}.latency-history .analysis-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.latency-history .analysis-metrics>div{padding:12px;border:1px solid #2a3a48;border-radius:8px;min-width:0}.latency-history .analysis-metrics span{display:block;color:#a4b7c5;font-size:11px}.latency-history .analysis-metrics strong{display:block;font-size:19px;font-variant-numeric:tabular-nums;margin-top:5px;overflow-wrap:anywhere}.latency-history .record-card{border:1px solid #2a3a48;border-radius:8px;padding:12px}.latency-history .quality-warning{color:#f3c684;font-size:12px}@media(max-width:480px){.latency-history .analysis-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}@media print{.latency-history{--accent:#156c66}.latency-history .analysis-metrics span,.latency-history .help{color:#44505c}.latency-history .quality-warning{color:#795412}}footer{font-size:12px;color:#a4b7c5}@media(max-width:480px){article{padding:14px}.metrics b{font-size:19px}.metrics{gap:8px}}@media print{:root{color-scheme:light}body,article{background:white;color:#18212b}p,small,th,footer{color:#44505c}article{break-inside:avoid}.badge,summary{color:#156c66}}</style></head><body><main><h1>${html(l.title)}</h1>${options.anonymize ? `<p>${html(l.anonymous)}</p>` : ''}${cards}<footer>${html(l.provenance)}</footer></main></body></html>`;
 }

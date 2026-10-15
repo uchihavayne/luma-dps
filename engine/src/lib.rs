@@ -3,6 +3,7 @@ pub mod character;
 pub mod cooldowns;
 pub mod field_boss;
 pub mod framing;
+pub mod latency;
 pub mod net;
 pub mod packets;
 pub mod resources;
@@ -121,6 +122,7 @@ pub struct TargetState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
+    pub network_latency: latency::Snapshot,
     pub id: u64,
     pub started_ms: u64,
     pub ended_ms: u64,
@@ -183,6 +185,7 @@ pub struct MeterState {
     pub history: Vec<Encounter>,
     pub cooldowns: Vec<serde_json::Value>,
     pub observed_casts: Vec<cooldowns::CastUse>,
+    pub actor_cooldowns: Vec<cooldowns::ActorObservation>,
     pub resources: resources::ResourceSnapshot,
     pub diagnostics: Diagnostics,
     pub target_mode: String,
@@ -201,6 +204,7 @@ pub struct MeterState {
     pub party_member_names: Vec<String>,
     pub party_membership_source: String,
     pub party_identity_roster: serde_json::Value,
+    pub live_team_identity: serde_json::Value,
     pub party_total_damage: Option<u64>,
     pub party_dps: Option<f64>,
     pub party_elapsed_ms: u64,
@@ -260,6 +264,7 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    latency: latency::Trace,
     streams: net::StreamSet,
     frames: framing::FrameStreams,
     prefixes: HashMap<net::Connection, StreamPrefix>,
@@ -270,6 +275,8 @@ pub struct MeterEngine {
     alias_bound_id: Option<u64>,
     party_names: Option<Vec<String>>,
     party_sync_confirmed: bool,
+    party_wire_members: BTreeMap<(u16, u32), packets::PartyMember>,
+    party_snapshot_complete: bool,
     party_classes: BTreeMap<String, u32>,
     manual_party_ids: Option<Vec<u64>>,
     pair_activity: BTreeMap<(u64, u64), SourceActivity>,
@@ -311,6 +318,7 @@ pub struct MeterEngine {
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            latency: latency::Trace::default(),
             streams: Default::default(),
             frames: Default::default(),
             prefixes: HashMap::new(),
@@ -321,6 +329,8 @@ impl Default for MeterEngine {
             alias_bound_id: None,
             party_names: None,
             party_sync_confirmed: false,
+            party_wire_members: BTreeMap::new(),
+            party_snapshot_complete: false,
             party_classes: BTreeMap::new(),
             manual_party_ids: None,
             pair_activity: BTreeMap::new(),
@@ -366,6 +376,30 @@ impl MeterEngine {
         self.revision = self.revision.wrapping_add(1);
         self.cache.get_mut().take();
     }
+    fn refresh_wire_party(&mut self) {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for member in self.party_wire_members.values() {
+            *counts.entry(member.name.clone()).or_default() += 1;
+        }
+        self.party_names = Some(
+            self.party_wire_members
+                .values()
+                .filter(|member| counts.get(&member.name) == Some(&1))
+                .map(|member| member.name.clone())
+                .collect(),
+        );
+        self.party_classes = self
+            .party_wire_members
+            .values()
+            .filter(|member| {
+                counts.get(&member.name) == Some(&1) && class_name(member.class).is_some()
+            })
+            .map(|member| (member.name.clone(), member.class))
+            .collect();
+        self.party_sync_confirmed = true;
+        self.manual_party_ids = None;
+        self.dirty();
+    }
     pub fn ingest_tcp(&mut self, packet: &[u8], incoming: bool, now: u64) {
         if !incoming {
             return;
@@ -386,6 +420,10 @@ impl MeterEngine {
             self.cooldowns.clear();
             self.resources.clear();
             self.party_sync_confirmed = false;
+            self.party_names = None;
+            self.party_classes.clear();
+            self.party_wire_members.clear();
+            self.party_snapshot_complete = false;
             self.assistance.clear();
             self.character.clear_pets();
             self.character_revision = self.character_revision.wrapping_add(1);
@@ -509,6 +547,27 @@ impl MeterEngine {
                         value.target_id,
                         now,
                     );
+                    if let Some(timing) = &value.cooldown {
+                        if let (Some(charges), Some(recharge)) =
+                            (timing.charges, timing.recharge_ms)
+                        {
+                            self.cooldowns.observe_actor_charges(
+                                value.actor_id,
+                                value.skill_id,
+                                charges,
+                                recharge,
+                                now,
+                                false,
+                            );
+                        } else if let Some(duration) = timing.cooldown_ms {
+                            self.cooldowns.observe_actor_cooldown(
+                                value.actor_id,
+                                value.skill_id,
+                                duration,
+                                now,
+                            );
+                        }
+                    }
                 }
                 if let assistance::AssistEvent::Health {
                     actor_id,
@@ -549,6 +608,24 @@ impl MeterEngine {
                 class,
                 own,
             } => {
+                let changed_name = self
+                    .identities
+                    .get(&id)
+                    .and_then(|entry| entry.name.as_deref())
+                    .is_some_and(|old| old != name);
+                if changed_name
+                    && self
+                        .aggregates
+                        .keys()
+                        .any(|(source, target)| *source == id || *target == id)
+                {
+                    self.finish(now);
+                }
+                if self.identities.get(&id).is_some_and(|entry| {
+                    entry.npc || entry.pet || entry.name.as_deref().is_some_and(|old| old != name)
+                }) {
+                    self.cooldowns.remove_actor(id);
+                }
                 if own
                     && self.own_id == Some(id)
                     && self
@@ -559,6 +636,10 @@ impl MeterEngine {
                 {
                     self.cooldowns.clear();
                     self.party_sync_confirmed = false;
+                    self.party_names = None;
+                    self.party_classes.clear();
+                    self.party_wire_members.clear();
+                    self.party_snapshot_complete = false;
                 }
                 if self.training_targets.contains(&id) {
                     self.cancel_training()
@@ -582,6 +663,8 @@ impl MeterEngine {
                     self.manual_party_ids = None;
                     self.party_names = None;
                     self.party_sync_confirmed = false;
+                    self.party_wire_members.clear();
+                    self.party_snapshot_complete = false;
                     self.party_classes.clear();
                     self.alias_bound_id = None;
                     self.character_name.clear();
@@ -709,6 +792,8 @@ impl MeterEngine {
             Event::PartyRoster { names } => {
                 self.party_names = Some(names.into_iter().take(12).collect());
                 self.party_sync_confirmed = true;
+                self.party_wire_members.clear();
+                self.party_snapshot_complete = true;
                 self.party_classes.clear();
                 self.manual_party_ids = None;
                 self.dirty();
@@ -726,6 +811,85 @@ impl MeterEngine {
                 }
                 self.dirty();
             }
+            Event::PartyMembers { members } => {
+                if members.is_empty() {
+                    return;
+                }
+                if !self.party_sync_confirmed {
+                    self.party_wire_members.clear();
+                }
+                for member in members.into_iter().take(12) {
+                    if member.key == 0
+                        || !(1..=12).contains(&member.slot)
+                        || !(1000..3000).contains(&member.server)
+                    {
+                        continue;
+                    }
+                    self.party_wire_members.retain(|key, old| {
+                        old.slot != member.slot || *key == (member.server, member.key)
+                    });
+                    self.party_wire_members
+                        .insert((member.server, member.key), member);
+                }
+                self.party_snapshot_complete = false;
+                self.refresh_wire_party();
+            }
+            Event::PartyMemberRemoved { key, server } => {
+                let own_name = self
+                    .own_id
+                    .and_then(|id| self.identities.get(&id))
+                    .and_then(|identity| identity.name.as_deref());
+                let leaving_self = self
+                    .party_wire_members
+                    .get(&(server, key))
+                    .is_some_and(|member| own_name == Some(member.name.as_str()));
+                if leaving_self {
+                    self.party_wire_members.clear();
+                    self.party_names = None;
+                    self.party_classes.clear();
+                    self.party_sync_confirmed = false;
+                    self.party_snapshot_complete = false;
+                    self.dirty();
+                } else if self.party_wire_members.remove(&(server, key)).is_some() {
+                    self.refresh_wire_party();
+                }
+            }
+            Event::MemberProfiles { members } => {
+                if !self.party_sync_confirmed {
+                    return;
+                }
+                for profile in members.into_iter().take(12) {
+                    let known: Vec<_> = self
+                        .party_wire_members
+                        .values()
+                        .filter(|member| {
+                            member.server == profile.server && member.name == profile.name
+                        })
+                        .collect();
+                    if known.len() != 1 {
+                        continue;
+                    }
+                    if self.own_id == Some(profile.id)
+                        && self
+                            .identities
+                            .get(&profile.id)
+                            .and_then(|identity| identity.name.as_deref())
+                            != Some(profile.name.as_str())
+                    {
+                        continue;
+                    }
+                    let class = known[0].class;
+                    self.ingest_event(
+                        Event::Identity {
+                            id: profile.id,
+                            name: profile.name,
+                            class: Some(class),
+                            own: false,
+                        },
+                        now,
+                    );
+                }
+            }
             Event::Cooldown {
                 skill,
                 remaining_units,
@@ -741,6 +905,27 @@ impl MeterEngine {
                     self.cooldowns.bind_self(Some(actor_id));
                     self.cooldowns
                         .observe_local(skill, remaining_units, charges, now);
+                }
+            }
+            Event::SkillCharges {
+                skill,
+                charges,
+                recharge_ms,
+            } => {
+                if let Some(actor) = self.own_id.filter(|id| {
+                    self.identities
+                        .get(id)
+                        .is_some_and(|identity| identity.player && !identity.removed)
+                }) {
+                    self.cooldowns.bind_self(Some(actor));
+                    self.cooldowns.observe_actor_charges(
+                        actor,
+                        skill,
+                        charges,
+                        recharge_ms,
+                        now,
+                        true,
+                    );
                 }
             }
             Event::Health { id, current } => {
@@ -883,6 +1068,7 @@ impl MeterEngine {
     }
     pub fn connection_changed(&mut self) {
         self.finish(self.last_hit);
+        self.latency.clear();
         self.streams = Default::default();
         self.frames = Default::default();
         self.prefixes.clear();
@@ -906,6 +1092,8 @@ impl MeterEngine {
         self.alias_bound_id = None;
         self.party_names = None;
         self.party_sync_confirmed = false;
+        self.party_wire_members.clear();
+        self.party_snapshot_complete = false;
         self.party_classes.clear();
         self.manual_party_ids = None;
         self.last_seen = 0;
@@ -921,6 +1109,10 @@ impl MeterEngine {
         self.cooldowns.clear();
         self.resources.clear();
         self.party_sync_confirmed = false;
+        self.party_names = None;
+        self.party_classes.clear();
+        self.party_wire_members.clear();
+        self.party_snapshot_complete = false;
         self.character.clear();
         if let Some(id) = self.own_id {
             if let Some(name) = self
@@ -1126,6 +1318,8 @@ impl MeterEngine {
         self.manual_party_ids = Some(members);
         self.party_names = None;
         self.party_sync_confirmed = false;
+        self.party_wire_members.clear();
+        self.party_snapshot_complete = false;
         self.party_classes.clear();
         self.dirty();
         Ok(())
@@ -1138,8 +1332,8 @@ impl MeterEngine {
         duration_ms: u64,
         target_id: Option<u64>,
     ) -> Result<(), String> {
-        if ![60_000, 120_000, 180_000, 300_000].contains(&duration_ms) {
-            return Err("Antrenman süresi 60, 120, 180 veya 300 saniye olmalı.".into());
+        if !(10_000..=300_000).contains(&duration_ms) || duration_ms % 1000 != 0 {
+            return Err("Antrenman süresi 10–300 arasında tam saniye olmalı.".into());
         }
         let Some(id) = self.local_in(&self.identities).0 else {
             return Err("Önce kendi oyuncu satırını seç veya karakter adını eşleştir.".into());
@@ -1701,6 +1895,14 @@ impl MeterEngine {
                 .damage_taken
                 .map(|damage| damage as f64 / (elapsed as f64 / 1000.0).max(1.0));
         }
+        record.network_latency = if let Some(completed) = &self.completed {
+            completed
+                .record
+                .network_latency
+                .within(record.started_ms, record.ended_ms)
+        } else {
+            self.latency.snapshot(record.started_ms, record.ended_ms)
+        };
         record
     }
     fn finish(&mut self, now: u64) {
@@ -1709,6 +1911,7 @@ impl MeterEngine {
         }
         let mut record = self.snapshot(now, "all");
         record.ended_ms = now;
+        record.network_latency = self.latency.snapshot(record.started_ms, now);
         self.attach_samples(&mut record);
         record.character_build = self.encounter_build.clone();
         record.assist = self.assistance.snapshot(now);
@@ -1798,11 +2001,53 @@ impl MeterEngine {
         assist.effects.truncate(64);
         assist.stagger.truncate(8);
         let cooldown_state = self.cooldowns.snapshot(now);
-        let cooldowns = cooldown_state
+        let live_team_identity = self.live_team_identity();
+        let live_local_id = live_team_identity["local"]["actor_id"].as_u64();
+        let live_party_ids: std::collections::BTreeSet<_> = live_team_identity["party_member_ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_u64)
+            .collect();
+        let server_party = live_team_identity["party_membership_source"] == "server";
+        // Filter before any transport/UI row bound. Nearby strangers must not
+        // crowd current confirmed allies out of the automatic team board.
+        let mut actor_cooldowns: Vec<_> = cooldown_state
+            .actors
+            .iter()
+            .filter(|row| {
+                live_local_id == Some(row.actor_id)
+                    || server_party && live_party_ids.contains(&row.actor_id)
+            })
+            .cloned()
+            .collect();
+        actor_cooldowns.sort_by_key(|row| {
+            (
+                live_local_id != Some(row.actor_id),
+                row.actor_id,
+                row.skill_id,
+            )
+        });
+        let direct_families: std::collections::BTreeSet<_> = cooldown_state
+            .actors
+            .iter()
+            .filter(|row| self.own_id == Some(row.actor_id))
+            .map(|row| row.skill_family_id)
+            .collect();
+        let mut cooldowns: Vec<_> = cooldown_state
             .own
             .iter()
+            .filter(|row| !direct_families.contains(&cooldowns::skill_family(row.skill_id)))
             .filter_map(|row| serde_json::to_value(row).ok())
             .collect();
+        cooldowns.extend(
+            cooldown_state
+                .actors
+                .iter()
+                .filter(|row| self.own_id == Some(row.actor_id))
+                .filter_map(|row| serde_json::to_value(row).ok()),
+        );
+        cooldowns.sort_by_key(|row| row["skill_id"].as_u64().unwrap_or(0));
         MeterState {
             status: if self.paused {
                 "paused"
@@ -1831,6 +2076,7 @@ impl MeterEngine {
             },
             cooldowns,
             observed_casts: cooldown_state.casts,
+            actor_cooldowns,
             resources: self.resources.snapshot(now),
             diagnostics: self.diagnostics.clone(),
             target_mode: self.target_mode.clone(),
@@ -1851,6 +2097,7 @@ impl MeterEngine {
             party_member_names: self.party_names.clone().unwrap_or_default(),
             party_membership_source: current.party_membership_source,
             party_identity_roster: self.party_identity_roster(),
+            live_team_identity,
             party_total_damage: current.party_total_damage,
             party_dps: current.party_dps,
             party_elapsed_ms: current.party_elapsed_ms,
@@ -1886,6 +2133,18 @@ impl MeterEngine {
     }
     pub fn history_revision(&self) -> u64 {
         self.history_revision
+    }
+    /// Removes only imported reports after an explicit user action. Captured
+    /// encounters and session identities are retained unchanged.
+    pub fn clear_imported_history(&mut self) -> usize {
+        let before = self.history.len();
+        self.history.retain(|record| record.source != "imported");
+        let removed = before - self.history.len();
+        if removed > 0 {
+            self.history_revision = self.history_revision.wrapping_add(1);
+            self.dirty();
+        }
+        removed
     }
     /// Restore local encounter history without restoring any session entity
     /// identity or affecting current combat. Malformed/oversized rows are
@@ -1985,6 +2244,10 @@ impl MeterEngine {
         }
         record
     }
+
+    pub fn observe_latency(&mut self, sample: latency::Sample, now: u64) -> bool {
+        self.latency.observe(sample, now)
+    }
     pub fn assistance_snapshot(&self, now: u64) -> assistance::AssistSnapshot {
         self.assistance.snapshot(now)
     }
@@ -1996,6 +2259,37 @@ impl MeterEngine {
     }
     pub fn resources_snapshot(&self, now: u64) -> resources::ResourceSnapshot {
         self.resources.snapshot(now)
+    }
+    /// Current live bindings are independent of a completed encounter's frozen
+    /// damage identities. Manual row/name selections never identify local self.
+    pub fn live_team_identity(&self) -> serde_json::Value {
+        let local_id = self.own_id.filter(|id| {
+            self.identities.get(id).is_some_and(|identity| {
+                identity.player
+                    && !identity.removed
+                    && !identity.npc
+                    && !identity.pet
+                    && identity.name.is_some()
+            })
+        });
+        let local = local_id.and_then(|actor_id| {
+            self.identities.get(&actor_id).map(|identity| {
+                serde_json::json!({ "actor_id": actor_id, "name": identity.name,
+                "class_name": identity.class, "identity_source": "server" })
+            })
+        });
+        let (mut party_member_ids, mut source) = self.party_in(&self.identities, local_id);
+        if source == "server" && !self.party_sync_confirmed {
+            party_member_ids.clear();
+            source = "unresolved";
+        }
+        party_member_ids.retain(|id| {
+            self.identities.get(id).is_some_and(|identity| {
+                identity.player && !identity.removed && !identity.npc && !identity.pet
+            })
+        });
+        serde_json::json!({ "local": local, "party_member_ids": party_member_ids,
+            "party_membership_source": source })
     }
     pub fn party_identity_roster(&self) -> serde_json::Value {
         let members: Vec<_> = self
@@ -2026,6 +2320,8 @@ impl MeterEngine {
             .collect();
         serde_json::json!({
             "source": if self.party_sync_confirmed && self.party_names.is_some() { "server" } else { "unknown" },
+            "complete": self.party_sync_confirmed && self.party_snapshot_complete,
+            "observation_kind": if self.party_snapshot_complete { "complete" } else { "partial" },
             "members": members
         })
     }
@@ -2155,6 +2451,12 @@ fn record_details_bounded(record: &Encounter) -> bool {
             })
     });
     build_valid
+        && record.network_latency.is_valid()
+        && record
+            .network_latency
+            .samples
+            .iter()
+            .all(|sample| (record.started_ms..=record.ended_ms).contains(&sample.observed_at_ms))
         && record.received_samples.len() <= MAX_SAMPLES
         && record.assist.casts.len() <= 64
         && record.assist.effects.len() <= 256

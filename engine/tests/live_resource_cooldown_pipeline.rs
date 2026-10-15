@@ -137,12 +137,10 @@ fn strict_cooldown_packet_parser_rejects_trailing_and_duplicate_records() {
     duplicate[2] = 2;
     duplicate.extend_from_slice(&frame[3..]);
     assert!(decode(&duplicate).is_err());
-    for state in [1, 3] {
-        let mut unknown_charges = vec![0x22, 0x38, state];
-        unknown_charges.extend(13_130_000u32.to_le_bytes());
-        unknown_charges.extend([2, 100]);
-        assert!(matches!(decode(&unknown_charges), Ok(None)));
-    }
+    let mut malformed_charges = vec![0x22, 0x38, 1];
+    malformed_charges.extend(13_130_000u32.to_le_bytes());
+    malformed_charges.extend([2, 100]); // Mask 1 has no recharge field.
+    assert!(decode(&malformed_charges).is_err());
 }
 
 #[test]
@@ -171,6 +169,7 @@ fn only_completed_casts_populate_actor_bound_use_history_without_fake_cooldown()
         duration_ms: Some(1000),
         facing: 0.0,
         position: None,
+        cooldown: None,
     };
     engine.ingest_event(Event::Assistance(AssistEvent::Windup(cast.clone())), 1100);
     assert!(engine.live_state(1200).observed_casts.is_empty());

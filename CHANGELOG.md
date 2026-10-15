@@ -2,6 +2,16 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.15.0 preview · 2026-10-16
+
+- Read supported actor-bound cast cooldowns directly from game traffic. Confirmed party members do not need Luma, an invitation or a room. Keep actual cooldown duration, observed uses and next-charge recharge separate; never invent available charges or readiness when a timer expires.
+- Decode incremental party additions/removals and uniquely matched player profiles, including non-damaging healers. Invalidate bindings after capture gaps, reconnects and actor reuse. Keep completed encounter membership separate from the current live team.
+- Put the automatic team board first in the existing analysis drawer, with class filtering and optional compact DPS-row indicators. Move cross-device rooms into an optional advanced section. Preserve active-sharing visibility, form drafts and keyboard focus while observations age.
+- Keep all 200 retained desktop encounters available to history filters. Clear imported records on disk before removing them from memory; a failed write preserves the records. Keep manually selected boss actor IDs within their current game session.
+- Allow whole-second training durations from 10 to 300 seconds. Retain up to 600 passive connection RTT observations per encounter with average, minimum, maximum, P95 and a graph. Preserve bounded samples in scoped HTML/CSV/JSON exports and shift their timestamps in anonymous reports.
+
+Automated replay and integration checks cover the accepted layouts and failure cases. Live EU party cooldown/charge validation remains pending. Unsupported catalogs, game-wide verified rankings, complete live healing and other limits remain listed in [feature coverage](docs/feature-parity.md).
+
 ## 0.14.0 preview · 2026-10-15
 
 - Read EU ContentsTicket snapshots and updates for automatic Odyle. Keep regular energy, bonus and available total separate; derive the regular capacity only from received membership evidence. Login records wait for authoritative self identity; capture gaps and character changes clear old ownership.

@@ -1,18 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
+import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
 
 test('preferences clamp controls and reject executable or unrecognized appearance values', () => {
   const prefs = normalizePreferences({ theme: 'unknown', font: 'url(evil)', textScale: 4, opacity: -2, customColors: { text: 'red; background:url(evil)', accent: '#AAFF44' }, background: 'data:image/svg+xml;base64,PHN2Zz4=', bossIds: [42, 42, '57', -2, 1.4] });
   assert.equal(prefs.theme, 'aurora'); assert.equal(prefs.font, 'system');
   assert.equal(prefs.textScale, 1.2); assert.equal(prefs.opacity, 0.65);
   assert.equal(prefs.customColors.accent, '#aaff44'); assert.equal(prefs.customColors.text, THEMES.custom.text);
-  assert.equal(prefs.background, ''); assert.deepEqual(prefs.bossIds, [42, 57]);
+  assert.equal(prefs.background, ''); assert.deepEqual(prefs.bossIds, []);
 });
 
 test('all twelve themes exist, including readable light and custom options', () => {
   assert.equal(Object.keys(THEMES).length, 12);
   assert.equal(THEMES.white.bg, '#f7f7f2'); assert.ok(THEMES.custom.accent);
+});
+
+test('live actor cooldowns and all 200 saved encounters survive IPC normalization', () => {
+  const actor = { actor_id: 9, skill_id: 11010000, unit: 'milliseconds', source: 'server-cast', cooldown_ms: 81100 };
+  const state = normalizeState({ actor_cooldowns: [actor], history: Array.from({ length: 205 }, (_, id) => ({ id, total_damage: id, elapsed_ms: 1000 })) });
+  assert.deepEqual(state.actor_cooldowns, [actor]);
+  assert.equal(state.history.length, 200);
+  assert.deepEqual(normalizePreferences({ bossIds: [9] }).bossIds, []);
+  assert.equal(normalizePreferences({ showTeamCooldowns: false }).showTeamCooldowns, false);
+});
+
+test('encounter RTT uses retained observations instead of supplied aggregate claims', () => {
+  const state = normalizeState({ history: [{ total_damage: 100, started_ms: 1000, ended_ms: 2000, elapsed_ms: 1000,
+    network_latency: { source: 'windows-tcp-estats', average_ms: 99999, samples: [{ observed_at_ms: 1000, rtt_ms: 0, measured_connections: 1 }, { observed_at_ms: 2000, rtt_ms: 100, measured_connections: 1 }] } }] });
+  assert.equal(state.history[0].network_latency.average_ms, 50);
+  assert.equal(state.history[0].network_latency.minimum_ms, 0);
 });
 
 test('theme round trip preserves independent target font but excludes personal records', () => {
@@ -166,4 +182,13 @@ test('a delayed state read cannot rewind newer live totals while a newer reset r
   assert.equal(normalizeState(state).state_revision, 9);
   assert.equal(acceptsStateSnapshot({}, { status: 'demo' }), true);
   assert.equal(acceptsStateSnapshot(state, null), false);
+});
+
+
+test('live resource and raw cooldown ownership never reuse completed encounter identity', () => {
+  const prior = { local_player_id: 7, local_identity_source: 'server' };
+  assert.equal(liveServerActorId(prior), '7');
+  assert.equal(liveServerActorId({ ...prior, live_team_identity: { local: null } }), null);
+  assert.equal(liveServerActorId({ ...prior, live_team_identity: { local: { actor_id: 9, identity_source: 'server' } } }), '9');
+  assert.equal(liveServerActorId({ ...prior, live_team_identity: { local: { actor_id: 9, identity_source: 'manual' } } }), null);
 });

@@ -135,8 +135,11 @@ fn anchor_opcode(frame: &[u8]) -> bool {
             | Some([0x40, 0x36])
             | Some([4, 0x8d])
             | Some([0x47, 0x38])
+            | Some([0x22, 0x38])
             | Some([0, 0x8d])
             | Some([2, 0x97])
+            | Some([0x1f, 0x97])
+            | Some([0, 0x92])
             | Some([9, 0x38])
             | Some([2, 0x38])
             | Some([0x2a, 0x38])
@@ -163,10 +166,14 @@ fn decoded_anchor(frame: &[u8]) -> bool {
         | Ok(Some(Event::Npc { id, .. }))
         | Ok(Some(Event::Health { id, .. }))
         | Ok(Some(Event::Removed { id, .. })) => id != 0,
-        Ok(Some(Event::Owner { .. })) | Ok(Some(Event::Cooldown { .. })) => true,
+        Ok(Some(Event::Owner { .. }))
+        | Ok(Some(Event::Cooldown { .. }))
+        | Ok(Some(Event::SkillCharges { .. })) => true,
         Ok(Some(Event::Updates(events))) => !events.is_empty(),
         Ok(Some(Event::PartyRoster { names })) => !names.is_empty() && names.len() <= 12,
         Ok(Some(Event::PartyProfiles { members })) => !members.is_empty() && members.len() <= 12,
+        Ok(Some(Event::PartyMembers { members })) => !members.is_empty() && members.len() <= 12,
+        Ok(Some(Event::MemberProfiles { members })) => !members.is_empty() && members.len() <= 12,
         Ok(Some(Event::Assistance(_))) => true,
         Ok(Some(Event::FieldBoss(_))) => true,
         Ok(Some(Event::Resource(event))) => match event {

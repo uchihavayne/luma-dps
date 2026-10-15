@@ -300,3 +300,110 @@ test('zero-duration history displays unknown DPS instead of accumulated damage a
     assert.ok(exportEncounterCsv(input, { scope }).includes(`,${raw.total_damage},${raw.dps},`));
   }
 });
+
+function latencyFight() {
+  const input = fight();
+  input.network_latency = { source: 'windows-tcp-estats', samples: Array.from({ length: 61 }, (_, i) => ({ observed_at_ms: input.started_ms + i * 1000, rtt_ms: 10 + i % 3 * 10, latest_rtt_ms: 10 + i % 3 * 10, variation_ms: 2, measured_connections: 2 })), sample_count: 999, average_ms: 99999, minimum_ms: 99999, maximum_ms: 99999, median_ms: 99999, p95_ms: 99999, window_ms: 1, observed_span_ms: 1, partial: false, truncated: false };
+  return input;
+}
+
+test('connection RTT survives JSON roundtrip with recomputed statistics and imported provenance', () => {
+  const input = latencyFight(), expected = input.network_latency.samples.reduce((sum, sample) => sum + sample.rtt_ms, 0) / 61;
+  const exported = JSON.parse(exportEncounterJson(input)).encounters[0];
+  assert.equal(exported.network_latency.sample_count, 61); assert.equal(exported.network_latency.average_ms, expected);
+  assert.equal(exported.network_latency.minimum_ms, 10); assert.equal(exported.network_latency.maximum_ms, 30); assert.equal(exported.network_latency.p95_ms, 30);
+  assert.equal(exported.network_latency.window_ms, 60000); assert.equal(exported.network_latency.observed_span_ms, 60000);
+  const imported = importEncounterCollection(exportEncounterJson(input)).encounters[0];
+  assert.equal(imported.provenance, 'imported-unverified'); assert.equal(imported.network_latency.source, 'windows-tcp-estats');
+  assert.deepEqual(imported.network_latency, exported.network_latency);
+  assert.equal(input.network_latency.average_ms, 99999);
+});
+
+test('personal connection RTT exports trim only an explicitly known safe measurement clock', () => {
+  const input = latencyFight(); input.personal_started_ms = input.started_ms + 10000;
+  const selected = JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0];
+  assert.equal(selected.network_latency.sample_count, 51); assert.equal(selected.network_latency.window_ms, 50000);
+  assert.equal(selected.network_latency.samples[0].observed_at_ms, input.started_ms + 10000);
+  assert.equal(selected.network_latency.samples.at(-1).observed_at_ms, input.ended_ms);
+  assert.equal(selected.network_latency.partial, false);
+  const unknownStart = latencyFight();
+  const general = JSON.parse(exportEncounterJson(unknownStart, { scope: 'personal' })).encounters[0];
+  assert.equal(general.network_latency.sample_count, 61); assert.equal(general.network_latency.window_ms, 60000);
+  assert.match(exportEncounterHtml(unknownStart, { scope: 'personal', locale: 'en' }), /Encounter time window/);
+});
+
+test('party RTT can use a known explicit clock and never invents a party start from its elapsed duration', () => {
+  const input = latencyFight(); input.party_elapsed_ms = 20000;
+  const fallback = JSON.parse(exportEncounterJson(input, { scope: 'party' })).encounters[0];
+  assert.equal(fallback.network_latency.sample_count, 61);
+  input.party_started_ms = input.started_ms + 20000;
+  const selected = JSON.parse(exportEncounterJson(input, { scope: 'party' })).encounters[0];
+  assert.equal(selected.network_latency.sample_count, 21); assert.equal(selected.started_ms, input.party_started_ms);
+  assert.equal(selected.ended_ms, input.party_started_ms + 20000); assert.equal(selected.network_latency.window_ms, 20000);
+  const roundtrip = importEncounterCollection(exportEncounterJson(input, { scope: 'party' })).encounters[0];
+  assert.deepEqual(roundtrip.network_latency, selected.network_latency);
+});
+
+test('scope exports keep the actual wall-clock interval when retained hits contradict an uninterrupted personal clock', () => {
+  const input = latencyFight(); input.personal_started_ms = input.started_ms; input.personal_elapsed_ms = 30000;
+  input.damage_samples = [0, 59000].map(offset => ({ timestamp_ms: input.started_ms + offset, source: 7, player_id: 7, target: 50, skill: 5, amount: 500 }));
+  const selected = JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0];
+  assert.equal(selected.elapsed_ms, 30000); assert.equal(selected.ended_ms, input.ended_ms);
+  assert.equal(selected.network_latency.sample_count, 61); assert.equal(selected.damage_samples.at(-1).timestamp_ms, input.started_ms + 59000);
+});
+
+test('anonymous connection RTT shifts every sample timestamp and permits a zero first sample on reimport', () => {
+  const input = latencyFight(), before = structuredClone(input), text = exportEncounterJson(input, { anonymize: true });
+  assert.equal(text.includes(String(input.started_ms)), false); assert.equal(text.includes(String(input.ended_ms)), false);
+  const selected = JSON.parse(text).encounters[0];
+  assert.equal(selected.network_latency.samples[0].observed_at_ms, 0); assert.equal(selected.network_latency.samples.at(-1).observed_at_ms, 60000);
+  assert.equal(selected.network_latency.sample_count, 61);
+  const imported = importEncounterCollection(text).encounters[0];
+  assert.deepEqual(imported.network_latency, selected.network_latency);
+  assert.deepEqual(input, before);
+  const scoped = JSON.parse(exportEncounterJson({ ...input, personal_started_ms: input.started_ms + 10000 }, { scope: 'personal', anonymize: true })).encounters[0];
+  assert.equal(scoped.network_latency.samples[0].observed_at_ms, 0); assert.equal(scoped.network_latency.samples.at(-1).observed_at_ms, 50000);
+});
+
+test('RTT samples and summary export no connection addresses, actor attribution or unknown private metadata', () => {
+  const input = latencyFight(), secret = 'PRIVATE_CONNECTION_DO_NOT_COPY';
+  input.network_latency.ip = secret; input.network_latency.connection = secret; input.network_latency.samples[0].remote_addr = secret; input.network_latency.samples[0].actor_id = 12345;
+  for (const text of [exportEncounterJson(input), exportEncounterCsv(input), exportEncounterHtml(input)]) assert.equal(text.includes(secret), false);
+  const result = JSON.parse(exportEncounterJson(input)).encounters[0].network_latency;
+  assert.equal(JSON.stringify(result).includes('actor_id'), false); assert.equal(JSON.stringify(result).includes('remote_addr'), false);
+});
+
+test('CSV appends clearly labelled connection RTT rows with no player or actor association and rectangular columns', () => {
+  const csv = exportEncounterCsv(latencyFight()), lines = csv.trimEnd().split('\r\n'), columns = lines[0].split(',');
+  assert.equal(columns.length, 50); assert.ok(columns.includes('connection_rtt_ms')); assert.ok(columns.includes('connection_rtt_average_ms'));
+  const rows = lines.slice(1).map(line => Object.fromEntries(line.split(',').map((value, index) => [columns[index], value])));
+  assert.equal(rows.filter(row => row.row_type === 'connection-rtt-summary').length, 1);
+  const samples = rows.filter(row => row.row_type === 'connection-rtt-sample'); assert.equal(samples.length, 61);
+  for (const row of samples) { assert.equal(row.player, ''); assert.equal(row.player_id, ''); assert.equal(row.source_actor, ''); assert.equal(row.connection_rtt_source, 'windows-tcp-estats'); assert.equal(row.skill_or_target, 'Game TCP connection set'); }
+  assert.equal(lines.every(line => line.split(',').length === columns.length), true);
+  assert.equal(samples[0].connection_rtt_ms, '10'); assert.equal(samples[0].connection_rtt_measured_connections, '2');
+  assert.equal(exportEncounterCsv(fight()).split('\r\n')[0].split(',').length, 35);
+});
+
+test('offline RTT HTML includes its own compact styles and SVG while staying local and showing imported provenance', () => {
+  const input = importEncounterCollection(exportEncounterJson(latencyFight()));
+  const html = exportEncounterHtml(input, { locale: 'en' });
+  assert.match(html, /Encounter connection RTT/); assert.match(html, /Imported · unverified/);
+  assert.match(html, /\.latency-history \.analysis-metrics\{/); assert.match(html, /--accent:#8de2d6/);
+  assert.match(html, /<svg viewBox="0 0 480 100"/); assert.match(html, />P95</); assert.match(html, />30 ms</);
+  assert.doesNotMatch(html, /<script|<link|<iframe|<img|https?:\/\//i);
+  assert.match(html, /default-src 'none'/);
+});
+
+test('unsupported or malformed RTT sources cannot fabricate exported statistics or break ordinary damage reports', () => {
+  for (const source of ['icmp', 'other-meter', null]) {
+    const input = latencyFight(); input.network_latency.source = source;
+    assert.equal(Object.hasOwn(JSON.parse(exportEncounterJson(input)).encounters[0], 'network_latency'), false);
+    assert.equal(exportEncounterCsv(input).includes('connection-rtt-summary'), false);
+    assert.equal(exportEncounterHtml(input).includes('latency-history"><'), false);
+  }
+  const input = latencyFight(); input.network_latency.samples[0].rtt_ms = NaN;
+  const result = JSON.parse(exportEncounterJson(input)).encounters[0];
+  assert.equal(result.network_latency.sample_count, 60); assert.equal(result.network_latency.partial, true);
+  assert.equal(result.total_damage, 3000);
+});

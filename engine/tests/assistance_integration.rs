@@ -38,6 +38,7 @@ fn windup(actor_id: u64) -> Event {
         duration_ms: Some(1500),
         facing: 0.0,
         position: None,
+        cooldown: None,
     }))
 }
 
@@ -134,6 +135,7 @@ fn a_cast_without_server_windup_never_becomes_a_predicted_boss_countdown() {
             duration_ms: None,
             facing: 0.0,
             position: None,
+            cooldown: None,
         })),
         1000,
     );

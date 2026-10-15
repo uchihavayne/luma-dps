@@ -1,6 +1,11 @@
 const metric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const id = value => value === null || value === undefined ? '' : String(value);
 
+export function validateTrainingDuration(value) {
+  const seconds = typeof value === 'string' && /^\d{1,3}$/.test(value.trim()) ? Number(value.trim()) : typeof value === 'number' ? value : NaN;
+  return Number.isInteger(seconds) && seconds >= 10 && seconds <= 300 ? seconds * 1000 : null;
+}
+
 export function trainingState(value = {}) {
   value = value && typeof value === 'object' ? value : {};
   const duration = metric(value.duration_ms) ?? 0;

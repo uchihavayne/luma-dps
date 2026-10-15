@@ -68,8 +68,10 @@ fn training_requires_local_binding_valid_duration_and_connection_cancels_it() {
     let mut engine = MeterEngine::default();
     assert!(engine.arm_training(60_000).is_err());
     player(&mut engine, 1, true);
-    assert!(engine.arm_training(61_000).is_err());
-    for duration in [60_000, 120_000, 180_000, 300_000] {
+    for duration in [9999, 10_100, 300_001, 301_000] {
+        assert!(engine.arm_training(duration).is_err());
+    }
+    for duration in [10_000, 37_000, 60_000, 61_000, 120_000, 180_000, 300_000] {
         engine.arm_training(duration).unwrap();
         assert_eq!(engine.live_state(0).training.duration_ms, duration);
     }
@@ -234,6 +236,30 @@ fn imports_are_atomic_distinct_and_never_change_live_identity_or_totals() {
     assert_eq!(history[0].source, "imported");
     assert_eq!(engine.live_state(2000).personal_total_damage, Some(100));
     assert_eq!(engine.live_state(2000).local_player_id, Some(1));
+}
+
+#[test]
+fn clearing_imports_preserves_captured_reports_live_damage_and_noop_revision() {
+    let mut engine = MeterEngine::default();
+    player(&mut engine, 1, true);
+    hit(&mut engine, 1, 100, false, 1000);
+    engine.reset();
+    let captured = engine.history_snapshot().1[0].clone();
+    engine
+        .merge_history(std::slice::from_ref(&captured))
+        .unwrap();
+    hit(&mut engine, 1, 250, false, 2000);
+    let before = engine.history_revision();
+    assert_eq!(engine.clear_imported_history(), 1);
+    assert_eq!(engine.history_revision(), before + 1);
+    assert_eq!(
+        serde_json::to_value(engine.history_snapshot().1).unwrap(),
+        serde_json::to_value(vec![captured]).unwrap()
+    );
+    assert_eq!(engine.live_state(3000).personal_total_damage, Some(250));
+    assert_eq!(engine.live_state(3000).local_player_id, Some(1));
+    assert_eq!(engine.clear_imported_history(), 0);
+    assert_eq!(engine.history_revision(), before + 1);
 }
 
 #[test]

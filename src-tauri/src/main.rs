@@ -172,7 +172,14 @@ impl Preferences {
         if (116.0..MIN_METER_HEIGHT).contains(&self.height) {
             self.height = MIN_METER_HEIGHT;
         }
+        self.discard_session_marks();
         self
+    }
+
+    fn discard_session_marks(&mut self) {
+        // Actor ids may be reused after a reconnect. Manual boss selections
+        // belong to the current live session and must never be restored.
+        self.extra.remove("bossIds");
     }
 
     fn automatic_cube_capture(&self) -> Option<(&'static str, f32)> {
@@ -410,11 +417,20 @@ fn resized_meter_dimensions(
 }
 
 fn snapshot(shared: &Shared) -> Result<Value, String> {
-    let engine = shared
+    let mut engine = shared
         .engine
         .lock()
         .map_err(|_| "Meter state unavailable")?;
-    let mut state = serde_json::to_value(engine.live_state(now_ms())).map_err(|e| e.to_string())?;
+    let capture = shared
+        .capture
+        .lock()
+        .map_err(|_| "Capture state unavailable")?
+        .clone();
+    let now = now_ms();
+    if let Some(sample) = capture_latency_sample(&capture, now) {
+        engine.observe_latency(sample, now);
+    }
+    let mut state = serde_json::to_value(engine.live_state(now)).map_err(|e| e.to_string())?;
     if let Some(object) = state.as_object_mut() {
         object.insert(
             "history_storage_error".into(),
@@ -428,14 +444,7 @@ fn snapshot(shared: &Shared) -> Result<Value, String> {
         );
         object.insert(
             "capture".into(),
-            serde_json::to_value(
-                shared
-                    .capture
-                    .lock()
-                    .map_err(|_| "Capture state unavailable")?
-                    .clone(),
-            )
-            .map_err(|e| e.to_string())?,
+            serde_json::to_value(capture).map_err(|e| e.to_string())?,
         );
         // The engine lock still guards this snapshot's creation. Event pushes
         // and IPC replies can then be ordered even if delivery is delayed.
@@ -445,6 +454,56 @@ fn snapshot(shared: &Shared) -> Result<Value, String> {
         );
     }
     Ok(state)
+}
+
+fn capture_latency_sample(
+    capture: &native_capture::CaptureStatus,
+    now: u64,
+) -> Option<luma_engine::latency::Sample> {
+    let latency = &capture.network_latency;
+    let at = latency.observed_at_ms?;
+    if capture.status != "capturing"
+        || latency.status != "ready"
+        || latency.source != "windows-tcp-estats"
+        || at == 0
+        || at > now
+        || now - at > 5000
+        || latency.measured_connections == 0
+        || latency.measured_connections > 128
+        || latency.measured_connections > latency.game_connections
+    {
+        return None;
+    }
+    Some(luma_engine::latency::Sample {
+        observed_at_ms: at,
+        rtt_ms: latency.rtt_ms.filter(|v| *v <= 120000)?,
+        latest_rtt_ms: latency.latest_rtt_ms.filter(|v| *v <= 120000),
+        variation_ms: latency.variation_ms.filter(|v| *v <= 120000),
+        measured_connections: latency.measured_connections as u32,
+    })
+}
+
+#[cfg(test)]
+mod latency_capture_tests {
+    use super::*;
+    #[test]
+    fn only_current_measured_game_paths_can_enter_encounter_rtt_history() {
+        let mut capture = native_capture::CaptureStatus::default();
+        capture.status = "capturing".into();
+        capture.network_latency.status = "ready".into();
+        capture.network_latency.observed_at_ms = Some(1000);
+        capture.network_latency.rtt_ms = Some(0);
+        capture.network_latency.measured_connections = 1;
+        capture.network_latency.game_connections = 2;
+        assert_eq!(capture_latency_sample(&capture, 1000).unwrap().rtt_ms, 0);
+        assert!(capture_latency_sample(&capture, 999).is_none());
+        assert!(capture_latency_sample(&capture, 6001).is_none());
+        capture.network_latency.measured_connections = 3;
+        assert!(capture_latency_sample(&capture, 1000).is_none());
+        capture.network_latency.measured_connections = 1;
+        capture.status = "stopped".into();
+        assert!(capture_latency_sample(&capture, 1000).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +548,71 @@ mod shell_tests {
         assert!(migrated.validate().is_ok());
         let minimum = resized_meter_dimensions(tauri::PhysicalSize::new(320, 116), 1.0).unwrap();
         assert_eq!(minimum.height, MIN_METER_HEIGHT);
+    }
+
+    #[test]
+    fn legacy_boss_marks_are_discarded_on_load_and_on_every_settings_save() {
+        let preferences: Preferences = serde_json::from_value(serde_json::json!({
+            "bossIds": [9, 12], "theme": "violet", "characterName": "Saved name"
+        }))
+        .unwrap();
+        let migrated = preferences.clone().migrate_legacy_dimensions();
+        assert!(!migrated.extra.contains_key("bossIds"));
+        assert_eq!(migrated.extra["characterName"], "Saved name");
+        let mut shared = fixture_shared(MeterEngine::default(), preferences.clone());
+        let directory = std::env::temp_dir().join(format!(
+            "luma-session-boss-settings-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        shared.data_dir = directory.clone();
+        persist(&shared, &preferences).unwrap();
+        let stored: Value =
+            serde_json::from_slice(&fs::read(directory.join("preferences.json")).unwrap()).unwrap();
+        assert!(stored.get("bossIds").is_none());
+        assert_eq!(stored["theme"], "violet");
+        assert_eq!(stored["characterName"], "Saved name");
+        fs::remove_file(directory.join("preferences.json")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn manual_boss_marks_change_only_the_live_engine_without_a_settings_write() {
+        let mut engine = community_fixture_engine();
+        engine.set_boss_targets(&[]);
+        let shared = fixture_shared(engine, Preferences::default());
+        set_live_boss_targets(&shared, &[2]).unwrap();
+        let state = shared.engine.lock().unwrap().state(3_000);
+        assert!(
+            state
+                .targets
+                .iter()
+                .find(|target| target.id == 2)
+                .unwrap()
+                .is_boss
+        );
+        assert!(!shared
+            .preferences
+            .lock()
+            .unwrap()
+            .extra
+            .contains_key("bossIds"));
+        assert!(shared.data_dir.as_os_str().is_empty());
+        for invalid in [vec![0], vec![u64::from(u32::MAX) + 1], vec![2; 257]] {
+            assert!(set_live_boss_targets(&shared, &invalid).is_err());
+        }
+        assert!(
+            shared
+                .engine
+                .lock()
+                .unwrap()
+                .state(3_000)
+                .targets
+                .iter()
+                .find(|target| target.id == 2)
+                .unwrap()
+                .is_boss
+        );
     }
 
     #[test]
@@ -895,6 +1019,107 @@ mod shell_tests {
         engine
     }
 
+    fn imported_history_fixture() -> Shared {
+        let mut engine = community_fixture_engine();
+        engine.reset();
+        let (_, captured) = engine.history_snapshot();
+        assert_eq!(captured.len(), 1);
+        engine.merge_history(&captured).unwrap();
+        engine.ingest_event(
+            luma_engine::packets::Event::Damage(luma_engine::packets::Hit {
+                source: 1,
+                target: 2,
+                skill: 14_090_000,
+                amount: 50,
+                critical: false,
+                tick: false,
+                flags: 0,
+                angle: 0,
+            }),
+            4_000,
+        );
+        fixture_shared(engine, Preferences::default())
+    }
+
+    #[test]
+    fn failed_import_clear_save_preserves_history_revision_and_current_combat() {
+        let shared = imported_history_fixture();
+        let before = shared.engine.lock().unwrap().history_snapshot();
+        let current = shared.engine.lock().unwrap().current_record(5_000);
+        let saved = before.0.saturating_sub(1);
+        shared
+            .history_saved_revision
+            .store(saved, Ordering::Relaxed);
+        let result = clear_imported_history_with(&shared, |records| {
+            assert_eq!(records.len(), 1);
+            assert!(records.iter().all(|record| record.source != "imported"));
+            Err("Injected history write failure".into())
+        });
+        assert_eq!(result.unwrap_err(), "Injected history write failure");
+        let after = shared.engine.lock().unwrap().history_snapshot();
+        assert_eq!(after.0, before.0);
+        assert_eq!(
+            serde_json::to_value(after.1).unwrap(),
+            serde_json::to_value(before.1).unwrap()
+        );
+        assert_eq!(shared.history_saved_revision.load(Ordering::Relaxed), saved);
+        assert_eq!(
+            *shared.history_storage_error.lock().unwrap(),
+            "Injected history write failure"
+        );
+        assert_eq!(
+            serde_json::to_value(shared.engine.lock().unwrap().current_record(5_000)).unwrap(),
+            serde_json::to_value(current).unwrap()
+        );
+    }
+
+    #[test]
+    fn successful_import_clear_commits_only_retained_history_and_tracks_its_saved_revision() {
+        let shared = imported_history_fixture();
+        let before = shared.engine.lock().unwrap().history_snapshot();
+        let current = shared.engine.lock().unwrap().current_record(5_000);
+        *shared.history_storage_error.lock().unwrap() = "Previous storage error".into();
+        let mut committed = Vec::new();
+        let removed = clear_imported_history_with(&shared, |records| {
+            committed = records.to_vec();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(committed.len(), 1);
+        assert!(committed.iter().all(|record| record.source != "imported"));
+        let after = shared.engine.lock().unwrap().history_snapshot();
+        assert_eq!(after.0, before.0.wrapping_add(1));
+        assert_eq!(
+            serde_json::to_value(&after.1).unwrap(),
+            serde_json::to_value(committed).unwrap()
+        );
+        assert_eq!(
+            shared.history_saved_revision.load(Ordering::Relaxed),
+            after.0
+        );
+        assert!(shared.history_storage_error.lock().unwrap().is_empty());
+        assert_eq!(
+            serde_json::to_value(shared.engine.lock().unwrap().current_record(5_000)).unwrap(),
+            serde_json::to_value(current).unwrap()
+        );
+        let mut saved_again = false;
+        assert_eq!(
+            clear_imported_history_with(&shared, |_| {
+                saved_again = true;
+                Ok(())
+            })
+            .unwrap(),
+            0
+        );
+        assert!(saved_again);
+        assert_eq!(shared.engine.lock().unwrap().history_revision(), after.0);
+        let state = snapshot(&shared).unwrap();
+        assert_eq!(state["history_count"], 1);
+        assert_eq!(state["history_revision"], after.0);
+        assert_eq!(state["history_storage_error"], "");
+    }
+
     #[test]
     fn community_record_ids_are_exact_and_cannot_address_files_or_other_commands() {
         assert_eq!(community_record_id(None).unwrap(), None);
@@ -972,12 +1197,14 @@ fn persist(shared: &Shared, preferences: &Preferences) -> Result<(), String> {
         .settings_write
         .lock()
         .map_err(|_| "Settings writer unavailable")?;
+    let mut preferences = preferences.clone();
+    preferences.discard_session_marks();
     preferences.validate()?;
     fs::create_dir_all(&shared.data_dir)
         .map_err(|e| format!("Cannot create Luma settings directory: {e}"))?;
     let path = shared.data_dir.join("preferences.json");
     let temporary = shared.data_dir.join("preferences.json.new");
-    let bytes = serde_json::to_vec_pretty(preferences).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&preferences).map_err(|e| e.to_string())?;
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("Luma preferences exceed the 4 MB local storage limit".into());
     }
@@ -1386,6 +1613,43 @@ fn import_history(shared: State<Arc<Shared>>, document: String) -> Result<Value,
     Ok(serde_json::json!({"revision": revision, "history": history}))
 }
 
+fn clear_imported_history_with(
+    shared: &Shared,
+    save: impl FnOnce(&[luma_engine::Encounter]) -> Result<(), String>,
+) -> Result<usize, String> {
+    let _write = shared
+        .history_write
+        .lock()
+        .map_err(|_| "History writer unavailable")?;
+    let mut engine = shared.engine.lock().map_err(|_| "History unavailable")?;
+    let (_, history) = engine.history_snapshot();
+    let retained: Vec<_> = history
+        .into_iter()
+        .filter(|record| record.source != "imported")
+        .collect();
+    // Keep the engine locked through the disk commit so a newly completed
+    // encounter cannot be omitted from the staged file. A failed save leaves
+    // both history and its revision unchanged.
+    let result = save(&retained);
+    if let Ok(mut message) = shared.history_storage_error.lock() {
+        *message = result.as_ref().err().cloned().unwrap_or_default();
+    }
+    result?;
+    let removed = engine.clear_imported_history();
+    shared
+        .history_saved_revision
+        .store(engine.history_revision(), Ordering::Relaxed);
+    Ok(removed)
+}
+
+#[tauri::command]
+fn clear_imported_history(shared: State<Arc<Shared>>) -> Result<Value, String> {
+    clear_imported_history_with(&shared, |records| {
+        local_history::save(&shared.data_dir.join("history.json"), records).map(|_| ())
+    })?;
+    snapshot(&shared)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn arm_training(
     shared: State<Arc<Shared>>,
@@ -1438,6 +1702,7 @@ fn set_preferences(
     // Native resize owns geometry. Theme/UI saves can contain stale dimensions.
     preferences.width = previous.width;
     preferences.height = previous.height;
+    preferences.discard_session_marks();
     preferences.validate()?;
     persist(&shared, &preferences)?;
     if let Err(error) =
@@ -1451,13 +1716,6 @@ fn set_preferences(
         .lock()
         .map_err(|_| "Meter state unavailable")?
         .set_target_mode(&preferences.target_mode);
-    if let Some(ids) = preferences.extra.get("bossIds").and_then(Value::as_array) {
-        shared
-            .engine
-            .lock()
-            .map_err(|_| "Meter state unavailable")?
-            .set_boss_targets(&ids.iter().filter_map(Value::as_u64).collect::<Vec<_>>());
-    }
     let character_name = preferences
         .extra
         .get("characterName")
@@ -1605,32 +1863,21 @@ fn set_target_mode(shared: State<Arc<Shared>>, mode: String) -> Result<Value, St
     snapshot(&shared)
 }
 
-#[tauri::command]
-fn set_boss_targets(shared: State<Arc<Shared>>, ids: Vec<u64>) -> Result<Value, String> {
-    if ids.len() > 256 {
-        return Err("At most 256 boss target IDs may be selected".into());
+fn set_live_boss_targets(shared: &Shared, ids: &[u64]) -> Result<(), String> {
+    if ids.len() > 256 || ids.iter().any(|id| *id == 0 || *id > u32::MAX as u64) {
+        return Err("Choose up to 256 observed boss target IDs".into());
     }
-    let _change = shared
-        .preference_change
-        .lock()
-        .map_err(|_| "Preferences unavailable")?;
-    let mut preferences = shared
-        .preferences
-        .lock()
-        .map_err(|_| "Preferences unavailable")?;
-    let mut staged = preferences.clone();
-    staged.extra.insert(
-        "bossIds".into(),
-        serde_json::to_value(&ids).map_err(|e| e.to_string())?,
-    );
-    persist(&shared, &staged)?;
-    *preferences = staged;
-    drop(preferences);
     shared
         .engine
         .lock()
         .map_err(|_| "Meter state unavailable")?
-        .set_boss_targets(&ids);
+        .set_boss_targets(ids);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_boss_targets(shared: State<Arc<Shared>>, ids: Vec<u64>) -> Result<Value, String> {
+    set_live_boss_targets(&shared, &ids)?;
     snapshot(&shared)
 }
 
@@ -2005,6 +2252,7 @@ fn main() {
             get_character_state,
             get_field_bosses,
             import_history,
+            clear_imported_history,
             arm_training,
             cancel_training,
             get_preferences,
@@ -2062,9 +2310,6 @@ fn main() {
                     .and_then(Value::as_str)
                     .unwrap_or(""),
             );
-            if let Some(ids) = preferences.extra.get("bossIds").and_then(Value::as_array) {
-                engine.set_boss_targets(&ids.iter().filter_map(Value::as_u64).collect::<Vec<_>>());
-            }
             if let Some(window) = app.get_webview_window("main") {
                 window.set_size(tauri::LogicalSize::new(
                     preferences.width,

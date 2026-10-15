@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHistoryCache } from '../history.mjs';
+import { createHistoryCache, clearImportedHistory } from '../history.mjs';
 import { normalizeEncounter, normalizeState } from '../model.mjs';
 
 const record = id => ({ id, name: `Encounter ${id}`, total_damage: 100, elapsed_ms: 1000, players: [] });
@@ -76,4 +76,64 @@ test('malformed or stale history responses cannot erase confirmed history', asyn
   await cache.observe(2); assert.equal(cache.history, confirmed);
   result = { revision: 2, history: [{}] }; await cache.retry(); assert.equal(cache.history, confirmed);
   result = { revision: 2, history: [] }; await cache.retry(); assert.equal(cache.revision, 2); assert.deepEqual(cache.history, []);
+});
+
+test('all 31 and 200 native records remain available to filters and sharing candidates', async () => {
+  for (const count of [31, 200]) {
+    const records = Array.from({ length: count }, (_, index) => ({ ...record(count - index), source: index < 30 ? 'imported' : 'captured' }));
+    const cache = createHistoryCache({ read: async () => ({ revision: 1, history: records }), normalizeRecord: normalizeEncounter });
+    await cache.observe(1);
+    assert.equal(cache.history.length, count);
+    assert.equal(cache.history.at(-1).id, '1');
+    assert.equal(cache.history.filter(row => row.provenance !== 'imported-unverified').length, count - 30);
+  }
+});
+
+test('native cache stays bounded at 200 without normalizing or traversing a larger response tail', async () => {
+  let normalized = 0;
+  const input = Array.from({ length: 400 }, (_, index) => record(index + 1));
+  const cache = createHistoryCache({ read: async () => ({ revision: 1, history: input }), normalizeRecord: value => { normalized += 1; return normalizeEncounter(value); } });
+  await cache.observe(1);
+  assert.equal(cache.history.length, 200); assert.equal(normalized, 200);
+  assert.equal(cache.history.at(-1).id, '200'); assert.equal(input.length, 400);
+});
+
+test('a successful clear to empty history advances revision and removes previously cached imported records', async () => {
+  let result = { revision: 1, history: [{ ...record(1), source: 'imported' }] };
+  const cache = createHistoryCache({ read: async () => result, normalizeRecord: normalizeEncounter });
+  await cache.observe(1);
+  assert.equal(cache.history[0].provenance, 'imported-unverified');
+  result = { revision: 2, history: [] };
+  await cache.observe(2);
+  assert.equal(cache.revision, 2); assert.deepEqual(cache.history, []);
+});
+
+test('desktop clear waits for native acknowledgement before local removal and refresh', async () => {
+  const pending = deferred(), calls = [], state = { history_revision: 2 };
+  const operation = clearImportedHistory({ native: true,
+    clearNative: () => { calls.push('native'); return pending.promise; },
+    clearLocal: () => { calls.push('local'); },
+    refresh: value => { assert.equal(value, state); calls.push('refresh'); },
+  });
+  assert.deepEqual(calls, ['native']);
+  pending.resolve(state);
+  assert.equal(await operation, state); assert.deepEqual(calls, ['native', 'local', 'refresh']);
+});
+
+test('failed desktop clear preserves local imported records and does not announce a refreshed success', async () => {
+  const records = [record(1)], calls = [];
+  await assert.rejects(clearImportedHistory({ native: true,
+    clearNative: async () => { throw new Error('Synthetic denied write'); },
+    clearLocal: () => { records.length = 0; calls.push('local'); },
+    refresh: () => { calls.push('refresh'); },
+  }), /Synthetic denied write/);
+  assert.equal(records.length, 1); assert.deepEqual(calls, []);
+  await assert.rejects(clearImportedHistory({ native: true, clearLocal: () => { records.length = 0; } }), /unavailable/);
+  assert.equal(records.length, 1);
+});
+
+test('browser clear only removes local imports and never invokes an available native callback', async () => {
+  const calls = [];
+  assert.equal(await clearImportedHistory({ native: false, clearNative: () => { throw new Error('Must not run'); }, clearLocal: () => { calls.push('local'); }, refresh: value => { assert.equal(value, null); calls.push('refresh'); } }), null);
+  assert.deepEqual(calls, ['local', 'refresh']);
 });

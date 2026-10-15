@@ -17,7 +17,7 @@ export function createHistoryCache({ read, normalizeRecord = value => value, onC
             if (desiredRevision > requestedRevision) continue;
             throw new Error('History response is older than the live revision');
           }
-          const records = result.history.slice(0, 30).map(normalizeRecord);
+          const records = result.history.slice(0, 200).map(normalizeRecord);
           if (records.some(record => !record)) throw new Error('Invalid history record');
           revision = result.revision; desiredRevision = result.revision;
           history = records; failedRevision = null;
@@ -48,4 +48,14 @@ export function createHistoryCache({ read, normalizeRecord = value => value, onC
     get pending() { return Boolean(pending); },
     get failed() { return failedRevision !== null; },
   };
+}
+
+// The native store owns imported records on desktop. Keep local metadata until
+// that store confirms removal; a rejected command must not fabricate success.
+export async function clearImportedHistory({ native = false, clearNative, clearLocal, refresh } = {}) {
+  if (typeof clearLocal !== 'function' || native && typeof clearNative !== 'function') throw new Error('History clear operation is unavailable');
+  const state = native ? await clearNative() : null;
+  await clearLocal();
+  if (typeof refresh === 'function') await refresh(state);
+  return state;
 }

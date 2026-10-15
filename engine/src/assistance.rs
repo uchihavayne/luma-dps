@@ -26,6 +26,13 @@ pub enum AssistError {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct CastCooldown {
+    pub cooldown_ms: Option<u32>,
+    pub charges: Option<u32>,
+    pub recharge_ms: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct CastObservation {
     pub actor_id: u64,
     pub skill_id: u32,
@@ -33,6 +40,7 @@ pub struct CastObservation {
     pub duration_ms: Option<u64>,
     pub facing: f32,
     pub position: Option<[f32; 3]>,
+    pub cooldown: Option<CastCooldown>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,7 +147,7 @@ impl<'a> Reader<'a> {
 
 fn aim(reader: &mut Reader<'_>, windup: bool) -> Result<CastObservation, AssistError> {
     let actor_id = reader.actor()?;
-    reader.byte()?;
+    let actor_flags = reader.byte()?;
     let skill_id = reader.word()?;
     if skill_id == 0 || skill_id > 300_000_000 {
         return Err(AssistError::Invalid);
@@ -169,9 +177,14 @@ fn aim(reader: &mut Reader<'_>, windup: bool) -> Result<CastObservation, AssistE
     } else {
         None
     };
-    // The observed layouts have an additional tail with no established meaning.
-    // Its bounded bytes stay opaque and never become inferred cast fields.
-    reader.opaque_tail(64)?;
+    let cooldown = if !windup && (11_000_000..20_000_000).contains(&skill_id) {
+        // Only the complete, known tail establishes timing. An unfamiliar tail
+        // does not erase the independently decoded actor/skill cast event.
+        cast_cooldown_tail(reader, actor_flags).ok()
+    } else {
+        None
+    };
+    reader.opaque_tail(if windup { 64 } else { MAX_FRAME })?;
     Ok(CastObservation {
         actor_id,
         skill_id,
@@ -179,6 +192,50 @@ fn aim(reader: &mut Reader<'_>, windup: bool) -> Result<CastObservation, AssistE
         duration_ms,
         facing,
         position,
+        cooldown,
+    })
+}
+
+fn cast_cooldown_tail(reader: &Reader<'_>, flags: u8) -> Result<CastCooldown, AssistError> {
+    if flags & !0x2c != 0 {
+        return Err(AssistError::Unsupported);
+    }
+    let mut tail = Reader {
+        bytes: reader.bytes,
+        offset: reader.offset,
+    };
+    tail.variable()?; // Opaque A: no invented animation/cooldown meaning.
+    tail.variable()?; // Opaque B.
+    let cooldown = tail.variable()?;
+    if cooldown > 3_600_000 {
+        return Err(AssistError::Limit);
+    }
+    let charged = flags & 0x0c != 0;
+    if charged && cooldown != 0 {
+        return Err(AssistError::Unsupported);
+    }
+    let charges = if flags & 4 != 0 { tail.variable()? } else { 0 };
+    let recharge = if flags & 8 != 0 { tail.variable()? } else { 0 };
+    if charges > 9 || recharge > 3_600_000 {
+        return Err(AssistError::Limit);
+    }
+    if flags & 0x20 != 0 {
+        let count = tail.variable()?;
+        if count > 64 {
+            return Err(AssistError::Limit);
+        }
+        for _ in 0..count {
+            tail.actor()?;
+            for _ in 0..3 {
+                tail.float(10_000_000.0)?;
+            }
+        }
+    }
+    tail.end()?;
+    Ok(CastCooldown {
+        cooldown_ms: (!charged).then_some(cooldown as u32),
+        charges: charged.then_some(charges as u32),
+        recharge_ms: charged.then_some(recharge as u32),
     })
 }
 

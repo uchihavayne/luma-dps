@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { trainingState, damageCurve, curvePath, historyProgress, takenCoverage } from '../analysis.mjs';
+import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from '../analysis.mjs';
 import { normalizeEncounter, normalizeState } from '../model.mjs';
 
 const record = () => ({ started_ms: 100000, elapsed_ms: 10000, sample_complete: true, local_player_id: 1, local_identity_source: 'manual', damage_samples: [
@@ -14,6 +14,19 @@ test('training state preserves exact native time and incomplete capture without 
   const state = normalizeState({ training: { status: 'running', duration_ms: 60000, remaining_ms: 20000, total_damage: 4500, dps: 112.5, local_player_id: 8, capture_incomplete: true } });
   assert.equal(state.training.remaining_ms, 20000); assert.equal(state.training.capture_incomplete, true);
   assert.equal(trainingState().status, 'idle'); assert.equal(trainingState({ status: 'pretend', remaining_ms: -3 }).remaining_ms, 0);
+});
+
+test('custom training durations accept whole seconds from 10 through 300 and preserve all existing presets', () => {
+  for (const seconds of [10, 11, 30, 45, 59, 60, 90, 120, 180, 299, 300]) {
+    assert.equal(validateTrainingDuration(seconds), seconds * 1000);
+    assert.equal(validateTrainingDuration(String(seconds)), seconds * 1000);
+  }
+  assert.equal(validateTrainingDuration(' 45 '), 45000);
+});
+
+test('custom training duration validation refuses partial, exponential, fractional, nonnumeric and out-of-range drafts', () => {
+  for (const value of ['', ' ', '1', '9', '301', '1000', '-10', '10.5', '10.0', '1e2', '0x64', '+60', '60 seconds', 0, 9, 301, 10.5, NaN, Infinity, null, undefined, true, {}, []]) assert.equal(validateTrainingDuration(value), null, String(value));
+  assert.equal(validateTrainingDuration(60_000), null);
 });
 
 test('personal curve includes credited summon damage but excludes strangers, with measured zero buckets', () => {

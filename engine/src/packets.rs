@@ -13,6 +13,22 @@ pub struct Hit {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct PartyMember {
+    pub key: u32,
+    pub server: u16,
+    pub slot: u8,
+    pub name: String,
+    pub class: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberProfile {
+    pub id: u64,
+    pub server: u16,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Damage(Hit),
     Assistance(crate::assistance::AssistEvent),
@@ -44,6 +60,11 @@ pub enum Event {
         remaining_units: Option<u32>,
         charges: Option<u32>,
     },
+    SkillCharges {
+        skill: u32,
+        charges: u32,
+        recharge_ms: u32,
+    },
     Health {
         id: u64,
         current: u64,
@@ -55,6 +76,16 @@ pub enum Event {
     },
     PartyProfiles {
         members: Vec<(String, u32)>,
+    },
+    PartyMembers {
+        members: Vec<PartyMember>,
+    },
+    PartyMemberRemoved {
+        key: u32,
+        server: u16,
+    },
+    MemberProfiles {
+        members: Vec<MemberProfile>,
     },
 }
 
@@ -153,8 +184,10 @@ fn npc_subtree(
 
 /// Read only complete framed 02 97 rosters. Optional member tails are bounded;
 /// slot, UTF-8 name, level and repeated world id validate each next boundary.
-/// Partial or ambiguous records never replace the previous membership.
-fn party_roster(frame: &[u8]) -> Result<(Vec<String>, Vec<(String, u32)>), ReadError> {
+/// A counted update is merged into live membership; missing slots are not a
+/// disband signal. The first complete typed prefix is the next member, before
+/// any later member that also falls inside the bounded opaque tail window.
+fn party_roster(frame: &[u8]) -> Result<Vec<PartyMember>, ReadError> {
     let mut bytes = Bytes::new(frame);
     bytes.word()?;
     bytes.text()?;
@@ -168,17 +201,21 @@ fn party_roster(frame: &[u8]) -> Result<(Vec<String>, Vec<(String, u32)>), ReadE
         return Err(ReadError::Invalid);
     }
     let mut cursor = bytes.offset;
-    let mut names = Vec::new();
-    let mut profiles = Vec::new();
-    for slot in 1..=count as u8 {
+    let mut members = Vec::new();
+    let mut slots = std::collections::BTreeSet::new();
+    let mut previous_slot = 0;
+    for index in 1..=count as u8 {
         let mut choices = Vec::new();
-        let end = if slot == 1 {
+        let end = if index == 1 {
             cursor
         } else {
             cursor.saturating_add(48).min(frame.len())
         };
         for start in cursor..=end {
-            if frame.get(start + 1) != Some(&slot) {
+            if frame
+                .get(start + 1)
+                .is_none_or(|slot| !(1..=capacity).contains(slot) || *slot <= previous_slot)
+            {
                 continue;
             }
             let mut member = Bytes {
@@ -187,19 +224,21 @@ fn party_roster(frame: &[u8]) -> Result<(Vec<String>, Vec<(String, u32)>), ReadE
             };
             let parsed = (|| {
                 let presence = member.byte()?;
-                member.byte()?;
+                let slot = member.byte()?;
                 let account = frame
                     .get(member.offset..member.offset + 8)
                     .ok_or(ReadError::Short)?;
                 let world = u16::from_le_bytes([account[6], account[7]]);
+                let key =
+                    u32::from_le_bytes(account[..4].try_into().map_err(|_| ReadError::Invalid)?);
                 member.skip(8)?;
                 if presence == 0 {
                     if account.iter().any(|byte| *byte != 0) || member.byte()? != 0 {
                         return Err(ReadError::Invalid);
                     }
-                    return Ok((None, None, member.offset));
+                    return Ok((None, slot, member.offset));
                 }
-                if !(1000..3000).contains(&world) {
+                if !(1000..3000).contains(&world) || key == 0 {
                     return Err(ReadError::Invalid);
                 }
                 let name = member.character_text()?;
@@ -226,28 +265,155 @@ fn party_roster(frame: &[u8]) -> Result<(Vec<String>, Vec<(String, u32)>), ReadE
                 if anchors.len() != 1 {
                     return Err(ReadError::Invalid);
                 }
-                Ok((Some(name), Some(class), anchors[0]))
+                Ok((
+                    Some(PartyMember {
+                        key,
+                        server: world,
+                        slot,
+                        name,
+                        class,
+                    }),
+                    slot,
+                    anchors[0],
+                ))
             })();
             if let Ok(parsed) = parsed {
-                choices.push(parsed)
+                choices.push(parsed);
+                break;
             }
         }
         if choices.len() != 1 {
             return Err(ReadError::Invalid);
         }
-        let (name, class, end) = choices.pop().unwrap();
-        if let Some(name) = name {
-            if names.contains(&name) {
+        let (member, slot, end) = choices.pop().unwrap();
+        if !slots.insert(slot) {
+            return Err(ReadError::Invalid);
+        }
+        previous_slot = slot;
+        if let Some(member) = member {
+            if members.iter().any(|old: &PartyMember| {
+                old.key == member.key && old.server == member.server
+                    || old.name == member.name && old.server == member.server
+            }) {
                 return Err(ReadError::Invalid);
             }
-            if let Some(class) = class {
-                profiles.push((name.clone(), class))
-            }
-            names.push(name)
+            members.push(member);
         }
         cursor = end;
     }
-    Ok((names, profiles))
+    Ok(members)
+}
+
+fn party_member_update(frame: &[u8]) -> Result<PartyMember, ReadError> {
+    if frame.len() < 40 || frame.len() > 256 {
+        return Err(ReadError::Invalid);
+    }
+    let mut bytes = Bytes::new(frame);
+    let _mask = bytes.byte()?;
+    let slot = bytes.byte()?;
+    let key = bytes.word()?;
+    bytes.skip(2)?; // Opaque upper handle bytes, not a combat actor id.
+    let server = u16::from_le_bytes(
+        frame
+            .get(bytes.offset..bytes.offset + 2)
+            .ok_or(ReadError::Short)?
+            .try_into()
+            .map_err(|_| ReadError::Invalid)?,
+    );
+    bytes.skip(2)?;
+    let name = bytes.character_text()?;
+    let class = bytes.word()?;
+    let level = bytes.word()?;
+    let gear = bytes.word()?;
+    if !(1..=12).contains(&slot)
+        || key == 0
+        || !(1000..3000).contains(&server)
+        || !(1..=200).contains(&level)
+        || gear > 1_000_000
+        || !(5..=64).contains(&class)
+    {
+        return Err(ReadError::Invalid);
+    }
+    // Known complete member updates carry a bounded metadata tail, including a
+    // repeated home server. Its other values stay opaque and are not gear data.
+    let tail = frame.get(bytes.offset..).ok_or(ReadError::Short)?;
+    if tail.len() < 23
+        || tail.len() > 96
+        || !tail[..6]
+            .windows(2)
+            .any(|part| part == server.to_le_bytes())
+        || !tail[..8].contains(&4)
+    {
+        return Err(ReadError::Invalid);
+    }
+    Ok(PartyMember {
+        key,
+        server,
+        slot,
+        name,
+        class,
+    })
+}
+
+fn member_profiles(frame: &[u8]) -> Result<Vec<MemberProfile>, ReadError> {
+    if frame.len() > 16_384 {
+        return Err(ReadError::Invalid);
+    }
+    let mut result = Vec::new();
+    let mut end = 2;
+    // Match a full structural record, not an isolated nickname-shaped byte run.
+    for start in 2..frame.len().saturating_sub(54) {
+        if start < end || frame.get(start + 8) != Some(&36) {
+            continue;
+        }
+        let guid = &frame[start + 9..start + 45];
+        if !guid.iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }) {
+            continue;
+        }
+        let id = u32::from_le_bytes(
+            frame[start..start + 4]
+                .try_into()
+                .map_err(|_| ReadError::Invalid)?,
+        );
+        let server = u16::from_le_bytes([frame[start + 4], frame[start + 5]]);
+        if id == 0
+            || !(1000..3000).contains(&server)
+            || frame[start + 51..start + 53] != server.to_le_bytes()
+        {
+            continue;
+        }
+        let mut bytes = Bytes {
+            data: frame,
+            offset: start + 53,
+        };
+        let Ok(name) = bytes.character_text() else {
+            continue;
+        };
+        if result.iter().any(|row: &MemberProfile| {
+            row.id == u64::from(id) || row.name == name && row.server == server
+        }) {
+            return Err(ReadError::Invalid);
+        }
+        end = bytes.offset;
+        result.push(MemberProfile {
+            id: u64::from(id),
+            server,
+            name,
+        });
+        if result.len() > 12 {
+            return Err(ReadError::Invalid);
+        }
+    }
+    if result.is_empty() {
+        return Err(ReadError::Invalid);
+    }
+    Ok(result)
 }
 
 pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
@@ -445,10 +611,25 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             Ok(Some(Event::Updates(updates)))
         }
         [0x22, 0x38] => {
-            // A single external state-1 example suggests charge information,
-            // but neither the state meanings nor the time unit are validated.
-            // Do not turn unclassified bytes into a cooldown or a ready charge.
-            Ok(None)
+            let mask = bytes.byte()?;
+            if mask == 0 || mask & !3 != 0 {
+                return Err(ReadError::Invalid);
+            }
+            let skill = bytes.word()?;
+            let charges = if mask & 1 != 0 { bytes.variable()? } else { 0 };
+            let recharge_ms = if mask & 2 != 0 { bytes.variable()? } else { 0 };
+            if !(11_000_000..20_000_000).contains(&skill)
+                || charges > 9
+                || recharge_ms > 3_600_000
+                || bytes.offset != frame.len()
+            {
+                return Err(ReadError::Invalid);
+            }
+            Ok(Some(Event::SkillCharges {
+                skill,
+                charges,
+                recharge_ms,
+            }))
         }
         [0, 0x8d] => {
             let id = u64::from(bytes.variable()?);
@@ -461,13 +642,28 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             }
             Ok(Some(Event::Health { id, current }))
         }
-        [2, 0x97] => {
-            let (names, members) = party_roster(frame)?;
-            Ok(Some(Event::Updates(vec![
-                Event::PartyRoster { names },
-                Event::PartyProfiles { members },
-            ])))
+        [2, 0x97] => Ok(Some(Event::PartyMembers {
+            members: party_roster(frame)?,
+        })),
+        [0x1f, 0x97] => Ok(Some(Event::PartyMembers {
+            members: vec![party_member_update(frame)?],
+        })),
+        [0x22, 0x96] => {
+            if !(10..=128).contains(&frame.len()) {
+                return Err(ReadError::Invalid);
+            }
+            let key = bytes.word()?;
+            bytes.skip(2)?;
+            let server =
+                u16::from_le_bytes(frame[8..10].try_into().map_err(|_| ReadError::Invalid)?);
+            if key == 0 || !(1000..3000).contains(&server) {
+                return Err(ReadError::Invalid);
+            }
+            Ok(Some(Event::PartyMemberRemoved { key, server }))
         }
+        [0, 0x92] => Ok(Some(Event::MemberProfiles {
+            members: member_profiles(frame)?,
+        })),
         _ => Ok(None),
     }
 }

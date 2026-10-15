@@ -1,7 +1,4 @@
-#[path = "../src/cooldowns.rs"]
-mod cooldowns;
-
-use cooldowns::{Ledger, CAST_FRESH_MS, COUNTER_FRESH_MS};
+use luma_engine::cooldowns::{Ledger, CAST_FRESH_MS, COUNTER_FRESH_MS};
 
 fn calibrated() -> Ledger {
     let mut ledger = Ledger::default();

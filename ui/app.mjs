@@ -1,8 +1,8 @@
-import { THEMES, FONTS, LAYOUTS, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
+import { THEMES, FONTS, LAYOUTS, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
-import { trainingState, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
+import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
 import { characterSnapshot, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from './character.mjs';
 import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from './game-reports.mjs';
@@ -10,14 +10,15 @@ import * as scheduling from './events.mjs';
 import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
 import { createPreferenceCommitter } from './persistence.mjs';
 import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl } from './dom.mjs';
-import { createHistoryCache } from './history.mjs';
+import { createHistoryCache, clearImportedHistory } from './history.mjs';
 import { createHistoryNotebook, historyRecordKey, queryHistory, historyTrend, parseHistoryTags } from './history-tools.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
 import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
 import { communityLabels, communityUrl, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
 import { latencyPresentation, petProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
 import { resourceStatus } from './resources.mjs';
-import { teamSnapshot, renderTeam } from './team.mjs';
+import { teamSnapshot, renderTeam, automaticTeamState, renderAutomaticTeam } from './team.mjs';
+import { renderLatencyHistory } from './latency-history.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -34,11 +35,12 @@ let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
 let receivedStateCount = 0;
 let cooldownFingerprint = '';
-let teamState = teamSnapshot(), teamBusy = false, teamPolling = false, teamConsent = false, teamInviteDraft = '', teamInviteCopy = '', teamRequestEpoch = 0;
+let teamState = teamSnapshot(), roomIntent = false, teamClassFilter = '', teamBusy = false, teamPolling = false, teamConsent = false, teamInviteDraft = '', teamInviteCopy = '', teamRequestEpoch = 0;
 let drawerContentFingerprint = '', drawerTabsFingerprint = '';
 let settingsTab = 'appearance';
 const settingsPanels = new Map(), dirtySettingsForms = new Set();
-let trainingDuration = 60000, trainingTargetId = '', curveInterval = 1000, curveRecord = null, curvePending = false;
+let trainingDuration = 60000, trainingDurationDraft = '60', trainingTargetId = '', curveInterval = 1000, curveRecord = null, curvePending = false;
+let historyClearPending = false;
 let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
 let petPage = 0;
@@ -65,6 +67,7 @@ if (telemetryDemo) {
     assist: { stagger: [{ actor_id: 10, maximum: 1200, current: 750, broken: false, observed_at_ms: at, fresh_for_ms: 5000, fresh: true, source: 'server' }] },
     cooldowns: [{ actor_id: 7, skill_id: 14090000, source: 'local-server', unit: 'server-counter', raw_remaining_units: 0, observed_at_ms: at, fresh: true, readiness: 'server-ready', ready_confirmed: true, charges: null }, { actor_id: 7, skill_id: 14080000, source: 'local-server', unit: 'server-counter', raw_remaining_units: 24000, observed_at_ms: at, fresh: true, readiness: 'estimated-cooling', estimated_rate_units_per_ms: 2.4, rate_samples: 3 }],
     resources: { actor_id: 7, awaiting_identity: false, source: 'server-contents-ticket', snapshot_complete: true, odyle: { ticket_id: 60000001, base: 420, bonus: 80, total: 500, time_left_ms: 0, observed_at_ms: at }, membership: { source: 'server-benefit-list', observed_at_ms: at, expires_at_ms: at + 86400000 } },
+    party_membership_source: 'server', party_member_ids: ['7', '9'], actor_cooldowns: [{ actor_id: 9, skill_id: 11010000, source: 'server-cast', unit: 'milliseconds', fresh: true, observation_kind: 'cast-cooldown', cooldown_ms: 81100, remaining_ms: 78100, expires_at_ms: at + 78100, observed_at_ms: at - 3000, sampled_at_ms: at, charges: null, recharge_remaining_ms: null, recharge_expires_at_ms: null, charges_observed_at_ms: null, readiness: 'cooling', ready_confirmed: false }],
     party_identity_roster: { source: 'server', members: [{ actor_id: 9, name: 'Liora', class_name: 'Cleric', identity_confirmed: true }] }, observed_casts: [{ actor_id: 9, skill_id: 11010000, source: 'server-cast', last_observed_at_ms: at - 3000, use_count: 3, fresh: true, ready_confirmed: false }],
     capture: { status: 'capturing', game_connections: 2, network_latency: { status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 87, variation_ms: 2, observed_at_ms: at, sampled_at_ms: at, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 } },
   });
@@ -73,9 +76,9 @@ if (telemetryDemo) {
       pets: [{ pet_id: 1042, level: 2, progress: 34, progress_source: 'server-delta', session_gained: 2, observed_at_ms: at }, { pet_id: 1124, level: 3, progress: null, progress_source: 'unknown', session_gained: 0, observed_at_ms: at }] },
   });
 }
-if (telemetryDemo) {
+if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '1') {
   const at = Date.now();
-  teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
+  roomIntent = true; teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
     peers: [{ peer_id: 'b'.repeat(32), display_name: state.local_player_name || 'Aeryn', class_name: 'Ranger', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 14090000, raw_remaining_units: 0, estimated_remaining_ms: null, charges: null, age_ms: 0, ready_confirmed: true, fresh: true }] },
       { peer_id: 'c'.repeat(32), display_name: 'Liora', class_name: 'Cleric', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 11010000, raw_remaining_units: 24000, estimated_remaining_ms: 10000, charges: null, age_ms: 0, ready_confirmed: false, fresh: true }] }] });
 }
@@ -134,6 +137,8 @@ Object.assign(words.tr, { effectTimeline: 'Alınan olay sırası', refreshEffect
 Object.assign(words.en, { effectTimeline: 'Received event sequence', refreshEffects: 'Refresh event sequence', noEffectTimeline: 'No event sequence has been received.', effectLimited: 'The effect retention limit was reached. The visible list is not the complete history.', eventWindup: 'Windup', eventCast: 'Skill use', eventApplied: 'Effect applied', eventRefreshed: 'Effect refreshed', eventRemoved: 'Effect removed', eventExpired: 'Received effect duration elapsed' });
 Object.assign(words.tr, { trainingTarget: 'Antrenman hedefi', anyTrainingTarget: 'Kendi vurduğun tüm hedefler' });
 Object.assign(words.en, { trainingTarget: 'Training target', anyTrainingTarget: 'All targets you hit' });
+Object.assign(words.tr, { customTrainingDuration: 'Özel süre (saniye)', trainingDurationHelp: '10–300 saniye; tam sayı gir.', invalidTrainingDuration: '10 ile 300 arasında tam sayı gir.' });
+Object.assign(words.en, { customTrainingDuration: 'Custom duration (seconds)', trainingDurationHelp: '10–300 seconds; enter a whole number.', invalidTrainingDuration: 'Enter a whole number from 10 to 300.' });
 Object.assign(words.tr, { curveHelp: 'Grafik, kaydedilen hasar olaylarından çizilir. Seçili kapsamın ilk vuruşundan başlar; gerçek zaman aralıkları duraklamaları da içerir. 1 / 5 / 10 saniyelik kovalar farklı patlama aralıklarıdır.' });
 Object.assign(words.en, { curveHelp: 'This chart uses recorded damage events, starting from the first hit in the selected scope. Wall-clock intervals include pauses. 1 / 5 / 10 second buckets measure different burst windows.' });
 Object.assign(words.tr, { build: 'Karakter', receivedBuild: 'Alınan karakter bilgisi', buildHelp: 'Oyun bağlantısından alınan ekipman, yetenek seviyeleri ve Daevanion seçimleri. Bilinmeyen öğe adları kimlikleriyle gösterilir. Elle yazdığın notlar Planlayıcı’da kalır.', refreshBuild: 'Karakter verisini yenile', ownBuild: 'Kendi karakter verin', unboundBuild: 'Oyuncuya bağlanmamış veri', inspectedBuild: 'İncelenen karakter', noBuild: 'Henüz karakter yapılandırma verisi alınmadı. Uygulama açıkken karakterine giriş yapabilir veya oyun içinde karakter incelemesini açabilirsin.', observedEquipment: 'Alınan ekipman', noObservedEquipment: 'Bu karakter için ekipman verisi alınmadı.', slot: 'Yuva', enchant: 'Güçlendirme', stones: 'Taşlar', stats: 'Alınan özellikler', skillBonuses: 'Yetenek bonusları', godstone: 'Godstone', level: 'Seviye', baseLevel: 'Temel seviye', daevanion: 'Daevanion', nodes: 'Seçili düğümler', noBoards: 'Daevanion seçimi alınmadı.', snapshotTime: 'Son alındığı saat', partialBuild: 'Bu bölümde alınan kayıt tam liste olarak bildirilmedi.', worldBosses: 'Dünya bossları', worldHelp: 'Harita bağlantısından alınan boss yuvaları ve sunucunun bildirdiği saatler. Harita/boss adları çözülmediğinde kimlikleri görünür. Sabit bir doğma takvimi tahmin edilmez.', refreshWorld: 'Harita saatlerini yenile', noWorld: 'Henüz harita boss durumu alınmadı. İlgili haritada sunucu güncellemesi gerektiğinde burada görünür.', bossAlive: 'Canlı · sunucudan alındı', bossAwaiting: 'Saat doldu · sunucu güncellemesi bekleniyor', bossUnknown: 'Doğma saati alınmadı', map: 'Harita', bossSlot: 'Boss yuvası', useTimer: 'Üst bardaki saat yap', timerSelected: 'Üst barda seçili', observedAt: 'Son durum' });
@@ -297,6 +302,7 @@ function renderLatency() {
 }
 
 function renderMeter() {
+  if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   localizeControls();
   const status = connectionStatus(state, { native, demo, locale: prefs.locale });
   const connection = $('#connection');
@@ -353,6 +359,7 @@ function renderMeter() {
 
 function renderPlayers(status, scoped) {
   const container = $('#players');
+  const cooldownMembers = new Map(automaticTeamState(state).members.map(member => [member.actor_id, member]));
   if (!scoped.players.length) {
     reconcileKeyedRows(container, [status], {
       key: () => 'empty',
@@ -372,7 +379,7 @@ function renderPlayers(status, scoped) {
     key: item => item.key,
     create: () => {
       const row = document.createElement('button'); row.type = 'button'; row.className = 'player';
-      row.innerHTML = '<span class="player-bar" aria-hidden="true"></span><span class="rank"></span><span class="player-main"><span class="player-name-line"><span class="player-name"></span><span class="own-tag"></span></span><span class="player-class"><i class="class-dot" aria-hidden="true"></i><span class="player-class-name"></span></span></span><span class="player-stats"><span class="player-numbers"><span class="player-damage"></span><span class="player-dps"></span></span><span class="player-share"></span></span>';
+      row.innerHTML = '<span class="player-bar" aria-hidden="true"></span><span class="rank"></span><span class="player-main"><span class="player-name-line"><span class="player-name"></span><span class="own-tag"></span></span><span class="player-class"><i class="class-dot" aria-hidden="true"></i><span class="player-class-name"></span></span><span class="player-cooldown"></span></span><span class="player-stats"><span class="player-numbers"><span class="player-damage"></span><span class="player-dps"></span></span><span class="player-share"></span></span>';
       return row;
     },
     update: (row, { player }, index) => {
@@ -387,6 +394,10 @@ function renderPlayers(status, scoped) {
       setAttribute(row, 'aria-label', `${player.name}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
       setText(row.querySelector('.rank'), index + 1); setText(row.querySelector('.player-name'), player.name);
       setText(row.querySelector('.player-class-name'), player.class_name);
+      const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
+      const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.showTeamCooldowns || !member?.cooldowns.length;
+      setText(cooldownNode, cooling ? `CD · ${Math.ceil((cooling.remaining_ms || cooling.recharge_remaining_ms) / 1000)} ${prefs.locale === 'tr' ? 'sn' : 's'}` : member?.cooldowns.some(value => value.ready_confirmed) ? `CD · ${t('readyConfirmed')}` : 'CD · …');
+      cooldownNode.title = member?.cooldowns.map(value => `Skill #${value.skill_id} · ${value.remaining_ms === null ? '—' : `${Math.ceil(value.remaining_ms / 1000)} s`}`).join('\n') || '';
       setText(row.querySelector('.player-dps'), prefs.rowMetric === 'both' ? ` (${rate(player.dps)})` : rate(player.dps)); row.querySelector('.player-dps').title = `${t('rateCaption')}: ${fullNumber(player.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}`;
       setText(row.querySelector('.player-damage'), num(player.damage)); row.querySelector('.player-damage').title = `${t('totalCaption')}: ${fullNumber(player.damage)}`;
       const shareNode = row.querySelector('.player-share'); shareNode.hidden = !prefs.showShares;
@@ -436,7 +447,7 @@ function appearanceSettingsContent() {
   return `<p class="settings-hint">${t('autoSaveHelp')}</p><label class="field"><span>${t('language')}</span><select name="locale"><option value="tr" ${prefs.locale === 'tr' ? 'selected' : ''}>Türkçe</option><option value="en" ${prefs.locale === 'en' ? 'selected' : ''}>English</option></select></label>
     <div class="field-grid"><label class="field"><span>${t('summaryScope')}</span><select name="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}" ${prefs.damageScope === value ? 'selected' : ''}>${t(value)}</option>`).join('')}</select></label><label class="field"><span>${t('rowColorMode')}</span><select name="rowColorMode">${['performance', 'class', 'accent'].map(value => `<option value="${value}" ${prefs.rowColorMode === value ? 'selected' : ''}>${t({performance:'colorPerformance', class:'colorClass', accent:'colorAccent'}[value])}</option>`).join('')}</select></label></div>
     <h3 class="section-title">${t('layout')}</h3><div class="layout-grid">${Object.entries(LAYOUTS).map(([id, layout]) => `<button class="layout-card" data-layout="${id}" aria-pressed="${prefs.layout === id}"><span class="layout-preview preview-${id}" aria-hidden="true"><i></i><b></b><em></em><em></em><em></em></span><strong>${layout.name}</strong><span>${esc(layout.description[prefs.locale])}</span></button>`).join('')}</div><p class="help">${t('layoutHelp')}</p>
-    <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label></div>
+    <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label><label class="check-field"><input name="showTeamCooldowns" type="checkbox" ${prefs.showTeamCooldowns ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Satırda cooldown göster' : 'Show cooldown in rows'}</label></div>
     <h3 class="section-title">${t('theme')}</h3><div class="theme-grid" role="group" aria-label="${t('theme')}">${Object.entries(THEMES).map(([id, theme]) => `<button class="theme-swatch" data-theme="${id}" style="--swatch-bg:${theme.bg};--swatch-text:${theme.text};--swatch-accent:${theme.accent}" aria-pressed="${prefs.theme === id}"><i aria-hidden="true"></i>${theme.name}</button>`).join('')}</div><h3 class="section-title">${t('typography')}</h3>
     <div class="field-grid"><label class="field"><span>${t('font')}</span><select name="font">${fontOptions(prefs.font)}</select></label><label class="field"><span>${t('targetFont')}</span><select name="targetFont">${fontOptions(prefs.targetFont)}</select></label></div>
     <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="1.2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0.65" max="1" step="0.05"')}</div>
@@ -446,7 +457,7 @@ function appearanceSettingsContent() {
 }
 
 function combatSettingsContent() {
-  return `<h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${prefs.bossIds.includes(Number(target.id)) ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
+  return `<h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
 function settingsContent(section = settingsTab) {
@@ -671,7 +682,7 @@ function receivedPlayerStats(p) {
 function overviewContent() {
   const s = analysisState();
   const scoped = scopedEncounter(s, prefs.damageScope), self = scopedEncounter(s, 'personal');
-  return `${source()}<p class="help">${t('selectedScope')}: ${t(prefs.damageScope)} · ${t('statsReceived')}</p><div class="analysis-metrics"><div><span>${t(`${prefs.damageScope}Dps`)}</span><strong>${scoped.known ? rate(scoped.dps) : '—'}</strong></div><div><span>${t(`${prefs.damageScope}Damage`)}</span><strong>${scoped.known ? num(scoped.damage) : '—'}</strong></div><div><span>${t('duration')}</span><strong>${clockTime(scoped.elapsed)}</strong></div><div><span>${t('player')}</span><strong>${scoped.players.length}</strong></div></div><div class="comparison-strip"><div><span>${t('personalDamage')}</span><strong>${self.known ? num(self.damage) : '—'}</strong></div><div><span>${t('encounterObserved')}</span><strong>${num(s.total_damage)}</strong></div></div>${receivedPersonalStats(s)}${playerPicker()}${(() => { const p = analysisPlayer(); if (!p) return ''; const summary = skillSummary(p); return `<div class="record-card"><strong class="class-colour" style="--class-color:${classColor(p.class_name)}">${esc(p.name)}</strong><div class="record-meta">${esc(p.class_name)} · #${esc(p.id)}</div><div class="analysis-metrics"><div><span>DPS</span><strong>${rate(p.dps)}</strong></div><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>${t('hits')}</span><strong>${fullNumber(summary.hits)}</strong></div><div><span>${t('crit')}</span><strong>${summary.criticalRate.toFixed(1)}%</strong></div></div>${receivedPlayerStats(p)}</div>`; })()}${reportToolbar()}<div class="button-row">${button('open-community-section', 'community', '', true)}${button('copy-community-summary', 'copyEncounterText', '', true)}</div>`;
+  return `${source()}<p class="help">${t('selectedScope')}: ${t(prefs.damageScope)} · ${t('statsReceived')}</p><div class="analysis-metrics"><div><span>${t(`${prefs.damageScope}Dps`)}</span><strong>${scoped.known ? rate(scoped.dps) : '—'}</strong></div><div><span>${t(`${prefs.damageScope}Damage`)}</span><strong>${scoped.known ? num(scoped.damage) : '—'}</strong></div><div><span>${t('duration')}</span><strong>${clockTime(scoped.elapsed)}</strong></div><div><span>${t('player')}</span><strong>${scoped.players.length}</strong></div></div><div class="comparison-strip"><div><span>${t('personalDamage')}</span><strong>${self.known ? num(self.damage) : '—'}</strong></div><div><span>${t('encounterObserved')}</span><strong>${num(s.total_damage)}</strong></div></div>${receivedPersonalStats(s)}${s.network_latency ? renderLatencyHistory(s, { locale: prefs.locale, scope: prefs.damageScope }) : ''}${playerPicker()}${(() => { const p = analysisPlayer(); if (!p) return ''; const summary = skillSummary(p); return `<div class="record-card"><strong class="class-colour" style="--class-color:${classColor(p.class_name)}">${esc(p.name)}</strong><div class="record-meta">${esc(p.class_name)} · #${esc(p.id)}</div><div class="analysis-metrics"><div><span>DPS</span><strong>${rate(p.dps)}</strong></div><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>${t('hits')}</span><strong>${fullNumber(summary.hits)}</strong></div><div><span>${t('crit')}</span><strong>${summary.criticalRate.toFixed(1)}%</strong></div></div>${receivedPlayerStats(p)}</div>`; })()}${reportToolbar()}<div class="button-row">${button('open-community-section', 'community', '', true)}${button('copy-community-summary', 'copyEncounterText', '', true)}</div>`;
 }
 
 function skillsContent() {
@@ -691,19 +702,32 @@ function skillQuality(skill) {
 function trainingContent() {
   const current = trainingState(state.training), known = scopedEncounter(state).known;
   const status = t({ idle: 'trainingIdle', armed: 'trainingArmed', running: 'trainingRunning', complete: 'trainingComplete', cancelled: 'trainingCancelled' }[current.status]);
-  return `${source()}<h3 class="section-title">${t('trainingTitle')}</h3><p class="help">${t('trainingHelp')}</p><p id="training-quality" class="quality-warning" ${current.capture_incomplete ? '' : 'hidden'}>${t('trainingIncomplete')}</p>${known ? '' : `<div class="status-card">${t('trainingNeedIdentity')}</div>`}<label class="field"><span>${t('trainingTarget')}</span><select name="trainingTargetId" ${['armed', 'running'].includes(current.status) ? 'disabled' : ''}><option value="">${t('anyTrainingTarget')}</option>${state.targets.map(target => `<option value="${esc(target.id)}" ${target.id === trainingTargetId ? 'selected' : ''}>${esc(target.name)} · #${esc(target.id)}</option>`).join('')}</select></label><div class="training-options" role="group" aria-label="${t('duration')}">${[60000, 120000, 180000, 300000].map(duration => `<button class="action-button${trainingDuration === duration ? '' : ' secondary'}" data-training-duration="${duration}" aria-pressed="${trainingDuration === duration}" ${['armed', 'running'].includes(current.status) ? 'disabled' : ''}>${duration / 1000} s</button>`).join('')}</div><div class="training-status ${current.status}"><span id="training-state-label">${esc(status)}</span><strong id="training-remaining">${clockTime(current.status === 'idle' ? trainingDuration : current.remaining_ms)}</strong><div class="training-track"><i style="--training-progress:${current.duration_ms > 0 ? Math.min(100, (1 - current.remaining_ms / current.duration_ms) * 100) : 0}%"></i></div></div><div class="analysis-metrics"><div><span>${t('personalDamage')}</span><strong id="training-damage">${num(current.total_damage)}</strong></div><div><span>${t('personalDps')}</span><strong id="training-dps">${rate(current.dps)}</strong></div></div><div class="button-row">${button('arm-training', 'armTraining', !known || !native || ['armed', 'running'].includes(current.status) ? 'disabled' : '')}${button('cancel-training', 'cancelTraining', !native || !['armed', 'running'].includes(current.status) ? 'disabled' : '', true)}</div>`;
+  const active = ['armed', 'running'].includes(current.status), validDuration = validateTrainingDuration(trainingDurationDraft);
+  return `${source()}<h3 class="section-title">${t('trainingTitle')}</h3><p class="help">${t('trainingHelp')}</p><p id="training-quality" class="quality-warning" ${current.capture_incomplete ? '' : 'hidden'}>${t('trainingIncomplete')}</p>${known ? '' : `<div class="status-card">${t('trainingNeedIdentity')}</div>`}
+    <label class="field"><span>${t('trainingTarget')}</span><select name="trainingTargetId" ${active ? 'disabled' : ''}><option value="">${t('anyTrainingTarget')}</option>${state.targets.map(target => `<option value="${esc(target.id)}" ${target.id === trainingTargetId ? 'selected' : ''}>${esc(target.name)} · #${esc(target.id)}</option>`).join('')}</select></label>
+    <div class="training-options" role="group" aria-label="${t('duration')}">${[60000, 120000, 180000, 300000].map(duration => `<button class="action-button${validDuration === duration ? '' : ' secondary'}" data-training-duration="${duration}" aria-pressed="${validDuration === duration}" ${active ? 'disabled' : ''}>${duration / 1000} s</button>`).join('')}</div>
+    <label class="field"><span>${t('customTrainingDuration')}</span><input name="trainingSeconds" type="number" min="10" max="300" step="1" inputmode="numeric" value="${esc(trainingDurationDraft)}" aria-describedby="training-duration-help training-duration-error" aria-invalid="${validDuration === null}" ${active ? 'disabled' : ''}></label><p id="training-duration-help" class="help">${t('trainingDurationHelp')}</p><p id="training-duration-error" class="quality-warning" ${validDuration === null ? '' : 'hidden'}>${t('invalidTrainingDuration')}</p>
+    <div class="training-status ${current.status}"><span id="training-state-label">${esc(status)}</span><strong id="training-remaining">${clockTime(current.status === 'idle' ? trainingDuration : current.remaining_ms)}</strong><div class="training-track"><i style="--training-progress:${current.duration_ms > 0 ? Math.min(100, (1 - current.remaining_ms / current.duration_ms) * 100) : 0}%"></i></div></div><div class="analysis-metrics"><div><span>${t('personalDamage')}</span><strong id="training-damage">${num(current.total_damage)}</strong></div><div><span>${t('personalDps')}</span><strong id="training-dps">${rate(current.dps)}</strong></div></div><div class="button-row">${button('arm-training', 'armTraining', !known || !native || active || validDuration === null ? 'disabled' : '')}${button('cancel-training', 'cancelTraining', !native || !active ? 'disabled' : '', true)}</div>`;
 }
 
 function updateTrainingLive() {
   const current = trainingState(state.training), active = ['armed', 'running'].includes(current.status);
+  const validDuration = validateTrainingDuration(trainingDurationDraft), durationInput = $('[name=trainingSeconds]');
   setText($('#training-state-label'), t({ idle: 'trainingIdle', armed: 'trainingArmed', running: 'trainingRunning', complete: 'trainingComplete', cancelled: 'trainingCancelled' }[current.status]));
   setText($('#training-remaining'), clockTime(current.status === 'idle' ? trainingDuration : current.remaining_ms));
   setText($('#training-damage'), num(current.total_damage)); setText($('#training-dps'), rate(current.dps));
   $('#training-quality').hidden = !current.capture_incomplete;
   $('.training-track i').style.setProperty('--training-progress', `${current.duration_ms > 0 ? Math.min(100, (1 - current.remaining_ms / current.duration_ms) * 100) : 0}%`);
-  for (const control of $$('[data-training-duration]')) control.disabled = active;
-  $('[name=trainingTargetId]').disabled = active;
-  $('[data-action=arm-training]').disabled = !native || !scopedEncounter(state).known || active;
+  for (const control of $$('[data-training-duration]')) { control.disabled = active; control.classList.toggle('secondary', Number(control.dataset.trainingDuration) !== validDuration); control.setAttribute('aria-pressed', String(Number(control.dataset.trainingDuration) === validDuration)); }
+  durationInput.disabled = active; durationInput.setAttribute('aria-invalid', String(validDuration === null));
+  durationInput.setCustomValidity(validDuration === null ? t('invalidTrainingDuration') : '');
+  $('#training-duration-error').hidden = validDuration !== null;
+  const targetSelect = $('[name=trainingTargetId]'), previousTarget = [...targetSelect.options].find(option => option.value === trainingTargetId)?.textContent;
+  const targets = [{ id: '', name: t('anyTrainingTarget') }, ...state.targets.map(target => ({ id: target.id, name: `${target.name} · #${target.id}` }))];
+  if (trainingTargetId && !targets.some(target => target.id === trainingTargetId)) targets.push({ id: trainingTargetId, name: previousTarget || `Target #${trainingTargetId}` });
+  reconcileKeyedRows(targetSelect, targets, { key: target => target.id, create: () => document.createElement('option'), update: (option, target) => { option.value = target.id; setText(option, target.name); } });
+  targetSelect.value = trainingTargetId; targetSelect.disabled = active;
+  $('[data-action=arm-training]').disabled = !native || !scopedEncounter(state).known || active || validDuration === null;
   $('[data-action=cancel-training]').disabled = !native || !active;
 }
 
@@ -721,7 +745,7 @@ function curvesContent() {
   const path = curve.complete ? curvePath(curve.points) : '';
   const progress = historyProgress(allHistory().map(value => value.item), { scope: prefs.damageScope });
   const max = Math.max(1, ...progress.map(point => point.dps));
-  return `${source()}<p class="help">${t('curveHelp')}</p><div class="button-row">${snapshot ? '' : button('refresh-curve', 'refreshCurve', curvePending ? 'disabled' : '')}${[1000, 5000, 10000].map(interval => `<button class="action-button${curveInterval === interval ? '' : ' secondary'}" data-curve-interval="${interval}" aria-pressed="${curveInterval === interval}">${interval / 1000} s</button>`).join('')}</div>${curve.available && curve.complete ? `<div class="curve-frame"><svg class="damage-curve" viewBox="0 0 480 140" role="img" aria-label="${t('damage')} · DPS"><path class="curve-grid" d="M0,35H480 M0,70H480 M0,105H480"></path><path class="curve-fill" d="${path} L480,140 L0,140 Z"></path><path class="curve-line" d="${path}"></path></svg><div class="curve-axis"><span>00:00</span><span>${clockTime(curve.elapsed_ms)}</span></div></div><div class="analysis-metrics"><div><span>${t('bestBurst')} · ${curveInterval / 1000} s</span><strong>${rate(curve.bestBurst)}</strong></div><div><span>${t('activity')}</span><strong>${record.elapsed_ms ? Math.min(100, curve.activityMs / record.elapsed_ms * 100).toFixed(1) : '0.0'}%</strong></div></div><p class="help">${t('activityHelp')}</p>` : `<p class="status-card">${t(curve.available ? 'curvePartial' : 'noCurve')}</p>`}<h3 class="section-title">${t('recentProgress')}</h3><p class="help">${t('progressHelp')}</p>${progress.length ? progress.map(point => `<div class="progress-row"><div><span>${esc(point.name)}</span><strong>${rate(point.dps)} DPS</strong></div><i style="--progress-share:${point.dps / max * 100}%"></i><small>${dateText(point.timestamp)} · ${clockTime(point.elapsed_ms)}</small></div>`).join('') : empty('noHistory')}`;
+  return `${source()}${renderLatencyHistory(record, { locale: prefs.locale, scope: prefs.damageScope })}<p class="help">${t('curveHelp')}</p><div class="button-row">${snapshot ? '' : button('refresh-curve', 'refreshCurve', curvePending ? 'disabled' : '')}${[1000, 5000, 10000].map(interval => `<button class="action-button${curveInterval === interval ? '' : ' secondary'}" data-curve-interval="${interval}" aria-pressed="${curveInterval === interval}">${interval / 1000} s</button>`).join('')}</div>${curve.available && curve.complete ? `<div class="curve-frame"><svg class="damage-curve" viewBox="0 0 480 140" role="img" aria-label="${t('damage')} · DPS"><path class="curve-grid" d="M0,35H480 M0,70H480 M0,105H480"></path><path class="curve-fill" d="${path} L480,140 L0,140 Z"></path><path class="curve-line" d="${path}"></path></svg><div class="curve-axis"><span>00:00</span><span>${clockTime(curve.elapsed_ms)}</span></div></div><div class="analysis-metrics"><div><span>${t('bestBurst')} · ${curveInterval / 1000} s</span><strong>${rate(curve.bestBurst)}</strong></div><div><span>${t('activity')}</span><strong>${record.elapsed_ms ? Math.min(100, curve.activityMs / record.elapsed_ms * 100).toFixed(1) : '0.0'}%</strong></div></div><p class="help">${t('activityHelp')}</p>` : `<p class="status-card">${t(curve.available ? 'curvePartial' : 'noCurve')}</p>`}<h3 class="section-title">${t('recentProgress')}</h3><p class="help">${t('progressHelp')}</p>${progress.length ? progress.map(point => `<div class="progress-row"><div><span>${esc(point.name)}</span><strong>${rate(point.dps)} DPS</strong></div><i style="--progress-share:${point.dps / max * 100}%"></i><small>${dateText(point.timestamp)} · ${clockTime(point.elapsed_ms)}</small></div>`).join('') : empty('noHistory')}`;
 }
 
 const actorName = id => state.players.find(player => player.id === String(id))?.name || state.targets.find(target => target.id === String(id))?.name || `#${id || '?'}`;
@@ -961,10 +985,11 @@ function historyNoteContent(records) {
 
 function historyContent() {
   const records = allHistory(), result = queryHistory(records, historyOptions(historyFilters), historyNotebook), draft = historyFilterDraft;
+  const hasImported = records.some(({ item, imported }) => imported || item.provenance === 'imported-unverified' || item.source === 'imported');
   const select = (name, label, value, options) => `<label class="field"><span>${historyLabel(label)}</span><select name="${name}">${options.map(([key, text]) => `<option value="${esc(key)}" ${value === key ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></label>`;
   const filter = `<form id="history-filter-form" class="history-filter-form"><label class="field history-search"><span>${historyLabel('search')}</span><input type="search" name="query" maxlength="160" value="${esc(draft.query)}" placeholder="${esc(historyLabel('searchHelp'))}"></label><div class="field-grid">${select('scope', 'scope', draft.scope, ['personal', 'party', 'observed'].map(value => [value, t(value)]))}${select('sort', 'sort', draft.sort, ['newest', 'oldest', 'dps', 'damage', 'duration', 'favorite'].map(value => [value, historyLabel(value)]))}${select('source', 'source', draft.source, [['', historyLabel('any')], ['received', historyLabel('captured')], ['imported', historyLabel('imported')], ['demo', historyLabel('demo')]])}${select('category', 'category', draft.category, [['', historyLabel('any')], ...[...new Set([...result.categories, draft.category].filter(Boolean))].map(value => [value, value])])}${select('difficulty', 'difficulty', draft.difficulty, [['', historyLabel('any')], ...[...new Set([...result.difficulties, draft.difficulty].filter(Boolean))].map(value => [value, value])])}<label class="field"><span>${historyLabel('tags')}</span><input name="tags" maxlength="4096" value="${esc(draft.tags)}" placeholder="${esc(historyLabel('tagsHelp'))}"></label><label class="field"><span>${historyLabel('from')}</span><input type="date" name="from" value="${esc(draft.from)}"></label><label class="field"><span>${historyLabel('to')}</span><input type="date" name="to" value="${esc(draft.to)}"></label></div><label class="check-field"><input type="checkbox" name="favoritesOnly" ${draft.favoritesOnly ? 'checked' : ''}>${historyLabel('favoritesOnly')}</label><div class="button-row"><button type="submit" class="action-button">${historyLabel('apply')}</button><button type="button" class="action-button secondary" data-action="history-reset-filters">${historyLabel('reset')}</button></div></form>`;
   const cards = result.entries.map(({ item, imported, source: recordSource, index, key, annotation, scoped }) => `<article class="record-card history-record${annotation.favorite ? ' is-favorite' : ''}"><div class="record-top"><strong>${annotation.favorite ? '<span class="history-star" aria-hidden="true">★</span> ' : ''}${esc(item.name)}</strong>${source(imported ? t('importedUnverified') : recordSource === 'demo' || demo ? t('sourceDemo') : t('sourceActual'))}</div><div class="record-meta">${esc(dateText(item.timestamp || item.started_ms))} · ${clockTime(scoped.elapsed)} · ${t(historyFilters.scope)}<br>${scoped.known ? rate(scoped.dps) : '—'} DPS · ${scoped.known ? num(scoped.damage) : '—'} ${t('damage').toLowerCase()}${item.timing_valid === false ? `<br>${t('timingUnavailable')}` : ''}</div>${annotation.category || annotation.difficulty || annotation.tags.length ? `<div class="history-labels">${[annotation.category, annotation.difficulty, ...annotation.tags].filter(Boolean).map(value => `<span class="tag">${esc(value)}</span>`).join('')}</div>` : ''}${annotation.note ? `<p class="history-note-preview">${esc(Array.from(annotation.note).slice(0, 180).join(''))}${Array.from(annotation.note).length > 180 ? '…' : ''}</p>` : ''}<div class="button-row">${button('view-history', 'replay', `data-index="${index}"`, true)}<button type="button" class="action-button secondary history-favorite" data-action="history-favorite" data-key="${esc(key || '')}" aria-pressed="${annotation.favorite}" title="${esc(historyLabel(annotation.favorite ? 'favoriteRemove' : 'favoriteAdd'))}" ${key ? '' : 'disabled'}>${annotation.favorite ? '★' : '☆'}<span class="sr-only"> ${historyLabel(annotation.favorite ? 'favoriteRemove' : 'favoriteAdd')}</span></button><button type="button" class="action-button secondary" data-action="history-edit-note" data-key="${esc(key || '')}" ${key ? '' : 'disabled'}>${historyLabel('annotate')}</button><button type="button" class="action-button secondary" data-action="history-compare" data-key="${esc(key || '')}" aria-pressed="${key === historyTrendKey}" ${key ? '' : 'disabled'}>${historyLabel(key === historyTrendKey ? 'trendSelected' : 'compare')}</button></div>${key ? '' : `<p class="help">${historyLabel('keyMissing')}</p>`}</article>`).join('');
-  return `<section class="history-page"><p class="help">${t('historyHelp')}</p>${historyCache?.failed ? `<div class="status-card history-error"><p>${t('historyReadFailed')}</p>${button('retry-history', 'historyRetry', '', true)}</div>` : ''}${historyNotebookError ? `<p class="quality-warning" role="status">${historyLabel(historyNotebookError === 'storage-read-failed' ? 'readFailed' : 'saveFailed')}</p>` : ''}${reportToolbar(true)}<input id="history-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1">${filter}<p class="history-result-count" aria-live="polite">${result.matched} / ${result.total} ${historyLabel('matched')} · ${t(historyFilters.scope)}</p>${historyTrendContent(records)}${historyNoteContent(records)}<div class="history-records">${records.length ? cards || `<p class="help">${historyLabel('noMatches')}</p>` : historyCache?.failed ? '' : empty('noHistory')}</div><div class="button-row">${prefs.importedHistory.length ? button('clear-imported', 'clearImported', '', true) : ''}</div></section>`;
+  return `<section class="history-page"><p class="help">${t('historyHelp')}</p>${historyCache?.failed ? `<div class="status-card history-error"><p>${t('historyReadFailed')}</p>${button('retry-history', 'historyRetry', '', true)}</div>` : ''}${historyNotebookError ? `<p class="quality-warning" role="status">${historyLabel(historyNotebookError === 'storage-read-failed' ? 'readFailed' : 'saveFailed')}</p>` : ''}${reportToolbar(true)}<input id="history-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1">${filter}<p class="history-result-count" aria-live="polite">${result.matched} / ${result.total} ${historyLabel('matched')} · ${t(historyFilters.scope)}</p>${historyTrendContent(records)}${historyNoteContent(records)}<div class="history-records">${records.length ? cards || `<p class="help">${historyLabel('noMatches')}</p>` : historyCache?.failed ? '' : empty('noHistory')}</div><div class="button-row">${hasImported ? button('clear-imported', 'clearImported', historyClearPending ? 'disabled' : '', true) : ''}</div></section>`;
 }
 
 function plannerContent() {
@@ -981,7 +1006,13 @@ function alertsContent() {
 }
 
 function actualCooldownText(value) {
-  const cooldown = cooldownObservation(value, { localPlayerId: state.local_identity_source === 'server' ? state.local_player_id : null });
+  if (value?.unit === 'milliseconds') {
+    const row = automaticTeamState({ ...state, actor_cooldowns: [value] }).members.flatMap(member => member.cooldowns).find(row => row.skill_id === value.skill_id && String(row.actor_id) === String(value.actor_id));
+    if (!row) return '—';
+    const label = row.ready_confirmed ? t('readyConfirmed') : row.available_use_confirmed ? t('charges') : row.remaining_ms === 0 ? t('timerElapsed') : row.remaining_ms === null ? '—' : `${row.provisional ? '~' : ''}${clockTime(row.remaining_ms)}`;
+    return `${label}${row.charges === null ? '' : ` · ${t('charges')}: ${row.charges}`}${row.recharge_remaining_ms > 0 ? ` · ${prefs.locale === 'tr' ? 'Dolum' : 'Recharge'}: ${clockTime(row.recharge_remaining_ms)}` : ''}`;
+  }
+  const cooldown = cooldownObservation(value, { localPlayerId: liveServerActorId(state) });
   const label = cooldown.kind === 'confirmed' ? t('readyConfirmed') : cooldown.kind === 'elapsed' ? t('timerElapsed') : cooldown.kind === 'countdown' ? `~${clockTime(cooldown.remaining)} · ${t('estimatedCooldown')}` : cooldown.raw_units !== null ? t('counterLearning') : '—';
   return `${label}${cooldown.charges === null ? '' : ` · ${t('charges')}: ${cooldown.charges}`}`;
 }
@@ -990,7 +1021,7 @@ function actualCooldownCards() {
   return state.cooldowns.length ? state.cooldowns.map((value, index) => `<div class="record-card">${esc(value?.name || `Skill #${value?.skill_id ?? '?'}`)} ${source(t('serverObserved'))}<div class="record-meta actual-cooldown" data-actual-cooldown-index="${index}">${esc(actualCooldownText(value))}</div></div>`).join('') : empty('noActualCooldowns');
 }
 
-function automaticOdyle() { return resourceStatus(state.resources, Date.now(), state.local_identity_source === 'server' ? state.local_player_id : null); }
+function automaticOdyle() { return resourceStatus(state.resources, Date.now(), liveServerActorId(state)); }
 
 function odyleContent() {
   const value = automaticOdyle();
@@ -998,20 +1029,30 @@ function odyleContent() {
 }
 
 function renderLiveTools() {
-  const value = automaticOdyle(), team = teamSnapshot(teamState), strip = $('#live-tools');
-  strip.hidden = !value.available && !team.enabled;
+  const value = automaticOdyle(), team = automaticTeamState(state), strip = $('#live-tools');
+  strip.hidden = !value.available && !team.total_members && !roomIntent;
   $('#odyle-chip').hidden = !value.available;
   setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : '—'}`);
   $('#odyle-chip').title = `${t('odyleRegular')}: ${value.base ?? '—'} / ${value.base_capacity ?? '—'} · ${t('odyleBonus')}: ${value.bonus ?? '—'}`;
-  $('#team-chip').hidden = !team.enabled;
-  setText($('#team-chip'), `${t('team')} · ${team.peers.filter(peer => peer.fresh).length}/${team.peers.length}`);
+  $('#team-chip').hidden = !team.total_members && !roomIntent;
+  setText($('#team-chip'), roomIntent ? `${prefs.locale === 'tr' ? 'Paylaşım açık' : 'Sharing active'}${team.total_cooldowns ? ` · ${team.total_cooldowns} CD` : ''}` : team.total_cooldowns ? `${t('team')} · ${team.total_cooldowns} CD` : `${t('team')} · ${team.total_members}`);
+  $('#team-chip').title = `${prefs.locale === 'tr' ? 'Oyundan otomatik takım cooldown takibi' : 'Automatic team cooldowns from game data'}${roomIntent ? prefs.locale === 'tr' ? ' · Cihazlar arası paylaşım açık' : ' · Cross-device sharing active' : ''}`;
   const liveOdyle = $('#automatic-odyle');
   const fingerprint = JSON.stringify([prefs.locale, value.available, value.actor_id, value.base, value.bonus, value.base_capacity, value.observed_at_ms]);
   if (liveOdyle && liveOdyle.dataset.fingerprint !== fingerprint) { liveOdyle.innerHTML = odyleContent(); liveOdyle.dataset.fingerprint = fingerprint; }
 }
 
 function teamContent() {
-  return `<h3 class="section-title">${t('actualCooldowns')}</h3><p class="help">${t('ownCooldownHelp')}</p><div id="actual-cooldowns">${actualCooldownCards()}</div><hr class="divider"><div id="team-live">${renderTeam(teamState, { locale: prefs.locale, state, native, busy: teamBusy, consent: teamConsent })}</div>`;
+  return `<div id="team-live">${renderTeam(teamState, teamOptions())}</div><div id="team-copy-host"></div><details class="team-raw-counters"><summary>${t('actualCooldowns')} · ${prefs.locale === 'tr' ? 'ham sayaçlar' : 'raw counters'}</summary><p class="help">${t('ownCooldownHelp')}</p><div id="actual-cooldowns">${actualCooldownCards()}</div></details>`;
+}
+
+function teamOptions() { return { locale: prefs.locale, state, native, busy: teamBusy, consent: teamConsent, classFilter: teamClassFilter, relayActive: roomIntent }; }
+
+function showInviteFallback() {
+  const host = $('#team-copy-host'); if (!host || !teamInviteCopy) return;
+  let field = host.querySelector('textarea');
+  if (!field) { field = document.createElement('textarea'); field.readOnly = true; field.className = 'team-copy-field'; field.setAttribute('aria-label', 'Luma invite'); host.append(field); }
+  field.value = teamInviteCopy; field.focus(); field.select();
 }
 
 function updateTeamLive() {
@@ -1021,37 +1062,48 @@ function updateTeamLive() {
   if (form) { teamInviteDraft = form.elements.teamInvite?.value || teamInviteDraft; teamConsent = form.elements.teamConsent?.checked === true; }
   // Preserve the join form while typing. Active-room observations still expire
   // while a copy/leave button or a details summary holds keyboard focus.
-  if (active?.closest('#team-join-form') && !teamBusy) return;
+  if (active?.closest('#team-join-form') && !teamBusy) {
+    const automatic = host.querySelector('.automatic-team');
+    const html = renderAutomaticTeam(state, teamOptions());
+    if (automatic && automatic.dataset.html !== html) { automatic.innerHTML = new DOMParser().parseFromString(html, 'text/html').body.firstElementChild.innerHTML; automatic.dataset.html = html; }
+    host.dataset.html = ''; return;
+  }
   const focusedAction = active?.dataset.action;
+  const focusedName = active?.name;
   const focusedPeer = active?.closest('[data-team-peer]')?.dataset.teamPeer;
-  const expanded = [...host.querySelectorAll('details[open]')].map(node => node.closest('[data-team-peer]')?.dataset.teamPeer);
-  const html = renderTeam(teamState, { locale: prefs.locale, state, native, busy: teamBusy, consent: teamConsent });
+  const detailKey = node => `${node.className}:${node.closest('[data-team-peer]')?.dataset.teamPeer || node.closest('[data-automatic-actor]')?.dataset.automaticActor || ''}`;
+  const focusedDetail = active?.closest('summary')?.parentElement;
+  const focusedDetailKey = focusedDetail ? detailKey(focusedDetail) : null;
+  const expanded = new Map([...host.querySelectorAll('details')].map(node => [detailKey(node), node.open]));
+  const html = renderTeam(teamState, teamOptions());
   if (host.dataset.html === html) return;
   host.innerHTML = html; host.dataset.html = html;
   if ($('#team-invite')) $('#team-invite').value = teamInviteDraft;
-  for (const detail of host.querySelectorAll('details')) if (expanded.includes(detail.closest('[data-team-peer]')?.dataset.teamPeer)) detail.open = true;
+  for (const detail of host.querySelectorAll('details')) if (expanded.has(detailKey(detail))) detail.open = expanded.get(detailKey(detail));
+  if ($('#team-join-form')) $('#team-join-form').elements.teamConsent.checked = teamConsent;
   if (focusedAction) [...host.querySelectorAll('[data-action]')].find(node => node.dataset.action === focusedAction)?.focus({ preventScroll: true });
+  else if (focusedName) [...host.querySelectorAll('[name]')].find(node => node.name === focusedName)?.focus({ preventScroll: true });
   else if (focusedPeer) [...host.querySelectorAll('[data-team-peer]')].find(node => node.dataset.teamPeer === focusedPeer)?.querySelector('summary')?.focus({ preventScroll: true });
-  if (teamInviteCopy) { const field = document.createElement('textarea'); field.readOnly = true; field.value = teamInviteCopy; field.setAttribute('aria-label', 'Luma invite'); field.className = 'team-copy-field'; host.prepend(field); field.focus(); field.select(); }
+  else if (focusedDetailKey !== null) [...host.querySelectorAll('details')].find(node => detailKey(node) === focusedDetailKey)?.querySelector('summary')?.focus({ preventScroll: true });
 }
 
 async function readTeamState() {
   if (!native || teamPolling || teamBusy) return;
   const epoch = teamRequestEpoch; teamPolling = true;
-  try { const value = await invoke('get_team_state'); if (epoch === teamRequestEpoch) teamState = teamSnapshot(value, { previous: teamState }); }
-  catch { if (epoch === teamRequestEpoch && teamState.enabled) teamState = { ...teamState, status: 'error', error: 'unavailable' }; }
+  try { const value = await invoke('get_team_state'); if (epoch === teamRequestEpoch) { roomIntent = value?.enabled === true; teamState = teamSnapshot(value, { previous: teamState }); } }
+  catch { if (epoch === teamRequestEpoch && roomIntent) teamState = { ...teamState, status: 'error', error: 'unavailable' }; }
   finally { teamPolling = false; renderLiveTools(); updateTeamLive(); }
 }
 
 async function teamAction(command) {
   if (!native || teamBusy || command !== 'leave_team_room' && !teamConsent) return;
-  teamRequestEpoch++; teamBusy = true; teamInviteCopy = ''; updateTeamLive();
+  teamRequestEpoch++; teamBusy = true; teamInviteCopy = ''; $('#team-copy-host')?.replaceChildren(); updateTeamLive();
   try {
     const value = await invoke(command, command === 'join_team_room' ? { invite: teamInviteDraft } : undefined);
-    teamState = teamSnapshot(value); teamInviteDraft = ''; teamConsent = false;
+    roomIntent = value?.enabled === true; teamState = teamSnapshot(value); teamInviteDraft = ''; teamConsent = false;
   } catch {
     if (command === 'leave_team_room') {
-      try { teamState = teamSnapshot(await invoke('get_team_state')); } catch {}
+      try { const value = await invoke('get_team_state'); roomIntent = value?.enabled === true; teamState = teamSnapshot(value); } catch {}
       toast(prefs.locale === 'tr' ? 'Yerel paylaşım durdu. Sunucudaki kapanış doğrulanamadı; oda en geç süresi dolunca kapanır.' : 'Local sharing stopped. Remote closure could not be confirmed; the room expires automatically.', true);
     } else toast(t('failed'), true);
   }
@@ -1180,6 +1232,7 @@ function beep() {
 }
 
 function tickTimers() {
+  if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   const event = activeEvent(), bossTimer = chosenBossTimer(), scheduled = event ? scheduleTiming(event) : null, timing = scheduled ? { next: scheduled.nextOpening, remaining: scheduled.remainingMs } : bossTimer?.status === 'countdown' ? { next: bossTimer.server_time_ms, remaining: bossTimer.remaining } : null;
   const timerName = event?.name || (bossTimer ? `${t('map')} #${bossTimer.map_id} · #${bossTimer.slot_id}` : '');
   $('#event-chip').hidden = !timing && !bossTimer;
@@ -1260,6 +1313,8 @@ $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
   if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
   if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
+  if (name === 'automaticTeamClass') { teamClassFilter = element.value; updateTeamLive(); return; }
+  if (name === 'trainingSeconds') { trainingDurationDraft = element.value; const duration = validateTrainingDuration(trainingDurationDraft); if (duration !== null) trainingDuration = duration; updateTrainingLive(); return; }
   if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); if (['communityScope', 'communityRecordId', 'communityAnonymous'].includes(name)) refreshCommunityDrawer(); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
@@ -1275,7 +1330,7 @@ $('#drawer-content').addEventListener('change', async event => {
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
   if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
-  if (['showClass', 'showShares'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
+  if (['showClass', 'showShares', 'showTeamCooldowns'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
   if (name === 'calendarHorizonDays') { calendarHorizonDays = Number(element.value); return; }
@@ -1309,6 +1364,7 @@ $('#drawer-content').addEventListener('change', async event => {
 
 $('#drawer-content').addEventListener('input', event => {
   const element = event.target;
+  if (element.name === 'trainingSeconds') { trainingDurationDraft = element.value; const duration = validateTrainingDuration(trainingDurationDraft); if (duration !== null) trainingDuration = duration; updateTrainingLive(); return; }
   if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
   if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); return; }
@@ -1319,7 +1375,7 @@ $('#drawer-content').addEventListener('input', event => {
 });
 $('#drawer-content').addEventListener('click', async event => {
   const duration = delegatedControl(event, event.currentTarget, 'button[data-training-duration]')?.dataset.trainingDuration;
-  if (duration) { trainingDuration = Number(duration); refreshDrawer(); return; }
+  if (duration) { const validated = validateTrainingDuration(Number(duration) / 1000); if (validated !== null) { trainingDuration = validated; trainingDurationDraft = String(validated / 1000); refreshDrawer(); } return; }
   const interval = delegatedControl(event, event.currentTarget, 'button[data-curve-interval]')?.dataset.curveInterval;
   if (interval) { curveInterval = Number(interval); refreshDrawer(); return; }
   const layout = delegatedControl(event, event.currentTarget, 'button[data-layout]')?.dataset.layout;
@@ -1337,7 +1393,7 @@ $('#drawer-content').addEventListener('click', async event => {
       const invite = await invoke('get_team_invite');
       if (epoch !== teamRequestEpoch || room !== teamState.room_id || !teamState.enabled) return;
       try { await navigator.clipboard.writeText(invite); toast(t('copied')); }
-      catch { if (epoch !== teamRequestEpoch || room !== teamState.room_id) return; teamInviteCopy = invite; const host = $('#team-live'); if (host) host.dataset.html = ''; updateTeamLive(); }
+      catch { if (epoch !== teamRequestEpoch || room !== teamState.room_id) return; teamInviteCopy = invite; showInviteFallback(); }
     } catch { toast(t('failed'), true); } return;
   }
   if (actionName === 'copy-community-summary') {
@@ -1379,7 +1435,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'start-obs' || actionName === 'stop-obs') await setObsRunning(actionName === 'start-obs');
   if (actionName === 'copy-obs-url') { const field = $('#obs-url'); if (field?.value) { try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(field.value); toast(t('copied')); } catch { field.focus(); field.select(); toast(t('selectToCopy')); } } }
   if (actionName === 'export-calendar') { const selected = activeEvent(); if (!selected) return; try { const options = { horizonDays: calendarHorizonDays, locale: prefs.locale }, content = typeof scheduling.calendarIcs === 'function' ? scheduling.calendarIcs([selected], options) : scheduling.exportEventCalendar(selected, options); if (native) { const path = await action('export_document', { format: 'ics', content }); toast(`${t('calendarSaved')}: ${path}`); } else { download('luma-schedule.ics', content, 'text/calendar'); toast(t('calendarSaved')); } } catch { toast(t('calendarFailed'), true); } }
-  if (actionName === 'arm-training' || actionName === 'cancel-training') { try { await action(actionName === 'arm-training' ? 'arm_training' : 'cancel_training', actionName === 'arm-training' ? { duration_ms: trainingDuration, target_id: trainingTargetId ? Number(trainingTargetId) : null } : {}); await refreshState(); refreshDrawer(); } catch {} }
+  if (actionName === 'arm-training' || actionName === 'cancel-training') { const duration = validateTrainingDuration(trainingDurationDraft); if (actionName === 'arm-training' && duration === null) { toast(t('invalidTrainingDuration'), true); $('[name=trainingSeconds]')?.reportValidity(); return; } try { await action(actionName === 'arm-training' ? 'arm_training' : 'cancel_training', actionName === 'arm-training' ? { duration_ms: duration, target_id: trainingTargetId ? Number(trainingTargetId) : null } : {}); await refreshState(); refreshDrawer(); } catch {} }
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
   if (actionName === 'refresh-build') await readCharacterData();
@@ -1413,7 +1469,19 @@ $('#drawer-content').addEventListener('click', async event => {
     if (actionName === 'history-compare') { historyTrendKey = key; refreshHistoryDrawer(); }
     if (actionName === 'history-favorite') { const result = historyNotebook.set(key, { favorite: !historyNotebook.get(key).favorite }); historyNotebookError = result.ok ? '' : result.error; refreshHistoryDrawer(); if (!result.ok) toast(historyLabel('saveFailed'), true); }
   }
-  if (actionName === 'clear-imported') { savePreferences({ importedHistory: [] }); refreshDrawer(); toast(t('clearConfirm')); }
+  if (actionName === 'clear-imported') {
+    if (historyClearPending) return;
+    historyClearPending = true; refreshHistoryDrawer();
+    try {
+      await clearImportedHistory({ native,
+        clearNative: () => action('clear_imported_history'),
+        clearLocal: () => { savePreferences({ importedHistory: [] }); if (snapshot?.provenance === 'imported-unverified' || snapshot?.source === 'imported') snapshot = null; },
+        refresh: async value => { if (native) { if (value) receiveState(value); await refreshState(); await historyCache.retry(); } },
+      });
+      if (historyEditKey && !allHistory().some(value => historyRecordKey(value.item, { imported: value.imported }) === historyEditKey)) { historyEditKey = ''; historyEditDraft = null; }
+      toast(t('clearConfirm'));
+    } catch {} finally { historyClearPending = false; refreshHistoryDrawer(); }
+  }
   if (actionName === 'delete-equipment') { savePreferences({ equipment: prefs.equipment.filter(item => item.id !== id) }); refreshDrawer(); }
   if (actionName === 'start-cooldown') { savePreferences({ manualCooldowns: prefs.manualCooldowns.map(item => item.id === id ? { ...item, startedAt: Date.now() } : item) }); tickTimers(); }
   if (actionName === 'delete-cooldown') { savePreferences({ manualCooldowns: prefs.manualCooldowns.filter(item => item.id !== id) }); refreshDrawer(); }
@@ -1468,7 +1536,7 @@ $('#drawer-content').addEventListener('submit', async event => {
   if (form.id === 'cooldown-form') { const seconds = Number(values.seconds); if (!values.cooldownName.trim() || seconds < 1 || seconds > 86400 || !Number.isFinite(seconds)) { toast(t('invalidPlanner'), true); return; } savePreferences({ manualCooldowns: [...prefs.manualCooldowns, { id: uid(), name: values.cooldownName.trim(), seconds, startedAt: 0 }] }); refreshDrawer(); toast(t('saved')); }
   if (form.id === 'odyle-form') { savePreferences({ odyle: values }); toast(t('saved')); tickTimers(); }
   if (form.id === 'alerts-form') { savePreferences({ alerts: { ...values, sound: values.sound === 'on', incomingWarnings: values.incomingWarnings === 'on' } }); enableAudio(); toast(t('saved')); tickTimers(); }
-  if (form.id === 'boss-form') { const ids = new FormData(form).getAll('bossId').map(Number).filter(Number.isSafeInteger); try { if (native) await action('set_boss_targets', { ids }); dirtySettingsForms.delete(form.id); savePreferences({ bossIds: ids }); toast(t('saved')); } catch {} }
+  if (form.id === 'boss-form') { const ids = new FormData(form).getAll('bossId').map(Number).filter(Number.isSafeInteger); try { if (native) await action('set_boss_targets', { ids }); else if (demo) state = normalizeState({ ...state, targets: state.targets.map(target => ({ ...target, is_boss: ids.includes(Number(target.id)) })) }); dirtySettingsForms.delete(form.id); if (native) await refreshState(); refreshDrawer(); toast(t('saved')); } catch {} }
 });
 
 async function refreshState() {
@@ -1509,7 +1577,7 @@ if (native) {
   readEventSchedule();
   readCubeState();
   readTeamState();
-  setInterval(() => { if (teamState.enabled || drawer === 'analysis' && tab === 'team') readTeamState(); }, 2000);
+  setInterval(() => { if (roomIntent || drawer === 'analysis' && tab === 'team') readTeamState(); }, 2000);
   setInterval(refreshState, 1500);
   setInterval(() => { if (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses') readWorldData(); }, 15000);
   setInterval(() => { if (drawer === 'settings') readEventSchedule(); }, 30000);
