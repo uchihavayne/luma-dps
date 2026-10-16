@@ -1,6 +1,6 @@
 # Luma DPS
 
-Luma is an independent Windows encounter meter for AION2 with personal, party and observed views, local analysis and a configurable overlay. The interface supports Turkish and English. The 0.15.0 preview adds automatic actor-bound party cooldowns and observed charges, per-encounter TCP RTT analysis, custom training durations and safer history/session controls. Automatic Odyle, free sharing/community rankings and searchable local history remain integrated. Supported protocol layouts have replay tests; the new cooldowns and final executable still need live EU validation.
+Luma is an independent Windows encounter meter for AION2 with personal, party and observed views, local analysis and a configurable overlay. The interface supports Turkish and English. The 0.16.0 preview adds received healing/HPS, cast rotation and effect-overlap analysis, map sessions, observed character power/wing/species, configurable global shortcuts, LAN OBS and publisher-authenticated updates. Free community sharing now supports public, unlisted and private reports with CP-band statistics. Automatic Odyle and party cooldowns remain integrated without requiring friends to install Luma. Supported layouts have replay tests; content-specific live EU validation remains pending.
 
 ## Hızlı başlangıç · Türkçe
 

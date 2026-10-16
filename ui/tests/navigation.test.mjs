@@ -8,7 +8,7 @@ test('settings routes calendar directly and defaults unknown sections to appeara
   assert.equal(settingsSection('calendar'), 'calendar');
   assert.equal(settingsSection('overview'), 'appearance');
   assert.equal(settingsSection(undefined), 'appearance');
-  assert.deepEqual(SETTINGS_SECTIONS, ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'hiddenCube', 'about']);
+  assert.deepEqual(SETTINGS_SECTIONS, ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'controls', 'hiddenCube', 'about']);
 });
 
 test('keyboard category navigation wraps and supports Home/End without handling typing', () => {

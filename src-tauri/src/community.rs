@@ -27,6 +27,15 @@ pub enum Scope {
     Observed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    #[default]
+    Public,
+    Unlisted,
+    Private,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Context {
@@ -59,6 +68,7 @@ pub struct ShareOptions {
     pub anonymous: bool,
     pub rank_opt_in: bool,
     pub context: Context,
+    pub visibility: Visibility,
 }
 
 impl Default for ShareOptions {
@@ -68,6 +78,7 @@ impl Default for ShareOptions {
             anonymous: true,
             rank_opt_in: false,
             context: Context::default(),
+            visibility: Visibility::Public,
         }
     }
 }
@@ -126,8 +137,18 @@ pub struct PublicEncounter {
     pub targets: Vec<PublicTarget>,
     pub context: Context,
     pub quality: Quality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combat_power: Option<PublicCombatPower>,
     /// SHA-256 of canonical, allowlisted content with this field empty.
     pub record_hash: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicCombatPower {
+    pub current: u32,
+    pub highest: u32,
+    pub source: String,
 }
 
 fn text(value: &str, max: usize) -> Result<String, String> {
@@ -166,6 +187,9 @@ pub fn prepare_record(
     record: &Encounter,
     options: &ShareOptions,
 ) -> Result<PublicEncounter, String> {
+    if options.rank_opt_in && options.visibility != Visibility::Public {
+        return Err("Only explicitly public reports can enter community rankings".into());
+    }
     if record.ended_ms <= record.started_ms || record.elapsed_ms < 1000 {
         return Err("Finish an encounter of at least one second before sharing".into());
     }
@@ -345,6 +369,30 @@ pub fn prepare_record(
             ranking_eligible,
             classification: "community".into(),
         },
+        combat_power: record
+            .character_build
+            .as_ref()
+            .filter(|build| {
+                options.scope == Scope::Personal
+                    && record.source == "captured"
+                    && identity_confirmed
+                    && build.actor_id == local_id
+                    && build.source == "server-self"
+            })
+            .and_then(|build| build.combat_power.as_ref())
+            .filter(|power| {
+                power.source == "server-self"
+                    && power.observed_at_ms <= record.started_ms
+                    && power.current > 0
+                    && power.current <= 100_000_000
+                    && power.highest > 0
+                    && power.highest <= 100_000_000
+            })
+            .map(|power| PublicCombatPower {
+                current: power.current,
+                highest: power.highest,
+                source: "server-self-at-start".into(),
+            }),
         record_hash: String::new(),
     };
     let bytes = serde_json::to_vec(&result).map_err(|_| "Cannot encode the community encounter")?;
@@ -366,6 +414,7 @@ pub struct RankingFilters {
     pub scope: Scope,
     pub limit: u32,
     pub cursor: String,
+    pub cp_band: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -384,6 +433,14 @@ pub struct RankingEntry {
     pub difficulty: String,
     pub scope: Scope,
     pub validation: String,
+    #[serde(default)]
+    pub combat_power: Option<u32>,
+    #[serde(default)]
+    pub percentile: Option<f64>,
+    #[serde(default)]
+    pub cohort_count: u64,
+    #[serde(default)]
+    pub percentile_method: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -394,6 +451,31 @@ pub struct Rankings {
     pub next_cursor: Option<String>,
     #[serde(default)]
     pub notice: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClassStatistics {
+    pub class_name: String,
+    pub count: u64,
+    pub cp_known_count: u64,
+    pub status: String,
+    pub minimum_dps: Option<f64>,
+    pub maximum_dps: Option<f64>,
+    pub median_dps: Option<f64>,
+    pub p95_dps: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Statistics {
+    pub source: String,
+    pub weighting: String,
+    pub status: String,
+    pub cohort_minimum: u32,
+    pub entries: Vec<ClassStatistics>,
+    #[serde(default)]
+    pub notice: String,
+    #[serde(default)]
+    pub updated_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -410,6 +492,8 @@ pub struct Share {
     pub record_hash: String,
     pub validation: String,
     pub local_record_id: u64,
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -420,6 +504,10 @@ struct StoredShare {
     local_record_id: u64,
     endpoint: String,
     delete_token: String,
+    #[serde(default)]
+    view_token: String,
+    #[serde(default)]
+    visibility: Visibility,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -447,6 +535,8 @@ struct CreateResponse {
     #[serde(default)]
     expires_at_ms: u64,
     validation: String,
+    #[serde(default)]
+    visibility: Visibility,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,6 +700,24 @@ fn valid_token(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+fn valid_cp_band(value: &str) -> bool {
+    [
+        "",
+        "unknown",
+        "0-99999",
+        "100000-199999",
+        "200000-299999",
+        "300000-399999",
+        "400000-499999",
+        "500000-599999",
+        "600000-699999",
+        "700000-799999",
+        "800000-899999",
+        "900000+",
+    ]
+    .contains(&value)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -673,6 +781,9 @@ fn load(path: &Path) -> Result<Store, String> {
             || !valid_token(&row.record_hash)
             || endpoint(&row.endpoint).ok().as_deref() != Some(&row.endpoint)
             || row.endpoint.is_empty()
+            || row.visibility == Visibility::Private
+                && (!valid_token(&row.view_token) || row.view_token == row.delete_token)
+            || row.visibility != Visibility::Private && !row.view_token.is_empty()
         {
             return Err("Local community keys contain an invalid entry".into());
         }
@@ -681,6 +792,8 @@ fn load(path: &Path) -> Result<Store, String> {
                 || !same_origin(&row.endpoint, &share.url)
                 || share.record_hash != row.record_hash
                 || share.validation != "community"
+                || share.visibility != row.visibility
+                || share.visibility != Visibility::Public && share.rank_opt_in
             {
                 return Err("Local community share contains an invalid link".into());
             }
@@ -806,11 +919,15 @@ impl Service {
             .iter()
             .position(|row| row.record_hash == record.record_hash && row.endpoint == self.endpoint);
         if let Some(index) = existing {
+            if store.shares[index].visibility != options.visibility {
+                return Err("Revoke the existing report before changing visibility".into());
+            }
             if let Some(share) = &store.shares[index].share {
                 let expired = share.expires_at_ms != 0 && share.expires_at_ms <= now_ms();
                 if !expired {
                     if share.anonymous != options.anonymous
                         || share.rank_opt_in != options.rank_opt_in
+                        || share.visibility != options.visibility
                     {
                         return Err(
                             "Revoke this existing share before changing its public ranking options"
@@ -838,6 +955,12 @@ impl Service {
                 local_record_id,
                 endpoint: self.endpoint.clone(),
                 delete_token: fresh_token,
+                view_token: if options.visibility == Visibility::Private {
+                    random_token()?
+                } else {
+                    String::new()
+                },
+                visibility: options.visibility,
             });
             let index = store.shares.len() - 1;
             if let Err(message) = save(&self.path, store) {
@@ -846,7 +969,7 @@ impl Service {
             }
             index
         };
-        let body = serde_json::to_vec(&serde_json::json!({"schema_version":1,"record":record,"anonymous":options.anonymous,"rank_opt_in":options.rank_opt_in,"delete_token":store.shares[index].delete_token})).map_err(|_| "Cannot encode community upload")?;
+        let body = serde_json::to_vec(&serde_json::json!({"schema_version":1,"record":record,"anonymous":options.anonymous,"rank_opt_in":options.rank_opt_in,"delete_token":store.shares[index].delete_token,"visibility":options.visibility,"view_token":if options.visibility == Visibility::Private { Some(&store.shares[index].view_token) } else { None }})).map_err(|_| "Cannot encode community upload")?;
         if body.len() > BODY_LIMIT {
             return Err("Community upload exceeds the 1 MB limit".into());
         }
@@ -864,6 +987,8 @@ impl Service {
         if !valid_id(&response.id)
             || !same_origin(&self.endpoint, &response.url)
             || response.validation != "community"
+            || response.visibility != options.visibility
+            || response.url != format!("{}/r/{}", self.endpoint, response.id)
         {
             return Err("Community service returned an unsafe or unsupported share link".into());
         }
@@ -882,6 +1007,7 @@ impl Service {
             record_hash: record.record_hash,
             validation: "community".into(),
             local_record_id,
+            visibility: options.visibility,
         };
         store.shares[index].share = Some(share.clone());
         save(&self.path, store)?;
@@ -890,6 +1016,9 @@ impl Service {
     pub fn rankings(&self, filters: &RankingFilters) -> Result<Rankings, String> {
         if self.endpoint.is_empty() {
             return Err("Community service is not configured".into());
+        }
+        if !valid_cp_band(&filters.cp_band) {
+            return Err("Unsupported combat-power band".into());
         }
         let mut url = reqwest::Url::parse(&format!("{}/v1/rankings", self.endpoint))
             .map_err(|_| "Invalid community ranking URL")?;
@@ -923,6 +1052,9 @@ impl Service {
             if !filters.cursor.is_empty() {
                 query.append_pair("cursor", &text(&filters.cursor, 256)?);
             }
+            if !filters.cp_band.is_empty() {
+                query.append_pair("cp_band", &filters.cp_band);
+            }
         }
         let bytes = self
             .transport
@@ -941,6 +1073,17 @@ impl Service {
             return Err("Community ranking response exceeds its row or cursor limit".into());
         }
         for row in &result.entries {
+            let comparable = !filters.region.is_empty()
+                && !filters.server.is_empty()
+                && !filters.boss.is_empty()
+                && !filters.difficulty.is_empty()
+                && filters.scope == Scope::Personal
+                && row.region.eq_ignore_ascii_case(filters.region.trim())
+                && row.server.eq_ignore_ascii_case(filters.server.trim())
+                && row.boss.eq_ignore_ascii_case(filters.boss.trim())
+                && row
+                    .difficulty
+                    .eq_ignore_ascii_case(filters.difficulty.trim());
             if !valid_id(&row.share_id)
                 || !same_origin(&self.endpoint, &row.url)
                 || row.validation != "community"
@@ -948,6 +1091,16 @@ impl Service {
                 || row.dps < 0.0
                 || row.duration_ms < 1000
                 || row.total_damage > 9_007_199_254_740_991
+                || row
+                    .combat_power
+                    .is_some_and(|power| power == 0 || power > 100_000_000)
+                || row.percentile.is_some_and(|percentile| {
+                    !percentile.is_finite()
+                        || !(0.0..=100.0).contains(&percentile)
+                        || row.cohort_count < 5
+                        || !comparable
+                        || row.percentile_method.as_deref() != Some("record-midrank")
+                })
             {
                 return Err("Community ranking contains an invalid row".into());
             }
@@ -968,6 +1121,129 @@ impl Service {
         }
         result.notice = "Community submissions; game-server verification is unavailable. Only matching filters are comparable.".into();
         Ok(result)
+    }
+
+    pub fn statistics(&self, filters: &RankingFilters) -> Result<Statistics, String> {
+        if self.endpoint.is_empty() {
+            return Err("Community service is not configured".into());
+        }
+        if !valid_cp_band(&filters.cp_band) {
+            return Err("Unsupported combat-power band".into());
+        }
+        let mut url = reqwest::Url::parse(&format!("{}/v1/statistics", self.endpoint))
+            .map_err(|_| "Invalid community statistics URL")?;
+        {
+            let mut query = url.query_pairs_mut();
+            for (key, value) in [
+                ("region", &filters.region),
+                ("server", &filters.server),
+                ("boss", &filters.boss),
+                ("class_name", &filters.class_name),
+                ("difficulty", &filters.difficulty),
+            ] {
+                let value = text(value, 80)?;
+                if !value.is_empty() {
+                    query.append_pair(key, &value);
+                }
+            }
+            query.append_pair(
+                "scope",
+                match filters.scope {
+                    Scope::Personal => "personal",
+                    Scope::Party => "party",
+                    Scope::Observed => "observed",
+                },
+            );
+            if !filters.cp_band.is_empty() {
+                query.append_pair("cp_band", &filters.cp_band);
+            }
+        }
+        let bytes = self
+            .transport
+            .request(Method::Get, url.as_str(), None, None)?;
+        if bytes.len() > BODY_LIMIT {
+            return Err("Community statistics response exceeds its limit".into());
+        }
+        let mut result: Statistics = serde_json::from_slice(&bytes)
+            .map_err(|_| "Community service returned invalid statistics")?;
+        if result.source != "community-upload"
+            || result.weighting != "submitted-records"
+            || !["available", "context-required"].contains(&result.status.as_str())
+            || result.cohort_minimum < 5
+            || result.entries.len() > 100
+            || result.status == "context-required" && !result.entries.is_empty()
+        {
+            return Err("Community statistics have unsupported comparison rules".into());
+        }
+        for row in &result.entries {
+            text(&row.class_name, 80)?;
+            let values = [
+                row.minimum_dps,
+                row.maximum_dps,
+                row.median_dps,
+                row.p95_dps,
+            ];
+            let available = row.status == "available";
+            if row.count == 0
+                || row.cp_known_count > row.count
+                || row.count > 5000
+                || !["available", "insufficient-cohort"].contains(&row.status.as_str())
+                || available
+                    && (row.count < u64::from(result.cohort_minimum)
+                        || values.iter().any(Option::is_none))
+                || !available && values.iter().any(Option::is_some)
+                || values
+                    .into_iter()
+                    .flatten()
+                    .any(|value| !value.is_finite() || value < 0.0)
+            {
+                return Err("Community statistics contain invalid cohort values".into());
+            }
+            if available
+                && (row.minimum_dps > row.maximum_dps
+                    || row.median_dps < row.minimum_dps
+                    || row.median_dps > row.maximum_dps
+                    || row.p95_dps < row.median_dps
+                    || row.p95_dps > row.maximum_dps)
+            {
+                return Err("Community statistics contain inconsistent quantiles".into());
+            }
+        }
+        result.notice = "Opted-in public community submissions, weighted by encounter records, not unique players. These are not official or game-verified class statistics.".into();
+        Ok(result)
+    }
+
+    /// Capabilities are returned only after the user explicitly requests a link.
+    /// Routine snapshots and creation responses retain only the unkeyed URL.
+    pub fn share_link(&self, id: &str) -> Result<String, String> {
+        if !valid_id(id) {
+            return Err("Invalid community share identifier".into());
+        }
+        let guard = self
+            .store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let store = guard.as_ref().map_err(|message| message.clone())?;
+        let stored = store
+            .shares
+            .iter()
+            .find(|row| {
+                row.endpoint == self.endpoint
+                    && row.share.as_ref().is_some_and(|share| share.id == id)
+            })
+            .ok_or("This share has no viewing key on this device")?;
+        let share = stored
+            .share
+            .as_ref()
+            .ok_or("Community share is not confirmed")?;
+        if share.visibility == Visibility::Private {
+            if !valid_token(&stored.view_token) {
+                return Err("Private viewing key is unavailable".into());
+            }
+            Ok(format!("{}#view={}", share.url, stored.view_token))
+        } else {
+            Ok(share.url.clone())
+        }
     }
     pub fn revoke(&self, id: &str) -> Result<Snapshot, String> {
         if !valid_id(id) {
@@ -1002,13 +1278,13 @@ impl Service {
     }
     /// Validate an already stored public link before handing it to the OS.
     pub fn allows_url(&self, value: &str) -> bool {
-        if !same_origin(&self.endpoint, value) {
+        let Ok(url) = reqwest::Url::parse(value) else {
             return false;
-        }
-        self.snapshot()
-            .shares
-            .iter()
-            .any(|share| share.url == value)
+        };
+        let Some(id) = url.path().strip_prefix("/r/") else {
+            return false;
+        };
+        valid_id(id) && self.share_link(id).ok().as_deref() == Some(value)
     }
     /// Ranking links can also be read, but only via the canonical public
     /// reader route on the configured service origin.
@@ -1025,7 +1301,7 @@ impl Service {
 
 /// A small dependency-free SHA-256 implementation for content identity, not
 /// authentication. The revocation token comes from the operating system RNG.
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -1176,6 +1452,175 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn private_capability_is_durable_distinct_and_only_explicit_link_access_discloses_it() {
+        let mock = Arc::new(Mock::default());
+        let mut response_value: serde_json::Value = serde_json::from_slice(&response()).unwrap();
+        response_value["visibility"] = serde_json::json!("private");
+        mock.responses
+            .lock()
+            .unwrap()
+            .push(Ok(serde_json::to_vec(&response_value).unwrap()));
+        let (service, path) = service(mock.clone());
+        let mut opts = options();
+        opts.visibility = Visibility::Private;
+        let shared = service
+            .share_prepared(
+                992,
+                prepare_record(&fixture(), &opts).unwrap(),
+                &opts,
+                "a".repeat(64),
+            )
+            .unwrap();
+        let snapshot = serde_json::to_string(&service.snapshot()).unwrap();
+        let link = service.share_link(&shared.id).unwrap();
+        let key = link.split("#view=").nth(1).unwrap();
+        assert!(valid_token(key));
+        assert_ne!(key, "a".repeat(64));
+        assert!(!snapshot.contains(key));
+        assert!(!snapshot.contains("view_token"));
+        assert!(!snapshot.contains("#view="));
+        assert!(service.allows_url(&link));
+        assert!(!service.allows_url(&shared.url));
+        assert!(!service.allows_public_url(&link));
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.shares[0].view_token, key);
+        let request = &mock.requests.lock().unwrap()[0];
+        let body: serde_json::Value = serde_json::from_slice(&request.2).unwrap();
+        assert_eq!(body["view_token"], key);
+        assert_eq!(body["visibility"], "private");
+        assert!(!request.1.contains(key));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn private_and_unlisted_ranking_is_rejected_and_public_legacy_store_remains_readable() {
+        for visibility in [Visibility::Private, Visibility::Unlisted] {
+            let mut opts = options();
+            opts.visibility = visibility;
+            opts.rank_opt_in = true;
+            assert!(prepare_record(&fixture(), &opts).is_err());
+        }
+        let mock = Arc::new(Mock::default());
+        mock.responses.lock().unwrap().push(Ok(response()));
+        let (service, path) = service(mock);
+        let shared = service
+            .share_prepared(
+                992,
+                prepare_record(&fixture(), &options()).unwrap(),
+                &options(),
+                "a".repeat(64),
+            )
+            .unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["shares"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("visibility");
+        legacy["shares"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("view_token");
+        legacy["shares"][0]["share"]
+            .as_object_mut()
+            .unwrap()
+            .remove("visibility");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            load(&path).unwrap().shares[0].visibility,
+            Visibility::Public
+        );
+        assert_eq!(service.share_link(&shared.id).unwrap(), shared.url);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn combat_power_uses_only_captured_own_server_snapshot_before_fight_start() {
+        let mut record = fixture();
+        record.character_build = Some(luma_engine::character::CharacterBuild {
+            actor_id: record.local_player_id,
+            source: "server-self".into(),
+            combat_power: Some(luma_engine::character::ObservedCombatPower {
+                current: 356559,
+                highest: 400000,
+                observed_at_ms: record.started_ms,
+                source: "server-self".into(),
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            prepare_record(&record, &options())
+                .unwrap()
+                .combat_power
+                .unwrap()
+                .current,
+            356559
+        );
+        record
+            .character_build
+            .as_mut()
+            .unwrap()
+            .combat_power
+            .as_mut()
+            .unwrap()
+            .observed_at_ms += 1;
+        assert!(prepare_record(&record, &options())
+            .unwrap()
+            .combat_power
+            .is_none());
+        record
+            .character_build
+            .as_mut()
+            .unwrap()
+            .combat_power
+            .as_mut()
+            .unwrap()
+            .observed_at_ms = record.started_ms;
+        record.character_build.as_mut().unwrap().actor_id = Some(123);
+        assert!(prepare_record(&record, &options())
+            .unwrap()
+            .combat_power
+            .is_none());
+        record.character_build.as_mut().unwrap().actor_id = record.local_player_id;
+        record.source = "imported".into();
+        assert!(prepare_record(&record, &options())
+            .unwrap()
+            .combat_power
+            .is_none());
+    }
+
+    #[test]
+    fn statistics_proxy_uses_same_cp_context_and_rejects_sparse_fabricated_quantiles() {
+        let good = serde_json::json!({ "source":"community-upload", "weighting":"submitted-records", "status":"available", "cohort_minimum":5, "entries":[{ "class_name":"Ranger", "count":5, "cp_known_count":5, "status":"available", "minimum_dps":1000.0, "maximum_dps":5000.0, "median_dps":3000.0, "p95_dps":5000.0 }] });
+        let mock = Arc::new(Mock::default());
+        let mut bad = good.clone();
+        bad["entries"][0]["count"] = serde_json::json!(4);
+        bad["entries"][0]["cp_known_count"] = serde_json::json!(4);
+        mock.responses.lock().unwrap().extend([
+            Ok(serde_json::to_vec(&good).unwrap()),
+            Ok(serde_json::to_vec(&bad).unwrap()),
+        ]);
+        let (service, path) = service(mock.clone());
+        let filters = RankingFilters {
+            region: "EU".into(),
+            server: "A&B".into(),
+            boss: "Boss".into(),
+            difficulty: "Normal".into(),
+            cp_band: "900000+".into(),
+            ..Default::default()
+        };
+        let result = service.statistics(&filters).unwrap();
+        assert_eq!(result.entries[0].median_dps, Some(3000.0));
+        assert!(service.statistics(&filters).is_err());
+        let requests = mock.requests.lock().unwrap();
+        assert!(requests[0].1.contains("/v1/statistics?"));
+        assert!(requests[0].1.contains("cp_band=900000%2B"));
+        assert!(requests[0].1.contains("server=A%26B"));
+        assert!(requests[0].3.is_none());
+        cleanup(&path);
     }
 
     fn path() -> PathBuf {

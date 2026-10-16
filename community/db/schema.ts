@@ -7,6 +7,7 @@ export const shares = sqliteTable('shares', {
   name: text('name').notNull(), className: text('class_name').notNull(), region: text('region').notNull(),
   server: text('server').notNull(), boss: text('boss').notNull(), difficulty: text('difficulty').notNull(),
   dps: real('dps').notNull(), damage: integer('damage').notNull(), duration: integer('duration').notNull(),
+  visibility: text('visibility').notNull().default('public'), viewHash: text('view_hash'), combatPower: integer('combat_power'),
 }, t => [
   uniqueIndex('share_retry').on(t.tokenHash, t.clientHash), index('share_expiry').on(t.expiresAt),
   index('ranking_dps').on(t.ranked, t.scope, t.dps, t.id), index('ranking_region').on(t.ranked, t.region, t.dps),

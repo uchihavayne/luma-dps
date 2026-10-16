@@ -1,9 +1,117 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from '../reports.mjs';
+import { normalizeEncounter } from '../model.mjs';
 
 const fight = () => ({ id: 3, started_ms: 1791882000123, ended_ms: 1791882060123, elapsed_ms: 60000, total_damage: 3000, dps: 50, local_player_id: 7, local_player_name: 'Self', local_identity_source: 'server', personal_total_damage: 1000, personal_dps: 20, personal_elapsed_ms: 50000, personal_targets: [{ id: 50, name: 'Boss', damage: 1000 }], party_member_ids: [7], party_membership_source: 'server', party_total_damage: 1000, party_dps: 20, party_targets: [{ id: 50, name: 'Boss', damage: 1000 }], players: [{ id: 7, name: 'Self', is_local: true, in_party: true, class_name: 'ranger', damage: 1000, dps: 20, skills: [{ id: 5, name: 'Arrow', damage: 1000, hits: 5, crit_hits: null, back_hits: 2 }] }, { id: 8, name: 'Nearby', damage: 2000, dps: 40, class_name: 'cleric', skills: [] }], targets: [{ id: 50, name: 'Boss', is_boss: true, damage: 3000, current_hp: 1000, observed_peak_hp: 8000 }], note: 'Private build', tags: ['guild'] });
 const packet = records => ({ type: 'luma-history', version: 1, encounters: records });
+
+function withNewReceivedFields() {
+  const value = fight(), at = value.started_ms;
+  value.context = { source: 'server-zone', map_id: 600001, session_id: `zone-600001-${at}-1`, zone_observed_at_ms: at - 1000, token: 'private-context' };
+  value.character_build = { actor_id: 7, name: 'Self', source: 'server-self', observed_at_ms: at - 1000,
+    combat_power: { current: 356559, highest: 400000, observed_at_ms: at - 900, source: 'server-self' },
+    wing: { wing_id: 30500200, skin_id: null, observed_at_ms: at - 800, source: 'server-self' },
+    species: Array.from({ length: 5 }, (_, index) => ({ species_id: index + 2, level: 12, progress: 0, effects: [{ page: 1, slot: 0, kind: 3, stat_id: 42, value: -123 }] })), species_observed_at_ms: at - 700,
+  };
+  value.players[0].healing = 83; value.players[0].hps = 83 / 60; value.players[0].healing_coverage = 'explicit-received';
+  value.players[0].healing_skills = [{ id: 17050000, damage: 83, hits: 1 }];
+  value.healing_samples = [{ timestamp_ms: at + 1, source: 7, player_id: 7, target: 8, skill: 17050000, amount: 83, tick: true, metric: 'healing' }];
+  value.healing_sample_complete = true;
+  value.assist = { health_history: [{ actor_id: 50, current_hp: 1000, reported_max_hp: 2000, observed_at_ms: at + 1 }, { actor_id: 50, current_hp: 0, reported_max_hp: 0, observed_at_ms: at + 2 }, { actor_id: 999, current_hp: 300, observed_at_ms: at + 3 }] };
+  return value;
+}
+
+test('new received build fields, context and healing retain exact separate values across reports', () => {
+  const input = withNewReceivedFields();
+  const report = JSON.parse(exportEncounterJson(input)).encounters[0];
+  assert.equal(report.character_build.combat_power.current, 356559);
+  assert.equal(report.character_build.species[0].effects[0].value, -123);
+  assert.equal(report.context.map_id, 600001);
+  assert.equal(report.healing_samples[0].metric, 'healing');
+  assert.equal(report.healing_samples[0].amount, 83);
+  assert.equal(report.damage_samples.length, 0);
+  assert.equal(report.total_damage, 3000);
+  assert.equal(report.players[0].healing_skills[0].damage, 83);
+  assert.equal(report.assist.health_history[1].current_hp, 0);
+  assert.equal(report.assist.health_history[1].reported_max_hp, null);
+  const imported = importEncounterCollection(exportEncounterJson(input)).encounters[0];
+  assert.equal(imported.character_build.combat_power.source, 'imported');
+  assert.equal(imported.context.source, 'imported');
+});
+
+test('scoped healing and HP history include only selected actors, targets and actual record time', () => {
+  const input = withNewReceivedFields();
+  input.healing_samples.push({ ...input.healing_samples[0], source: 8, player_id: 8, target: 7 });
+  input.assist.health_history.push({ actor_id: 50, current_hp: 500, observed_at_ms: input.ended_ms + 1 });
+  const report = JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0];
+  assert.equal(report.healing_samples.length, 1);
+  assert.equal(report.healing_samples[0].player_id, 7);
+  assert.equal(report.assist.health_history.length, 2);
+  assert.ok(report.assist.health_history.every(row => row.actor_id === 50));
+  input.local_player_id = null; input.local_identity_source = 'unresolved';
+  const unknown = JSON.parse(exportEncounterJson(input, { scope: 'personal' })).encounters[0];
+  assert.equal(unknown.character_build, null);
+  assert.deepEqual(unknown.healing_samples, []);
+  assert.deepEqual(unknown.assist.health_history, []);
+});
+
+test('anonymous new fields remove wall time, session identifiers and actual actor references', () => {
+  const input = withNewReceivedFields();
+  const raw = exportEncounterJson(input, { anonymize: true, scope: 'personal' });
+  assert.doesNotMatch(raw, /179188|zone-600001-|private-context|Self/);
+  const report = JSON.parse(raw).encounters[0];
+  assert.equal(report.context.session_id, 'Session 1');
+  assert.equal(report.context.zone_observed_at_ms, 0);
+  assert.equal(report.character_build.combat_power.observed_at_ms, 0);
+  assert.equal(report.character_build.wing.observed_at_ms, 0);
+  assert.equal(report.character_build.species_observed_at_ms, 0);
+  assert.equal(report.healing_samples[0].player_id, report.local_player_id);
+  assert.equal(report.healing_samples[0].timestamp_ms, 1);
+  assert.equal(report.assist.health_history[0].actor_id, report.targets[0].id);
+  assert.equal(report.assist.health_history[1].observed_at_ms, 2);
+  assert.equal(importEncounterCollection(raw).encounters[0].character_build.species[0].progress, 0);
+});
+
+test('new report observations reject oversized collections and metric cross-contamination', () => {
+  let input = withNewReceivedFields(); input.assist.health_history = Array(513).fill(input.assist.health_history[0]);
+  assert.throws(() => exportEncounterJson(input), /Health history/);
+  input = withNewReceivedFields(); input.character_build.species[0].effects = Array(161).fill(input.character_build.species[0].effects[0]);
+  assert.throws(() => exportEncounterJson(input), /species/);
+  input = withNewReceivedFields(); input.healing_samples[0].metric = 'damage';
+  assert.throws(() => exportEncounterJson(input), /metric/);
+});
+
+test('offline exports show received healing coverage separately and preserve legacy CSV columns', () => {
+  const input = withNewReceivedFields(), before = structuredClone(input);
+  const csv = exportEncounterCsv(input, { scope: 'personal' });
+  const header = csv.split('\r\n')[0].split(',');
+  assert.ok(header.includes('healing_coverage')); assert.ok(header.includes('hps'));
+  const healingRow = csv.split('\r\n').find(row => row.includes('healing-tick')).split(',');
+  assert.equal(healingRow[header.indexOf('damage')], '');
+  assert.equal(healingRow[header.indexOf('healing')], '83');
+  const html = exportEncounterHtml(input, { locale: 'en', scope: 'personal' });
+  assert.match(html, /Received healing/); assert.match(html, /direct-heal coverage is incomplete/);
+  assert.match(html, /Combat power/); assert.match(html, /356,559/);
+  assert.equal(exportEncounterCsv(fight()).split('\r\n')[0].split(',').length, 35);
+  assert.deepEqual(input, before);
+});
+
+test('UI-normalized history exports numeric IDs accepted by native integer fields', () => {
+  const value = withNewReceivedFields();
+  value.damage_samples = [{ timestamp_ms: value.started_ms + 1, source: 7, player_id: 7, target: 50, skill: 5, amount: 1000 }];
+  value.character_build.equipment = [{ item_id: 110150026, slot: 1 }];
+  value.character_build.boards = [{ board_id: 11, node_ids: [110001] }];
+  const normalized = normalizeEncounter(value);
+  assert.equal(normalized.local_player_id, '7'); // actual UI boundary uses text IDs
+  const exported = JSON.parse(exportEncounterJson(normalized)).encounters[0];
+  for (const id of [exported.id, exported.local_player_id, exported.players[0].id, exported.players[0].skills[0].id, exported.targets[0].id, exported.damage_samples[0].source, exported.character_build.actor_id, exported.character_build.equipment[0].item_id, exported.character_build.boards[0].node_ids[0]]) assert.equal(typeof id, 'number');
+  assert.equal(exported.damage_samples[0].source, 7);
+  const textIds = fight(); textIds.players[0].id = 'Player-A'; textIds.targets[0].id = '9007199254740993';
+  const textResult = JSON.parse(exportEncounterJson(textIds)).encounters[0];
+  assert.equal(textResult.players[0].id, 'Player-A');
+  assert.equal(textResult.targets[0].id, '9007199254740993'); // no unsafe rounding
+});
 
 function withStagger() {
   const value = fight();

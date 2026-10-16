@@ -27,7 +27,7 @@ export function damageCurve(record, { scope = 'personal', intervalMs = 1000 } = 
     members = new Set((record.party_member_ids || []).map(id));
   }
   const observedEnd = metric(record?.ended_ms) !== null && record.ended_ms > started ? record.ended_ms : started + elapsed;
-  const samples = raw.slice(0, 5000).filter(sample => {
+  const samples = raw.slice(0, 20000).filter(sample => {
     const time = metric(sample?.timestamp_ms), amount = metric(sample?.amount);
     return time !== null && amount !== null && time >= started && time <= observedEnd && (!members || members.has(id(sample.player_id ?? sample.source)));
   }).sort((a, b) => a.timestamp_ms - b.timestamp_ms);
@@ -41,7 +41,7 @@ export function damageCurve(record, { scope = 'personal', intervalMs = 1000 } = 
     points[bucket].damage += sample.amount;
   }
   for (const point of points) point.dps = point.damage * 1000 / Math.min(interval, elapsed - point.at_ms);
-  const complete = record.sample_complete === true && raw.length <= 5000;
+  const complete = record.sample_complete === true && raw.length <= 20000;
   // This activity measure is an explicit 3 s union of observed hit windows, not cast time.
   let activity = 0, activeEnd = started;
   for (const sample of samples) {

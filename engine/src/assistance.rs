@@ -11,6 +11,7 @@ const MAX_FRAME: usize = 4096;
 const MAX_CASTS: usize = 64;
 const MAX_EFFECTS: usize = 256;
 const MAX_HEALTH: usize = 256;
+const MAX_HEALTH_HISTORY: usize = 512;
 const MAX_TIMELINE: usize = 1000;
 const MAX_REMOVALS: usize = 64;
 const MAX_STAGGER: usize = 64;
@@ -466,6 +467,9 @@ pub struct AssistSnapshot {
     pub effects: Vec<ActiveEffect>,
     pub timeline: Vec<AssistTimelineEvent>,
     pub health: Vec<HealthObservation>,
+    /// Actual received HP observations. This is not a reconstructed HP curve.
+    #[serde(default)]
+    pub health_history: Vec<HealthObservation>,
     pub retention_limited: bool,
     #[serde(default)]
     pub stagger: Vec<StaggerObservation>,
@@ -476,6 +480,7 @@ pub struct AssistState {
     casts: BTreeMap<u64, ActiveCast>,
     effects: BTreeMap<(u64, u64), ActiveEffect>,
     health: BTreeMap<u64, HealthObservation>,
+    health_history: VecDeque<HealthObservation>,
     timeline: VecDeque<AssistTimelineEvent>,
     last_ms: Option<u64>,
     limited: bool,
@@ -490,6 +495,9 @@ impl AssistState {
         self.tick(now);
         self.casts.remove(&actor_id);
         self.health.remove(&actor_id);
+        // Entity IDs can be reused after despawn; the replacement must not
+        // inherit a previous entity's HP history.
+        self.health_history.retain(|row| row.actor_id != actor_id);
         self.stagger.remove(&actor_id);
         // A caster leaving the scene does not remove its buffs from others.
         self.effects
@@ -717,6 +725,14 @@ impl AssistState {
                 current_hp,
                 reported_max_hp,
             } => {
+                if actor_id == 0
+                    || actor_id > 10_000_000
+                    || current_hp.is_none() && reported_max_hp.is_none()
+                    || current_hp.is_some_and(|hp| hp > 10_000_000_000_000)
+                    || reported_max_hp.is_some_and(|hp| hp > 10_000_000_000_000)
+                {
+                    return;
+                }
                 if self.health.len() >= MAX_HEALTH && !self.health.contains_key(&actor_id) {
                     if let Some(id) = self
                         .health
@@ -752,6 +768,23 @@ impl AssistState {
                 {
                     row.reported_max_hp = None
                 }
+                // A max-only update must not claim the old current HP was
+                // measured again. Keep the point's received current separate
+                // from the latest merged health state.
+                let observation = HealthObservation {
+                    actor_id,
+                    current_hp,
+                    reported_max_hp: row.reported_max_hp,
+                    observed_peak_hp: row.observed_peak_hp,
+                    observed_at_ms: now,
+                };
+                if self.health_history.back() != Some(&observation) {
+                    if self.health_history.len() == MAX_HEALTH_HISTORY {
+                        self.health_history.pop_front();
+                        self.limited = true;
+                    }
+                    self.health_history.push_back(observation);
+                }
             }
         }
     }
@@ -775,6 +808,7 @@ impl AssistState {
                 .collect(),
             timeline: self.timeline.iter().cloned().collect(),
             health: self.health.values().cloned().collect(),
+            health_history: self.health_history.iter().cloned().collect(),
             retention_limited: self.limited,
             stagger: self.stagger_snapshot(now),
         }
@@ -1001,9 +1035,79 @@ mod tests {
         let live = state.live_snapshot(1000);
         assert!(live.timeline.is_empty());
         assert!(live.health.is_empty());
+        assert!(live.health_history.is_empty());
         assert_eq!(live.effects[0].duration_ms, None);
         let full = state.snapshot(1000);
         assert_eq!(full.timeline.len(), 1);
         assert_eq!(full.health.len(), 1);
+    }
+    #[test]
+    fn health_history_retains_only_received_current_and_never_infers_maximum() {
+        let mut state = AssistState::default();
+        state.ingest(
+            AssistEvent::Health {
+                actor_id: 7,
+                current_hp: Some(900),
+                reported_max_hp: None,
+            },
+            1000,
+        );
+        state.ingest(
+            AssistEvent::Health {
+                actor_id: 7,
+                current_hp: None,
+                reported_max_hp: Some(1000),
+            },
+            2000,
+        );
+        state.ingest(
+            AssistEvent::Health {
+                actor_id: 7,
+                current_hp: Some(0),
+                reported_max_hp: None,
+            },
+            3000,
+        );
+        let history = state.snapshot(3000).health_history;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].reported_max_hp, None);
+        assert_eq!(history[1].current_hp, None);
+        assert_eq!(history[1].reported_max_hp, Some(1000));
+        assert_eq!(history[2].current_hp, Some(0));
+        assert_eq!(history[2].observed_at_ms, 3000);
+        // A read does not repeat or refresh the last observation.
+        assert_eq!(state.snapshot(100_000).health_history, history);
+    }
+    #[test]
+    fn health_history_is_bounded_and_removed_actor_ids_do_not_inherit_history() {
+        let mut state = AssistState::default();
+        for at in 1..=600 {
+            state.ingest(
+                AssistEvent::Health {
+                    actor_id: 7,
+                    current_hp: Some(at),
+                    reported_max_hp: None,
+                },
+                at,
+            );
+        }
+        let snapshot = state.snapshot(600);
+        assert_eq!(snapshot.health_history.len(), MAX_HEALTH_HISTORY);
+        assert_eq!(snapshot.health_history[0].observed_at_ms, 89);
+        assert!(snapshot.retention_limited);
+        state.remove_actor(7, 601);
+        state.ingest(
+            AssistEvent::Health {
+                actor_id: 7,
+                current_hp: Some(50),
+                reported_max_hp: None,
+            },
+            602,
+        );
+        let replacement = state.snapshot(602);
+        assert_eq!(replacement.health_history.len(), 1);
+        assert_eq!(replacement.health[0].observed_peak_hp, Some(50));
+        state.clear();
+        assert!(state.snapshot(603).health_history.is_empty());
     }
 }

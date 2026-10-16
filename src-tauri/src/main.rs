@@ -6,10 +6,14 @@ mod community;
 mod cube_locator;
 mod cube_signal;
 mod event_schedule;
+mod hotkeys;
 mod local_history;
 mod native_capture;
 mod obs_server;
 mod team_sync;
+mod update_key;
+mod updates;
+mod window_mode;
 
 use luma_engine::MeterEngine;
 use serde::{Deserialize, Serialize};
@@ -68,6 +72,379 @@ impl TeamRuntime {
     fn service(&self) -> Result<Arc<team_sync::Service>, String> {
         self.service.as_ref().cloned().map_err(Clone::clone)
     }
+}
+
+struct HotkeyRuntime {
+    service: Result<Arc<hotkeys::HotkeyService>, String>,
+}
+impl HotkeyRuntime {
+    fn service(&self) -> Result<Arc<hotkeys::HotkeyService>, String> {
+        self.service.as_ref().cloned().map_err(Clone::clone)
+    }
+    fn snapshot(&self) -> Value {
+        match &self.service {
+            Ok(service) => serde_json::to_value(service.state()).unwrap_or(Value::Null),
+            Err(error) => {
+                serde_json::json!({"supported":cfg!(windows),"enabled":false,"bindings":[],"errors":[error]})
+            }
+        }
+    }
+    fn rescue_available(&self) -> bool {
+        self.service.as_ref().is_ok_and(|service| {
+            service
+                .state()
+                .bindings
+                .iter()
+                .any(|binding| binding.enabled && binding.action == hotkeys::Action::ToggleLock)
+        })
+    }
+}
+struct UpdateRuntime {
+    service: Result<Arc<updates::UpdateService>, String>,
+}
+impl UpdateRuntime {
+    fn service(&self) -> Result<Arc<updates::UpdateService>, String> {
+        self.service.as_ref().cloned().map_err(Clone::clone)
+    }
+    fn snapshot(&self) -> Value {
+        match &self.service {
+            Ok(service) => service.snapshot(),
+            Err(error) => {
+                serde_json::json!({"supported":cfg!(windows),"status":"error","error":error,"current_version":env!("CARGO_PKG_VERSION")})
+            }
+        }
+    }
+}
+
+fn configured_hotkeys(preferences: &Preferences) -> Vec<hotkeys::Binding> {
+    preferences
+        .extra
+        .get("hotkeys")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .and_then(|bindings| hotkeys::normalize_bindings(bindings).ok())
+        .unwrap_or_else(hotkeys::default_bindings)
+}
+fn cursor_pass_through(
+    preferences: &Preferences,
+    panel_open: bool,
+    rescue_available: bool,
+) -> Result<bool, String> {
+    let requested = preferences
+        .extra
+        .get("clickThroughWhenLocked")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if requested && preferences.locked && !rescue_available {
+        return Err(
+            "Enable a working lock/unlock global shortcut before using click-through".into(),
+        );
+    }
+    Ok(requested && preferences.locked && !panel_open)
+}
+
+#[tauri::command]
+fn get_hotkey_state(runtime: State<Arc<HotkeyRuntime>>) -> Value {
+    runtime.snapshot()
+}
+
+#[tauri::command]
+fn set_hotkeys(
+    window: WebviewWindow,
+    shared: State<Arc<Shared>>,
+    runtime: State<Arc<HotkeyRuntime>>,
+    bindings: Vec<hotkeys::Binding>,
+) -> Result<Value, String> {
+    let bindings = hotkeys::normalize_bindings(bindings)?;
+    let _change = shared
+        .preference_change
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    let previous = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?
+        .clone();
+    let mut preferences = previous.clone();
+    let has_rescue = bindings
+        .iter()
+        .any(|binding| binding.enabled && binding.action == hotkeys::Action::ToggleLock);
+    cursor_pass_through(
+        &preferences,
+        shared.panel_open.load(Ordering::Relaxed),
+        has_rescue,
+    )?;
+    let service = runtime.service()?;
+    let old = service.state().bindings;
+    if let Err(error) = service.update(bindings.clone()) {
+        if !runtime.rescue_available() {
+            let _ = window.set_ignore_cursor_events(false);
+        }
+        return Err(error);
+    }
+    preferences.extra.insert(
+        "hotkeys".into(),
+        serde_json::to_value(bindings).map_err(|_| "Could not save shortcut settings")?,
+    );
+    if let Err(error) = persist(&shared, &preferences) {
+        let rollback = service.update(old);
+        if !runtime.rescue_available() {
+            let _ = window.set_ignore_cursor_events(false);
+        }
+        return Err(if let Err(rollback) = rollback {
+            format!("{error}; shortcut restoration failed: {rollback}")
+        } else {
+            error
+        });
+    }
+    let mut current = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    preferences.width = current.width;
+    preferences.height = current.height;
+    *current = preferences.clone();
+    drop(current);
+    let _ = window.emit("luma-preferences", &preferences);
+    let result = runtime.snapshot();
+    let _ = window.emit("luma-hotkey-state", &result);
+    Ok(result)
+}
+
+#[tauri::command]
+fn get_update_state(runtime: State<Arc<UpdateRuntime>>) -> Value {
+    runtime.snapshot()
+}
+#[tauri::command]
+async fn check_updates(
+    app: tauri::AppHandle,
+    runtime: State<'_, Arc<UpdateRuntime>>,
+) -> Result<Value, String> {
+    let service = runtime.service()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.check();
+        let _ = app.emit("luma-update-state", service.snapshot());
+        result
+    })
+    .await
+    .map_err(|_| "Update check worker stopped")?
+}
+#[tauri::command]
+async fn download_update(
+    app: tauri::AppHandle,
+    runtime: State<'_, Arc<UpdateRuntime>>,
+) -> Result<Value, String> {
+    let service = runtime.service()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.download();
+        let _ = app.emit("luma-update-state", service.snapshot());
+        result
+    })
+    .await
+    .map_err(|_| "Update download worker stopped")?
+}
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    shared: State<'_, Arc<Shared>>,
+    runtime: State<'_, Arc<UpdateRuntime>>,
+) -> Result<Value, String> {
+    let service = runtime.service()?;
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if service.snapshot()["downloaded"] != true {
+            return Err("Download the verified update first".into());
+        }
+        // Freeze and archive the current fight before starting a helper. A
+        // failed save cannot leave a helper that installs on some later exit.
+        persist_history(&shared)?;
+        let current =
+            std::env::current_exe().map_err(|_| "Current application path is unavailable")?;
+        let was_paused = {
+            let mut engine = shared
+                .engine
+                .lock()
+                .map_err(|_| "Meter state unavailable")?;
+            let paused = engine.live_state(now_ms()).paused;
+            engine.set_paused_at(true, now_ms());
+            engine.reset();
+            engine.set_paused_at(true, now_ms());
+            paused
+        };
+        let result =
+            persist_history(&shared).and_then(|_| service.install(current, std::process::id()));
+        let state = match result {
+            Ok(state) => state,
+            Err(error) => {
+                if let Ok(mut engine) = shared.engine.lock() {
+                    engine.set_paused_at(was_paused, now_ms());
+                }
+                return Err(error);
+            }
+        };
+        let _ = app.emit("luma-update-state", &state);
+        shared.stopping.store(true, Ordering::Relaxed);
+        app.exit(0);
+        Ok(state)
+    })
+    .await
+    .map_err(|_| "Update installation worker stopped")?
+}
+
+fn change_locked(
+    window: &WebviewWindow,
+    shared: &Shared,
+    runtime: &HotkeyRuntime,
+    locked: bool,
+) -> Result<Preferences, String> {
+    let _change = shared
+        .preference_change
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    let previous = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?
+        .clone();
+    let mut preferences = previous.clone();
+    preferences.locked = locked;
+    let panel_open = shared.panel_open.load(Ordering::Relaxed);
+    let pass_through = cursor_pass_through(&preferences, panel_open, runtime.rescue_available())?;
+    persist(shared, &preferences)?;
+    if let Err(error) = window
+        .set_resizable(!locked && !panel_open && !compact_strip(&preferences))
+        .and_then(|_| window.set_ignore_cursor_events(pass_through))
+    {
+        let _ = persist(shared, &previous);
+        let _ = window.set_resizable(!previous.locked && !panel_open && !compact_strip(&previous));
+        let _ = window.set_ignore_cursor_events(
+            cursor_pass_through(&previous, panel_open, runtime.rescue_available()).unwrap_or(false),
+        );
+        return Err(error.to_string());
+    }
+    let mut current = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    preferences.width = current.width;
+    preferences.height = current.height;
+    *current = preferences.clone();
+    let _ = window.emit("luma-preferences", &preferences);
+    Ok(preferences)
+}
+
+fn handle_global_hotkey(
+    app: &tauri::AppHandle,
+    shared: &Shared,
+    action: hotkeys::Action,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Luma window is unavailable")?;
+    match action {
+        hotkeys::Action::ToggleVisibility => {
+            if window.is_visible().map_err(|error| error.to_string())? {
+                window.hide()
+            } else {
+                window.show()
+            }
+            .map_err(|error| error.to_string())?;
+        }
+        hotkeys::Action::ToggleLock => {
+            let locked = shared
+                .preferences
+                .lock()
+                .map_err(|_| "Preferences unavailable")?
+                .locked;
+            let runtime = app
+                .try_state::<Arc<HotkeyRuntime>>()
+                .ok_or("Global hotkeys are unavailable")?;
+            change_locked(&window, shared, &runtime, !locked)?;
+        }
+        hotkeys::Action::TogglePause => {
+            let mut engine = shared
+                .engine
+                .lock()
+                .map_err(|_| "Meter state unavailable")?;
+            let paused = engine.live_state(now_ms()).paused;
+            engine.set_paused_at(!paused, now_ms());
+        }
+        hotkeys::Action::Reset => {
+            shared
+                .engine
+                .lock()
+                .map_err(|_| "Meter state unavailable")?
+                .reset();
+        }
+        hotkeys::Action::Settings => {
+            window
+                .set_ignore_cursor_events(false)
+                .map_err(|error| error.to_string())?;
+            window.show().map_err(|error| error.to_string())?;
+            let _ = window.set_focus();
+        }
+        hotkeys::Action::CopySummary => {}
+    }
+    let _ = app.emit("luma-hotkey", serde_json::json!({"action":action}));
+    if let Ok(state) = snapshot(shared) {
+        let _ = app.emit("luma-state", state);
+    }
+    Ok(())
+}
+
+fn compact_strip(preferences: &Preferences) -> bool {
+    preferences
+        .extra
+        .get("compactStrip")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+fn meter_min_height(preferences: &Preferences, panel_open: bool) -> f64 {
+    if compact_strip(preferences) && !panel_open {
+        44.0
+    } else {
+        MIN_METER_HEIGHT
+    }
+}
+fn apply_compact_transition(
+    window: &WebviewWindow,
+    shared: &Shared,
+    previous: &Preferences,
+    next: &Preferences,
+) -> Result<(), tauri::Error> {
+    if compact_strip(previous) == compact_strip(next) {
+        return Ok(());
+    }
+    if shared.panel_open.load(Ordering::Relaxed) {
+        if let Ok(mut restore) = shared.panel_restore.lock() {
+            if let Some(restore) = restore.as_mut() {
+                restore.size = tauri::LogicalSize::new(
+                    next.width,
+                    if compact_strip(next) {
+                        44.0
+                    } else {
+                        next.height
+                    },
+                )
+                .to_physical(window.scale_factor()?);
+            }
+        }
+        return Ok(());
+    }
+    shared
+        .size_transition_until
+        .store(now_ms() + 500, Ordering::Relaxed);
+    window.set_min_size(Some(tauri::LogicalSize::new(
+        320.0,
+        meter_min_height(next, false),
+    )))?;
+    window.set_size(tauri::LogicalSize::new(
+        next.width,
+        if compact_strip(next) {
+            44.0
+        } else {
+            next.height
+        },
+    ))
 }
 
 fn team_own_data(payload: Value, capture_live: bool, at: u64) -> Value {
@@ -209,7 +586,7 @@ impl Preferences {
             return Err("Invalid theme name".into());
         }
         if !self.text_scale.is_finite()
-            || !(0.65..=1.6).contains(&self.text_scale)
+            || !(0.65..=2.0).contains(&self.text_scale)
             || !self.opacity.is_finite()
             || !(0.35..=1.0).contains(&self.opacity)
             || !self.width.is_finite()
@@ -509,6 +886,54 @@ mod latency_capture_tests {
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+
+    #[test]
+    fn click_through_requires_a_rescue_and_drawers_always_accept_input() {
+        let mut preferences = Preferences::default();
+        preferences
+            .extra
+            .insert("clickThroughWhenLocked".into(), Value::Bool(true));
+        assert_eq!(
+            cursor_pass_through(&preferences, false, false).unwrap(),
+            false
+        );
+        preferences.locked = true;
+        assert!(cursor_pass_through(&preferences, false, false).is_err());
+        assert_eq!(
+            cursor_pass_through(&preferences, false, true).unwrap(),
+            true
+        );
+        assert_eq!(
+            cursor_pass_through(&preferences, true, true).unwrap(),
+            false
+        );
+        preferences.locked = false;
+        assert_eq!(
+            cursor_pass_through(&preferences, true, false).unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn compact_minimum_is_session_only_and_normal_geometry_survives_expand() {
+        let mut preferences = Preferences::default();
+        preferences.height = 600.0;
+        preferences
+            .extra
+            .insert("compactStrip".into(), Value::Bool(true));
+        assert_eq!(meter_min_height(&preferences, false), 44.0);
+        assert_eq!(meter_min_height(&preferences, true), MIN_METER_HEIGHT);
+        assert_eq!(preferences.height, 600.0);
+        assert!(preferences.validate().is_ok());
+        preferences
+            .extra
+            .insert("compactStrip".into(), Value::Bool(false));
+        assert_eq!(meter_min_height(&preferences, false), MIN_METER_HEIGHT);
+        preferences.text_scale = 2.0;
+        assert!(preferences.validate().is_ok());
+        preferences.text_scale = 2.01;
+        assert!(preferences.validate().is_err());
+    }
 
     #[test]
     fn relay_uses_only_own_allowlisted_fields_and_does_not_rejuvenate_charges() {
@@ -1373,20 +1798,31 @@ fn get_obs_state(shared: State<Arc<Shared>>) -> Result<Value, String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-fn start_obs(shared: State<Arc<Shared>>, scope: String, hide_names: bool) -> Result<Value, String> {
+fn start_obs(
+    shared: State<Arc<Shared>>,
+    scope: String,
+    hide_names: bool,
+    lan_enabled: Option<bool>,
+    port: Option<u16>,
+) -> Result<Value, String> {
     let scope = obs_server::ObsScope::parse(&scope)?;
+    let options = obs_server::ObsOptions {
+        lan_enabled: lan_enabled.unwrap_or(false),
+        port,
+    }
+    .validate()?;
     let mut server = shared
         .obs
         .lock()
         .map_err(|_| "Streaming state unavailable")?;
     if server.as_ref().is_some_and(|server| {
         let info = server.info();
-        info.scope == scope && info.hide_names == hide_names
+        info.scope == scope
+            && info.hide_names == hide_names
+            && info.lan_enabled == options.lan_enabled
+            && options.port.is_none_or(|port| port == info.port)
     }) {
         return obs_state(server.as_ref());
-    }
-    if let Some(mut previous) = server.take() {
-        previous.stop();
     }
     let weak = Arc::downgrade(shared.inner());
     let provider: obs_server::SnapshotProvider = Arc::new(move || {
@@ -1394,7 +1830,11 @@ fn start_obs(shared: State<Arc<Shared>>, scope: String, hide_names: bool) -> Res
             .and_then(|shared| snapshot(&shared).ok())
             .unwrap_or_else(|| serde_json::json!({"status":"disconnected"}))
     });
-    *server = Some(obs_server::start(scope, hide_names, provider)?);
+    // Preserve the working source if a new LAN address/port cannot be opened.
+    let next = obs_server::start_with_options(scope, hide_names, options, provider)?;
+    if let Some(mut previous) = server.replace(next) {
+        previous.stop();
+    }
     obs_state(server.as_ref())
 }
 
@@ -1498,6 +1938,28 @@ async fn get_community_rankings(
 }
 
 #[tauri::command]
+async fn get_community_statistics(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    filters: community::RankingFilters,
+) -> Result<community::Statistics, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.service()?.statistics(&filters))
+        .await
+        .map_err(|_| "Community statistics request was interrupted".to_string())?
+}
+
+#[tauri::command]
+async fn get_share_link(
+    runtime: State<'_, Arc<CommunityRuntime>>,
+    id: String,
+) -> Result<String, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.service()?.share_link(&id))
+        .await
+        .map_err(|_| "Community link request was interrupted".to_string())?
+}
+
+#[tauri::command]
 async fn revoke_community_share(
     runtime: State<'_, Arc<CommunityRuntime>>,
     id: String,
@@ -1516,8 +1978,8 @@ async fn open_community_url(
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let service = runtime.service()?;
-        if !service.allows_public_url(&url) {
-            return Err("Only public reports on the Luma community service can be opened".into());
+        if !service.allows_url(&url) {
+            return Err("Only valid reports on the Luma community service can be opened".into());
         }
         native_capture::open_support_url(&url)
     })
@@ -1688,6 +2150,7 @@ fn set_preferences(
     window: WebviewWindow,
     shared: State<Arc<Shared>>,
     cube: State<Arc<cube_locator::Service>>,
+    hotkeys: State<Arc<HotkeyRuntime>>,
     mut preferences: Preferences,
 ) -> Result<Preferences, String> {
     let _change = shared
@@ -1702,13 +2165,47 @@ fn set_preferences(
     // Native resize owns geometry. Theme/UI saves can contain stale dimensions.
     preferences.width = previous.width;
     preferences.height = previous.height;
+    // Only the transactional shortcut command can change OS registrations.
+    match previous.extra.get("hotkeys") {
+        Some(bindings) => {
+            preferences.extra.insert("hotkeys".into(), bindings.clone());
+        }
+        None => {
+            preferences.extra.remove("hotkeys");
+        }
+    }
     preferences.discard_session_marks();
     preferences.validate()?;
+    let pass_through = cursor_pass_through(
+        &preferences,
+        shared.panel_open.load(Ordering::Relaxed),
+        hotkeys.rescue_available(),
+    )?;
     persist(&shared, &preferences)?;
-    if let Err(error) =
-        window.set_resizable(!preferences.locked && !shared.panel_open.load(Ordering::Relaxed))
+    if let Err(error) = window
+        .set_resizable(
+            !preferences.locked
+                && !shared.panel_open.load(Ordering::Relaxed)
+                && !compact_strip(&preferences),
+        )
+        .and_then(|_| window.set_ignore_cursor_events(pass_through))
+        .and_then(|_| apply_compact_transition(&window, &shared, &previous, &preferences))
     {
         let _ = persist(&shared, &previous);
+        let _ = window.set_ignore_cursor_events(
+            cursor_pass_through(
+                &previous,
+                shared.panel_open.load(Ordering::Relaxed),
+                hotkeys.rescue_available(),
+            )
+            .unwrap_or(false),
+        );
+        let _ = window.set_resizable(
+            !previous.locked
+                && !shared.panel_open.load(Ordering::Relaxed)
+                && !compact_strip(&previous),
+        );
+        let _ = apply_compact_transition(&window, &shared, &preferences, &previous);
         return Err(error.to_string());
     }
     shared
@@ -1885,37 +2382,22 @@ fn set_boss_targets(shared: State<Arc<Shared>>, ids: Vec<u64>) -> Result<Value, 
 fn set_locked(
     window: WebviewWindow,
     shared: State<Arc<Shared>>,
+    hotkeys: State<Arc<HotkeyRuntime>>,
     locked: bool,
 ) -> Result<Preferences, String> {
-    let _change = shared
-        .preference_change
-        .lock()
-        .map_err(|_| "Preferences unavailable")?;
-    let previous = shared
-        .preferences
-        .lock()
-        .map_err(|_| "Preferences unavailable")?
-        .clone();
-    let mut preferences = previous.clone();
-    preferences.locked = locked;
-    persist(&shared, &preferences)?;
-    if let Err(error) = window.set_resizable(!locked && !shared.panel_open.load(Ordering::Relaxed))
-    {
-        let _ = persist(&shared, &previous);
-        return Err(error.to_string());
-    }
-    let mut current = shared
-        .preferences
-        .lock()
-        .map_err(|_| "Preferences unavailable")?;
-    preferences.width = current.width;
-    preferences.height = current.height;
-    *current = preferences.clone();
-    Ok(preferences.clone())
+    change_locked(&window, &shared, &hotkeys, locked)
 }
 
 #[tauri::command]
 fn start_resize(window: WebviewWindow, shared: State<Arc<Shared>>) -> Result<(), String> {
+    if shared
+        .preferences
+        .lock()
+        .ok()
+        .is_some_and(|preferences| compact_strip(&preferences))
+    {
+        return Err("Expand the compact strip before resizing".into());
+    }
     if shared.panel_open.load(Ordering::Relaxed) {
         return Err("Close the open panel before resizing the meter".into());
     }
@@ -1955,6 +2437,14 @@ fn resize_by(
     dx: f64,
     dy: f64,
 ) -> Result<(), String> {
+    if shared
+        .preferences
+        .lock()
+        .ok()
+        .is_some_and(|preferences| compact_strip(&preferences))
+    {
+        return Err("Expand the compact strip before resizing".into());
+    }
     if !dx.is_finite() || !dy.is_finite() || dx.abs() > 500.0 || dy.abs() > 500.0 {
         return Err("Invalid resize step".into());
     }
@@ -1988,6 +2478,7 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
 fn set_panel_open(
     window: WebviewWindow,
     shared: State<Arc<Shared>>,
+    hotkeys: State<Arc<HotkeyRuntime>>,
     open: bool,
 ) -> Result<(), String> {
     let _change = shared
@@ -1997,6 +2488,11 @@ fn set_panel_open(
     let previously_open = shared.panel_open.load(Ordering::Relaxed);
     if previously_open == open {
         return Ok(());
+    }
+    if open {
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|error| error.to_string())?;
     }
     let preferences = shared
         .preferences
@@ -2033,12 +2529,20 @@ fn set_panel_open(
     shared
         .size_transition_until
         .store(now_ms() + 500, Ordering::Relaxed);
-    apply_panel_layout(
+    if !open {
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(
+                320.0,
+                meter_min_height(&preferences, false),
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    let layout = apply_panel_layout(
         previous,
-        !previously_open && !preferences.locked,
+        !previously_open && !preferences.locked && !compact_strip(&preferences),
         position,
         size,
-        !open && !preferences.locked,
+        !open && !preferences.locked && !compact_strip(&preferences),
         |operation| {
             match operation {
                 PanelOperation::Position(position) => window.set_position(position),
@@ -2047,9 +2551,31 @@ fn set_panel_open(
             }
             .map_err(|error| error.to_string())
         },
-    )?;
+    );
+    if let Err(error) = layout {
+        let _ = window.set_min_size(Some(tauri::LogicalSize::new(
+            320.0,
+            meter_min_height(&preferences, previously_open),
+        )));
+        let _ = window.set_ignore_cursor_events(
+            cursor_pass_through(&preferences, previously_open, hotkeys.rescue_available())
+                .unwrap_or(false),
+        );
+        return Err(error);
+    }
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(
+            320.0,
+            meter_min_height(&preferences, open),
+        )))
+        .map_err(|error| error.to_string())?;
     *restore = if open { Some(previous) } else { None };
     shared.panel_open.store(open, Ordering::Relaxed);
+    let pass_through =
+        cursor_pass_through(&preferences, open, hotkeys.rescue_available()).unwrap_or(false);
+    window
+        .set_ignore_cursor_events(pass_through)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2205,6 +2731,9 @@ fn probe_capture_requested(arguments: &[String], environment: Option<&str>) -> b
 }
 
 fn main() {
+    if updates::run_helper_if_requested() {
+        return;
+    }
     if run_probe_if_requested() {
         return;
     }
@@ -2236,9 +2765,17 @@ fn main() {
             get_obs_state,
             start_obs,
             stop_obs,
+            get_hotkey_state,
+            set_hotkeys,
+            get_update_state,
+            check_updates,
+            download_update,
+            install_update,
             get_community_state,
             create_community_share,
             get_community_rankings,
+            get_community_statistics,
+            get_share_link,
             revoke_community_share,
             open_community_url,
             get_team_state,
@@ -2311,11 +2848,12 @@ fn main() {
                     .unwrap_or(""),
             );
             if let Some(window) = app.get_webview_window("main") {
+                window.set_min_size(Some(tauri::LogicalSize::new(320.0,meter_min_height(&preferences,false))))?;
                 window.set_size(tauri::LogicalSize::new(
                     preferences.width,
-                    preferences.height,
+                    if compact_strip(&preferences){44.0}else{preferences.height},
                 ))?;
-                window.set_resizable(!preferences.locked)?;
+                window.set_resizable(!preferences.locked && !compact_strip(&preferences))?;
             }
             let calendar = event_schedule::Service::start(data_dir.join("event-calendars.json"));
             let shared = Arc::new(Shared {
@@ -2338,6 +2876,24 @@ fn main() {
                 calendar: Mutex::new(Some(calendar)),
             });
             app.manage(shared.clone());
+            let handle=app.handle().clone();let weak=Arc::downgrade(&shared);
+            let bindings=shared.preferences.lock().map(|preferences|configured_hotkeys(&preferences)).unwrap_or_else(|_|hotkeys::default_bindings());
+            let callback=Arc::new(move|action|{
+                let app=handle.clone();let weak=weak.clone();let dispatch=handle.run_on_main_thread(move||{
+                    if let Some(shared)=weak.upgrade(){if let Err(error)=handle_global_hotkey(&app,&shared,action){let _=app.emit("luma-hotkey",serde_json::json!({"action":action,"error":error}));}}
+                });
+                if dispatch.is_err(){let _=handle.emit("luma-hotkey",serde_json::json!({"action":action,"error":"Global shortcut could not reach the Luma window"}));}
+            });
+            let hotkey_runtime=Arc::new(HotkeyRuntime{service:hotkeys::HotkeyService::start(bindings,callback).map(Arc::new)});
+            if let Some(window)=app.get_webview_window("main"){
+                let enabled=shared.preferences.lock().ok().and_then(|preferences|cursor_pass_through(&preferences,false,hotkey_runtime.rescue_available()).ok()).unwrap_or(false);
+                let _=window.set_ignore_cursor_events(enabled);
+            }
+            app.manage(hotkey_runtime);
+            let updates=Arc::new(UpdateRuntime{service:updates::UpdateService::new(shared.data_dir.clone(),env!("CARGO_PKG_VERSION")).map(Arc::new)});
+            let automatic=shared.preferences.lock().ok().is_some_and(|preferences|preferences.extra.get("autoCheckUpdates").and_then(Value::as_bool)!=Some(false));
+            app.manage(updates.clone());
+            if automatic {if let Ok(service)=updates.service(){let app=app.handle().clone();std::thread::spawn(move||{let _=service.check();let _=app.emit("luma-update-state",service.snapshot());});}}
             let weak_shared = Arc::downgrade(&shared);
             let provider: team_sync::OwnProvider = Arc::new(move || {
                 let Some(shared) = weak_shared.upgrade() else {
@@ -2372,7 +2928,14 @@ fn main() {
                 let mut history_retry_at = 0;
                 let mut calendar_revision = None;
                 let mut cube_revision = None;
+                let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
+                    if now_ms()>=z_order_checked_at {
+                        z_order_checked_at=now_ms()+500;
+                        let only_game=shared.preferences.lock().ok().is_some_and(|preferences|preferences.extra.get("onlyAboveGame").and_then(Value::as_bool)==Some(true));
+                        let topmost=!only_game || window_mode::is_game_or_luma_foreground();
+                        if last_topmost!=Some(topmost){if let Some(window)=handle.get_webview_window("main"){if window.set_always_on_top(topmost).is_ok(){last_topmost=Some(topmost);}}}
+                    }
                     let deadline = shared.geometry_save_due.load(Ordering::Relaxed);
                     if deadline != 0
                         && now_ms() >= deadline
@@ -2447,6 +3010,7 @@ fn main() {
                     tauri::WindowEvent::Resized(size) => {
                         if shared.panel_open.load(Ordering::Relaxed)
                             || now_ms() < shared.size_transition_until.load(Ordering::Relaxed)
+                            || shared.preferences.lock().ok().is_some_and(|preferences|compact_strip(&preferences))
                         {
                             return;
                         }

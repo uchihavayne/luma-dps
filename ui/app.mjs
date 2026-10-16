@@ -4,7 +4,7 @@ import { playerBarColor } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
-import { characterSnapshot, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from './character.mjs';
+import { characterSnapshot, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from './character.mjs';
 import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from './game-reports.mjs';
 import * as scheduling from './events.mjs';
 import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
@@ -14,10 +14,13 @@ import { createHistoryCache, clearImportedHistory } from './history.mjs';
 import { createHistoryNotebook, historyRecordKey, queryHistory, historyTrend, parseHistoryTags } from './history-tools.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
 import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
-import { communityLabels, communityUrl, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
+import { communityLabels, communityUrl, communityShareLink, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
 import { latencyPresentation, petProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
 import { resourceStatus } from './resources.mjs';
 import { teamSnapshot, renderTeam, automaticTeamState, renderAutomaticTeam } from './team.mjs';
+import { renderCombatInsights, renderEffectAttribution, renderBossProjection } from './combat-insights.mjs';
+import { renderRunHistory } from './run-history.mjs';
+import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -49,11 +52,12 @@ let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
 const remindedEventCycles = new Set();
 let calendarHorizonDays = 7;
-let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true;
+let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true, obsLanEnabled = false, obsPort = '';
+let hotkeyState = { bindings: [], errors: [] }, hotkeyPending = false, updateState = {}, updatePending = false;
 let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, scheduledCacheKey = '', scheduledCache = [], scheduleTimingSecond = -1;
 const scheduleTimings = new Map();
 let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0, cubeAutoListenIntent = null;
-let communityDraft = { recordId: '', scope: 'personal', anonymous: true, rank_opt_in: false, consent: false, context: { region: 'EU', server: '', boss: '', difficulty: '' } };
+let communityDraft = { recordId: '', scope: 'personal', anonymous: true, rank_opt_in: false, visibility: 'public', consent: false, context: { region: 'EU', server: '', boss: '', difficulty: '' } };
 let communityRankingDraft = communityFilters({ region: 'EU' }), communityRevokeId = '', communityOpened = false, communityCurrentRecord = null, communitySummaryText = '';
 const historyFilterDefaults = () => ({ query: '', scope: 'personal', source: '', category: '', difficulty: '', tags: '', sort: 'newest', favoritesOnly: false, from: '', to: '' });
 let historyFilters = historyFilterDefaults(), historyFilterDraft = historyFilterDefaults(), historyEditKey = '', historyEditDraft = null, historyTrendKey = '', historyNotebookError = '';
@@ -92,6 +96,8 @@ const words = {
     settings: 'Settings', close: 'Close', target: 'TARGET', groupDps: 'GROUP DPS', totalDamage: 'TOTAL DAMAGE', player: 'PLAYER', damage: 'DAMAGE', all: 'All', boss: 'Boss', both: 'Both', allCaption: 'All targets', bossCaption: 'Boss targets', bothCaption: 'Players: all targets', sort: 'Sort', pause: 'Pause', resume: 'Resume', reset: 'Reset', lock: 'Lock', unlock: 'Unlock', resize: 'Resize window', analysis: 'Analysis', disconnected: 'Disconnected', connected: 'Connected', waiting: 'Waiting', demo: 'DEMO', paused: 'Paused', emptyTitle: 'Waiting for an encounter', emptyHelp: 'Received damage events will appear here.', disconnectedHelp: 'No live data connection. No damage recorded yet.', demoNotice: 'DEMO · Fixed sample data. These are not live game statistics.', browserNotice: 'Browser preview · Live capture requires the desktop app.', nativeOnly: 'This control is available in the desktop app.', failed: 'The action could not be completed', saved: 'Saved', appearance: 'Appearance', language: 'Language / Dil', theme: 'Theme', font: 'Interface font', targetFont: 'Target font', size: 'Text size', opacity: 'Background opacity', customColors: 'Custom colors', background: 'Background', panel: 'Panel', text: 'Text', accent: 'Accent', rasterHelp: 'Local PNG, JPEG or WebP. Maximum 1 MB and 2048 × 2048 pixels. The image stays on this device.', removeBackground: 'Remove image', importTheme: 'Import theme', exportTheme: 'Export theme', themeHelp: 'Theme files contain appearance settings only.', events: 'Event timer', eventHelp: 'Save your own recurring timer. No game calendar or official Rift time is included; you enter the anchor time.', eventName: 'Event name', interval: 'Repeat interval (minutes)', anchor: 'First / known start (local time)', saveEvent: 'Save event', riftPreset: '3-hour Rift draft', activeEvent: 'Timer shown in header', none: 'Off', delete: 'Delete', next: 'Next', localTime: 'local time', every: 'Every', minutes: 'min', invalidEvent: 'Enter a name, valid anchor and 1–10080 minutes.', support: 'Support Luma ↗', supportHelp: 'Luma DPS · independent interface', overview: 'Overview', skills: 'Skills', history: 'History', planner: 'Planner', alerts: 'Alerts', selectPlayer: 'Select player', noPlayers: 'No player data yet.', sourceActual: 'RECEIVED DATA', sourceManual: 'MANUAL', sourceDemo: 'DEMO DATA', share: 'Damage share', duration: 'Duration', crit: 'Critical', hits: 'Hits', minMax: 'Min / max', noSkills: 'No received skill data for this player.', historyHelp: 'Received encounters and locally imported records. JSON exports are free.', noHistory: 'No saved encounters.', exportCurrent: 'Export current encounter', exportAll: 'Export all history', importHistory: 'Import history', imported: 'IMPORTED', historyImported: 'History imported', invalidFile: 'The file could not be read or is invalid.', equipment: 'Equipment notes', manualHelp: 'These are manually entered personal notes and estimates. They do not read equipment, Odyle or skill cooldowns from the game.', equipmentName: 'Equipment / set name', note: 'Note', add: 'Add', noEquipment: 'No equipment notes yet.', cooldowns: 'Cooldowns', cooldownName: 'Skill / reminder', seconds: 'Duration (seconds)', ready: 'Ready', start: 'Start', actualCooldowns: 'Received cooldowns', noActualCooldowns: 'No live cooldown data received.', odyle: 'Odyle calculation', balance: 'Entered balance', cap: 'Cap (0 = none)', refill: 'Added per cycle', refillInterval: 'Cycle (minutes; 0 = off)', savePlan: 'Save plan', estimate: 'Estimate from your entered values', estimateHelp: 'This is not a game rule. The balance, cycle and anchor are your assumptions.', dpsGoal: 'Group DPS goal (0 = off)', eventLead: 'Event alert lead (minutes)', sound: 'Alert sound', soundHelp: 'Sound works after you click a control in this session.', goalReached: 'DPS goal reached', goalWaiting: 'Waiting for DPS goal', noGoal: 'DPS goal is off', eventSoon: 'Your saved event is approaching', noAlert: 'No alert at the moment.', alertHelp: 'DPS alerts use the received group DPS. Event alerts use your own saved timer.', invalidPlanner: 'Enter a name and valid positive duration.', invalidEquipment: 'Enter an equipment name.', missingHistory: 'No data to export.', exported: 'JSON file ready', nativeExport: 'Encounter exported', resetDone: 'Encounter reset', bossTotal: 'Boss damage', playersCount: 'players', noTime: 'No anchor entered', clearImported: 'Clear imported records', clearConfirm: 'Imported local history cleared', windowClose: 'Close window', enabled: 'On', fileLarge: 'File size limit exceeded.', invalidRaster: 'PNG, JPEG or WebP; maximum 1 MB / 2048 × 2048.', dateUnknown: 'Date not provided', manualTimerHelp: 'Start uses this device’s clock to begin a countdown.', replay: 'Record details', snapshot: 'RECORD', aboutHelp: 'Live statistics only come from events supplied by the desktop capture engine.',
   },
 };
+Object.assign(words.tr, { controls: 'Kontroller', rotation: 'Rotasyon', healing: 'İyileştirme', runs: 'Oturumlar' });
+Object.assign(words.en, { controls: 'Controls', rotation: 'Rotation', healing: 'Healing', runs: 'Sessions' });
 const t = key => words[prefs.locale][key] || key;
 Object.assign(words.tr, { team: 'Takım', autoOdyle: 'Otomatik Odyle', odyleWaiting: 'Odyle verisi bekleniyor. Luma açıkken karaktere yeniden giriş yapmak ilk enerji listesini almayı sağlar.', odyleRegular: 'Normal enerji', odyleBonus: 'Bonus enerji', odyleTotal: 'Kullanılabilir toplam', odyleCapacity: 'Normal enerji sınırı üyelik durumundan türetilir; bonus enerji ayrı tutulur.', observedTime: 'Son alınan', counterLearning: 'Sayaç alındı · süre birimi öğreniliyor', estimatedCooldown: 'Tahmini', ownCooldownHelp: 'Sunucunun kendi karakterin için gönderdiği sayaçlar. Süre, tutarlı örneklerden öğrenilir; ~ ile gösterilir. Yalnız yeni alınan sıfır hazır bilgisini doğrular.' });
 Object.assign(words.en, { team: 'Team', autoOdyle: 'Automatic Odyle', odyleWaiting: 'Waiting for Odyle data. Logging into a character with Luma open captures the initial energy list.', odyleRegular: 'Regular energy', odyleBonus: 'Bonus energy', odyleTotal: 'Available total', odyleCapacity: 'Regular energy capacity is derived from membership state; bonus energy is separate.', observedTime: 'Last observed', counterLearning: 'Counter received · learning time unit', estimatedCooldown: 'Estimated', ownCooldownHelp: 'Server counters for your own character. Time is learned from consistent samples and marked ~. Only a newly received zero confirms readiness.' });
@@ -192,6 +198,8 @@ const activeEvent = () => scheduledEvents().find(event => event.id === prefs.act
 const chosenBossTimer = () => fieldBossTimers(worldData).find(timer => timer.key === prefs.activeEventId);
 let snapshot = null;
 const analysisState = () => snapshot || state;
+const retainedRecord = () => snapshot || curveRecord;
+const insightOptions = () => ({ locale: prefs.locale, scope: prefs.damageScope, actorId: selectedPlayer || null });
 const sourceLabel = () => snapshot ? t('snapshot') : demo ? t('sourceDemo') : t('sourceActual');
 
 function toast(message, error = false) {
@@ -230,6 +238,7 @@ function applyAppearance() {
   $('#meter').dataset.density = prefs.density;
   $('#meter').dataset.rowMetric = prefs.rowMetric;
   $('#meter').dataset.summaryMetric = prefs.summaryMetric;
+  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && !drawer);
   $('#meter').dataset.showClass = String(prefs.showClass);
   $('#drag-region').style.cursor = prefs.locked ? 'default' : 'grab';
 }
@@ -263,6 +272,7 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
+  $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
   $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
   for (const option of $('#damage-scope').options) option.textContent = t({personal:'rosterPersonal', party:'rosterParty', observed:'rosterObserved'}[option.value]);
@@ -341,6 +351,7 @@ function renderMeter() {
   $('#damage-scope').title = scopes.fallback ? t('partyFallback') : t('rosterScope');
   $('#players').setAttribute('aria-label', t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
+  if (state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
@@ -391,8 +402,9 @@ function renderPlayers(status, scoped) {
       setAttribute(row, 'data-player', player.id);
       const own = player.is_local || player.id === state.local_player_id;
       row.classList.toggle('is-own', own); row.querySelector('.own-tag').hidden = !own; setText(row.querySelector('.own-tag'), t('me'));
-      setAttribute(row, 'aria-label', `${player.name}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
-      setText(row.querySelector('.rank'), index + 1); setText(row.querySelector('.player-name'), player.name);
+      const visibleName = prefs.hidePlayerNames && !own ? `${player.class_name} #${index + 1}` : player.name;
+      setAttribute(row, 'aria-label', `${visibleName}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
+      setText(row.querySelector('.rank'), index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), player.class_name);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
       const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.showTeamCooldowns || !member?.cooldowns.length;
@@ -450,7 +462,7 @@ function appearanceSettingsContent() {
     <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label><label class="check-field"><input name="showTeamCooldowns" type="checkbox" ${prefs.showTeamCooldowns ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Satırda cooldown göster' : 'Show cooldown in rows'}</label></div>
     <h3 class="section-title">${t('theme')}</h3><div class="theme-grid" role="group" aria-label="${t('theme')}">${Object.entries(THEMES).map(([id, theme]) => `<button class="theme-swatch" data-theme="${id}" style="--swatch-bg:${theme.bg};--swatch-text:${theme.text};--swatch-accent:${theme.accent}" aria-pressed="${prefs.theme === id}"><i aria-hidden="true"></i>${theme.name}</button>`).join('')}</div><h3 class="section-title">${t('typography')}</h3>
     <div class="field-grid"><label class="field"><span>${t('font')}</span><select name="font">${fontOptions(prefs.font)}</select></label><label class="field"><span>${t('targetFont')}</span><select name="targetFont">${fontOptions(prefs.targetFont)}</select></label></div>
-    <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="1.2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0.65" max="1" step="0.05"')}</div>
+    <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0.65" max="1" step="0.05"')}</div>
     <details class="appearance-details"><summary>${t('appearanceExtras')}</summary><h3 class="section-title">${t('customColors')}</h3><div class="color-grid">${['bg', 'panel', 'text', 'accent'].map(key => field(`color-${key}`, key === 'bg' ? 'background' : key, 'color', prefs.customColors[key])).join('')}</div>
     <label class="field"><span>${t('background')}</span><input name="backgroundFile" type="file" accept="image/png,image/jpeg,image/webp"></label><p class="help">${t('rasterHelp')}</p><div class="button-row">${button('remove-background', 'removeBackground', '', true)}</div>
     <div class="button-row">${button('export-theme', 'exportTheme')}${button('import-theme', 'importTheme', '', true)}</div><input id="theme-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1"><p class="help">${t('themeHelp')}</p></details>`;
@@ -460,8 +472,53 @@ function combatSettingsContent() {
   return `<h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
+function controlsContent() {
+  const tr = prefs.locale === 'tr';
+  const options = [['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Tek satır kompakt görünüm' : 'One-line compact view']];
+  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
+}
+
+async function readRuntimeState() {
+  if (!native) return;
+  const results = await Promise.allSettled([invoke('get_hotkey_state'), invoke('get_update_state')]);
+  if (results[0].status === 'fulfilled') hotkeyState = results[0].value;
+  if (results[1].status === 'fulfilled') updateState = results[1].value;
+  if (drawer === 'settings' && ['controls', 'about'].includes(settingsTab) && !$('#drawer-content').contains(document.activeElement)) refreshDrawer();
+}
+
+async function saveHotkeys(form) {
+  if (!native || hotkeyPending) return;
+  const values = new FormData(form), bindings = HOTKEY_ACTIONS.map(action => ({ action, shortcut: String(values.get(`shortcut-${action}`) || ''), enabled: values.get(`enabled-${action}`) === 'on' }));
+  hotkeyPending = true;
+  try { await preferenceCommitter.run(async () => { hotkeyState = await invoke('set_hotkeys', { bindings }); prefs = normalizePreferences({ ...prefs, hotkeys: hotkeyState.bindings }); preferenceCommitter.confirm(prefs); storeLocalPreferences(prefs); }); dirtySettingsForms.delete('hotkey-form'); toast(t('saved')); }
+  catch (error) { toast(String(error).slice(0, 180), true); }
+  finally { hotkeyPending = false; if (drawer === 'settings') refreshDrawer(); }
+}
+
+async function runUpdate(actionName) {
+  if (!native || updatePending) return;
+  updatePending = true;
+  try { const command = { 'check-update': 'check_updates', 'download-update': 'download_update', 'install-update': 'install_update' }[actionName]; updateState = await invoke(command); }
+  catch (error) { updateState = { ...updateState, status: 'error', error: String(error).slice(0, 320) }; }
+  finally { updatePending = false; if (drawer === 'settings') refreshDrawer(); }
+}
+
+function rotationContent() {
+  return `${source()}${playerPicker()}<div class="button-row">${button('refresh-insights', 'refreshCurve', curvePending || snapshot ? 'disabled' : '', true)}</div>${renderCombatInsights(retainedRecord(), insightOptions())}${renderEffectAttribution(retainedRecord(), insightOptions())}${renderBossProjection(retainedRecord(), { locale: prefs.locale, now: snapshot?.ended_ms || Date.now() })}`;
+}
+
+function healingContent() {
+  const tr = prefs.locale === 'tr', record = retainedRecord(), scoped = scopedEncounter(record || {}, prefs.damageScope);
+  const players = scoped.known ? scoped.players.filter(player => player.healing !== null && player.healing !== undefined) : [];
+  return `${source()}<h3 class="section-title">${tr ? 'Alınan iyileştirme ve HPS' : 'Received healing and HPS'}</h3><p class="help">${tr ? 'Yalnız açıkça iyileştirme olarak işaretlenen alınan paketler. Desteklenmeyen iyileştirme türleri toplamda yer almaz; hasar ve DPS ayrı hesaplanır.' : 'Only received packets explicitly identified as healing. Unsupported healing types are absent; damage and DPS are calculated separately.'}</p><div class="button-row">${button('refresh-insights', 'refreshCurve', curvePending || snapshot ? 'disabled' : '', true)}</div>${record?.healing_sample_complete === false ? `<p class="quality-warning">${tr ? 'İyileştirme örnekleri eksik.' : 'Healing samples are incomplete.'}</p>` : ''}${players.length ? players.map(player => `<article class="record-card"><div class="record-top"><strong>${esc(player.name)}</strong><span>${num(player.healing)} · ${rate(player.hps)} HPS</span></div>${(player.healing_skills || []).map(skill => `<div class="healing-skill"><span>${esc(skill.name)}</span><strong>${num(skill.damage)}</strong><small>${fullNumber(skill.hits)} ${tr ? 'olay' : 'events'}</small></div>`).join('')}</article>`).join('') : `<p class="status-card">${tr ? 'Bu kapsamda açıkça işaretlenmiş iyileştirme henüz alınmadı.' : 'No explicitly identified healing received in this scope.'}</p>`}`;
+}
+
+function runsContent() {
+  return renderRunHistory(allHistory().map(row => row.item), { locale: prefs.locale, scope: prefs.damageScope });
+}
+
 function settingsContent(section = settingsTab) {
-  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}` }[settingsSection(section)])();
+  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, controls: controlsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}<label class="check-field"><input type="checkbox" name="autoCheckUpdates" ${prefs.autoCheckUpdates ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Açılışta güncellemeleri kontrol et' : 'Check for updates on launch'}</label>${renderUpdates(updateState, { locale: prefs.locale, native, busy: updatePending })}` }[settingsSection(section)])();
 }
 
 function cubeCompassMarkup() {
@@ -642,13 +699,15 @@ function syncCalendarSelection() {
   for (const button of $$('[data-action=select-calendar-event]')) { const selected = button.dataset.id === prefs.activeEventId; button.setAttribute('aria-pressed', String(selected)); setText(button, t(selected ? 'shownInHeader' : 'showInHeader')); }
 }
 function obsContent() {
-  return `<h3 class="section-title">${t('streaming')} ${source(t(obsState.running ? 'obsRunning' : 'obsStopped'))}</h3><p class="help">${t('obsHelp')}</p><div class="field-grid"><label class="field"><span>${t('obsScope')}</span><select name="obsScope" ${obsState.running || !native || obsPending ? 'disabled' : ''}>${['personal', 'party', 'observed'].map(scope => `<option value="${scope}" ${obsScope === scope ? 'selected' : ''}>${t(scope)}</option>`).join('')}</select></label><label class="check-field"><input name="obsHideNames" type="checkbox" ${obsHideNames ? 'checked' : ''} ${obsState.running || !native || obsPending ? 'disabled' : ''}>${t('obsHideNames')}</label></div>${obsState.running ? `<p class="help">${t('obsLiveScope')}: ${t(obsState.scope || obsScope)} · ${obsState.hide_names ? t('obsHideNames') : t('player')}</p><label class="field"><span>${t('obsUrl')}</span><input id="obs-url" type="text" value="${esc(obsState.url || '')}" readonly spellcheck="false"></label><div class="button-row">${button('copy-obs-url', 'copy', !obsState.url ? 'disabled' : '', true)}${button('stop-obs', 'obsStop', obsPending ? 'disabled' : '', true)}</div><p class="help">${t('obsPrivateHelp')}</p>` : `<div class="button-row">${button('start-obs', 'obsStart', !native || obsPending ? 'disabled' : '')}</div>`}`;
+  const tr = prefs.locale === 'tr', disabled = obsState.running || !native || obsPending;
+  const addresses = obsState.lan_enabled ? (obsState.lan_urls || []).slice(0, 8) : [obsState.url];
+  return `<h3 class="section-title">${t('streaming')} ${source(t(obsState.running ? 'obsRunning' : 'obsStopped'))}</h3><p class="help">${tr ? 'OBS Tarayıcı kaynağı için yerel yayın. İkinci bilgisayar için yerel ağ seçeneğini aç; her başlatmada yeni erişim anahtarı oluşur.' : 'Local OBS Browser Source. Enable LAN for a second computer; each start creates a new access key.'}</p><div class="field-grid"><label class="field"><span>${t('obsScope')}</span><select name="obsScope" ${disabled ? 'disabled' : ''}>${['personal', 'party', 'observed'].map(scope => `<option value="${scope}" ${obsScope === scope ? 'selected' : ''}>${t(scope)}</option>`).join('')}</select></label><label class="check-field"><input name="obsHideNames" type="checkbox" ${obsHideNames ? 'checked' : ''} ${disabled ? 'disabled' : ''}>${t('obsHideNames')}</label><label class="check-field"><input name="obsLanEnabled" type="checkbox" ${obsLanEnabled ? 'checked' : ''} ${disabled ? 'disabled' : ''}>${tr ? 'Yerel ağdaki ikinci bilgisayar' : 'Second computer on LAN'}</label><label class="field"><span>${tr ? 'Port (boş: otomatik)' : 'Port (blank: automatic)'}</span><input type="number" name="obsPort" min="1024" max="65535" value="${esc(obsPort)}" ${disabled ? 'disabled' : ''}></label></div>${obsState.running ? `<p class="help">${t('obsLiveScope')}: ${t(obsState.scope || obsScope)}</p>${addresses.map((url, index) => `<label class="field"><span>${t('obsUrl')}${addresses.length > 1 ? ` ${index + 1}` : ''}</span><input ${index === 0 ? 'id="obs-url"' : ''} type="text" value="${esc(url || '')}" readonly spellcheck="false"></label>`).join('')}<div class="button-row">${button('copy-obs-url', 'copy', !addresses[0] ? 'disabled' : '', true)}${button('stop-obs', 'obsStop', obsPending ? 'disabled' : '', true)}</div><p class="help">${tr ? 'Bağlantıyı bilen yerel ağ kullanıcıları seçilen ölçümü görebilir. Windows güvenlik duvarı izni gerekebilir. Durdurunca bağlantı iptal olur.' : 'LAN users with this link can view the selected data. Windows Firewall permission may be required. Stopping revokes the link.'}</p>` : `<div class="button-row">${button('start-obs', 'obsStart', !native || obsPending ? 'disabled' : '')}</div>`}`;
 }
 
 async function readObsState() {
   if (!native || obsPending) return;
   obsPending = true;
-  try { const result = await action('get_obs_state'); obsState = result?.running === true ? result : { running: false }; if (obsState.running) { obsScope = ['personal', 'party', 'observed'].includes(obsState.scope) ? obsState.scope : 'personal'; obsHideNames = obsState.hide_names !== false; } }
+  try { const result = await action('get_obs_state'); obsState = result?.running === true ? result : { running: false }; if (obsState.running) { obsScope = ['personal', 'party', 'observed'].includes(obsState.scope) ? obsState.scope : 'personal'; obsHideNames = obsState.hide_names !== false; obsLanEnabled = obsState.lan_enabled === true; obsPort = obsState.port || ''; } }
   catch {}
   finally { obsPending = false; if (drawer === 'settings' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer(); }
 }
@@ -656,7 +715,7 @@ async function readObsState() {
 async function setObsRunning(running) {
   if (!native || obsPending) return;
   obsPending = true;
-  try { const result = await action(running ? 'start_obs' : 'stop_obs', running ? { scope: obsScope, hide_names: obsHideNames } : {}); obsState = result?.running === true ? result : { running: false }; }
+  try { const result = await action(running ? 'start_obs' : 'stop_obs', running ? { scope: obsScope, hide_names: obsHideNames, lan_enabled: obsLanEnabled, port: obsPort === '' ? null : Number(obsPort) } : {}); obsState = result?.running === true ? result : { running: false }; }
   catch {}
   finally { obsPending = false; if (drawer === 'settings') refreshDrawer(); }
 }
@@ -736,7 +795,7 @@ async function readCurveRecord() {
   curvePending = true;
   try { if (native) curveRecord = normalizeEncounter(await action('get_current_encounter')); else if (demo) curveRecord = normalizeEncounter(DEMO_STATE); }
   catch {}
-  finally { curvePending = false; if (drawer === 'analysis' && tab === 'curves') refreshDrawer(); }
+  finally { curvePending = false; if (drawer === 'analysis' && ['curves', 'rotation', 'healing', 'overview', 'effects'].includes(tab)) refreshDrawer(); }
 }
 
 function curvesContent() {
@@ -751,7 +810,7 @@ function curvesContent() {
 const actorName = id => state.players.find(player => player.id === String(id))?.name || state.targets.find(target => target.id === String(id))?.name || `#${id || '?'}`;
 function effectsContent() {
   const labels = { 'stagger-break': 'eventStagger', windup: 'eventWindup', cast: 'eventCast', 'effect-applied': 'eventApplied', 'effect-refreshed': 'eventRefreshed', 'effect-removed': 'eventRemoved', 'effect-expired': 'eventExpired' };
-  return `${source(t('serverObserved'))}<p class="help">${t('effectHelp')}</p>${state.assist.retention_limited ? `<p class="quality-warning">${t('effectLimited')}</p>` : ''}<h3 class="section-title">${t('stagger')}</h3><p class="help">${t('staggerHelp')}</p><div id="stagger-list"></div><h3 class="section-title">${t('windups')}</h3><div id="windup-list"></div><h3 class="section-title">${t('effects')} · ${t(prefs.damageScope)}</h3><div id="effect-list"></div><h3 class="section-title">${t('effectTimeline')}</h3><div class="button-row">${button('refresh-effects', 'refreshEffects', assistPending || !native ? 'disabled' : '', true)}</div>${assistTimeline.length ? assistTimeline.map(event => `<div class="timeline-row"><time>${new Date(event.at_ms).toLocaleTimeString(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><span>${t(labels[event.kind])}</span><small>${esc(actorName(event.actor_id))} → ${esc(actorName(event.target_id))}${event.skill_id ? ` · Skill #${esc(event.skill_id)}` : ''}${event.instance_id ? ` · #${esc(event.instance_id)}` : ''}</small></div>`).join('') : empty('noEffectTimeline')}`;
+  return `${source(t('serverObserved'))}${renderEffectAttribution(retainedRecord(), insightOptions())}<p class="help">${t('effectHelp')}</p>${state.assist.retention_limited ? `<p class="quality-warning">${t('effectLimited')}</p>` : ''}<h3 class="section-title">${t('stagger')}</h3><p class="help">${t('staggerHelp')}</p><div id="stagger-list"></div><h3 class="section-title">${t('windups')}</h3><div id="windup-list"></div><h3 class="section-title">${t('effects')} · ${t(prefs.damageScope)}</h3><div id="effect-list"></div><h3 class="section-title">${t('effectTimeline')}</h3><div class="button-row">${button('refresh-effects', 'refreshEffects', assistPending || !native ? 'disabled' : '', true)}</div>${assistTimeline.length ? assistTimeline.map(event => `<div class="timeline-row"><time>${new Date(event.at_ms).toLocaleTimeString(prefs.locale === 'tr' ? 'tr-TR' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><span>${t(labels[event.kind])}</span><small>${esc(actorName(event.actor_id))} → ${esc(actorName(event.target_id))}${event.skill_id ? ` · Skill #${esc(event.skill_id)}` : ''}${event.instance_id ? ` · #${esc(event.instance_id)}` : ''}</small></div>`).join('') : empty('noEffectTimeline')}`;
 }
 
 async function readAssistTimeline() {
@@ -842,7 +901,7 @@ function buildContent() {
   const header = `${source(snapshot ? t('snapshot') : t('serverObserved'))}<p class="help">${t('buildHelp')}</p><div class="button-row">${button('refresh-build', 'refreshBuild', characterPending || !native || snapshot ? 'disabled' : '', true)}</div>`;
   const pets = snapshot ? '' : `<div id="automatic-odyle">${odyleContent()}</div>` + petProgressContent(data.pet_progress);
   if (!current) return header + pets + empty('noBuild');
-  return `${header}${pets}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
+  return `${header}${pets}${renderCharacterCollections(current, { locale: prefs.locale })}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
 }
 
 async function readWorldData() {
@@ -888,12 +947,13 @@ const historyNotebook = createHistoryNotebook({ storage: historyNotebookStorage,
 const historyCache = native ? createHistoryCache({
   read: () => invoke('get_history'),
   normalizeRecord: normalizeEncounter,
-  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshHistoryDrawer(); if (drawer === 'analysis' && tab === 'community') refreshCommunityDrawer(); },
+  onChanged: () => { if (drawer === 'analysis' && tab === 'history') refreshHistoryDrawer(); if (drawer === 'analysis' && tab === 'runs') refreshDrawer(); if (drawer === 'analysis' && tab === 'community') refreshCommunityDrawer(); },
   onRejected: () => { if (drawer === 'analysis' && tab === 'history') refreshHistoryDrawer(); },
 }) : null;
 const allHistory = () => [...(native ? historyCache.history : state.history).map(item => ({ item, imported: false })), ...prefs.importedHistory.map(item => ({ item, imported: true }))];
 const communityController = createCommunityController({
   readState: () => native ? invoke('get_community_state') : Promise.resolve({ configured: false, shares: [] }),
+  readStatistics: filters => native ? invoke('get_community_statistics', { filters }) : Promise.resolve({ cohorts: [] }),
   readRankings: filters => native ? invoke('get_community_rankings', { filters }) : Promise.resolve({ entries: [], total: 0 }),
   publish: (recordId, options) => invoke('create_community_share', { recordId, options }),
   revoke: id => invoke('revoke_community_share', { id }),
@@ -921,18 +981,18 @@ async function readCommunity() {
 function captureCommunityForm(form) {
   if (form?.id === 'community-share-form') {
     const values = Object.fromEntries(new FormData(form));
-    const options = communityShareOptions({ scope: values.communityScope, anonymous: values.communityAnonymous === 'on', rank_opt_in: values.communityRankOptIn === 'on', context: Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`community${key[0].toUpperCase()}${key.slice(1)}`]])) });
+    const options = communityShareOptions({ scope: values.communityScope, visibility: values.communityVisibility, anonymous: values.communityAnonymous === 'on', rank_opt_in: values.communityRankOptIn === 'on', context: Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`community${key[0].toUpperCase()}${key.slice(1)}`]])) });
     communityDraft = { recordId: String(values.communityRecordId || ''), ...options, consent: values.communityConsent === 'on' };
   }
   if (form?.id === 'community-rankings-form') {
     const values = Object.fromEntries(new FormData(form));
-    communityRankingDraft = communityFilters({ class_name: values.rankingClass, scope: values.rankingScope, ...Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`ranking${key[0].toUpperCase()}${key.slice(1)}`]])) });
+    communityRankingDraft = communityFilters({ class_name: values.rankingClass, cp_band: values.rankingCpBand, scope: values.rankingScope, ...Object.fromEntries(['region', 'server', 'boss', 'difficulty'].map(key => [key, values[`ranking${key[0].toUpperCase()}${key.slice(1)}`]])) });
   }
 }
 
-async function openCommunityUrl(url) {
-  const safe = communityUrl(url); if (!safe) return;
-  if (native) { try { await action('open_url', { url: safe }); } catch {} }
+async function openCommunityUrl(url, visibility = 'public') {
+  const safe = visibility === 'private' ? communityShareLink(url, visibility) : communityUrl(url); if (!safe) return;
+  if (native) { try { await action('open_community_url', { url: safe }); } catch {} }
   else if (!demo) window.open(safe, '_blank', 'noopener,noreferrer');
 }
 
@@ -1146,8 +1206,8 @@ function renderDrawerContent() {
   }
   contentHost.setAttribute('role', drawer === 'analysis' ? 'tabpanel' : 'region');
   contentHost.setAttribute('aria-labelledby', drawer === 'analysis' ? `drawer-tab-analysis-${tab}` : 'drawer-title');
-  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
-  if (drawerContentFingerprint !== content) { $('#drawer-content').innerHTML = content; drawerContentFingerprint = content; }
+  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, rotation: rotationContent, healing: healingContent, runs: runsContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
+  if (drawerContentFingerprint !== content) { const details = new Map([...contentHost.querySelectorAll('details[data-state-key]')].map(node => [node.dataset.stateKey, node.open])); const activeName = contentHost.contains(document.activeElement) ? document.activeElement.name : ''; contentHost.innerHTML = content; for (const node of contentHost.querySelectorAll('details[data-state-key]')) if (details.has(node.dataset.stateKey)) node.open = details.get(node.dataset.stateKey); if (activeName) contentHost.querySelector(`[name="${activeName}"]`)?.focus({ preventScroll: true }); drawerContentFingerprint = content; }
   tickTimers();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
@@ -1161,13 +1221,15 @@ function selectDrawerTab(name) {
     settingsTab = settingsSection(name); renderDrawerContent();
     $('#drawer-content').scrollTop = settingsPanels.get(settingsTab)?.scroll || 0;
     if (settingsTab === 'hiddenCube') readCubeState();
+    if (['controls', 'about'].includes(settingsTab)) readRuntimeState();
   } else if (drawer === 'analysis' && ANALYSIS_SECTIONS.includes(name)) {
     if (['training', 'effects'].includes(name)) snapshot = null;
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
     if (name === 'history') historyCache?.retry();
     if (name === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
     if (name === 'team') readTeamState();
-    if (name === 'curves') { historyCache?.retry(); readCurveRecord(); }
+    if (['curves', 'rotation', 'healing', 'overview', 'effects'].includes(name)) { historyCache?.retry(); readCurveRecord(); }
+    if (name === 'runs') historyCache?.retry();
     if (name === 'effects') readAssistTimeline();
     if (name === 'build') readCharacterData();
     if (name === 'worldBosses') readWorldData();
@@ -1187,6 +1249,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'settings') settingsTab = settingsSection(requestedTab);
   settingsPanels.clear(); dirtySettingsForms.clear(); $('#drawer-content').replaceChildren(); $('#drawer-content').scrollTop = 0;
   drawerContentFingerprint = ''; drawerTabsFingerprint = '';
+  $('#meter').classList.remove('compact-strip');
   $('#drawer').hidden = false; $('#drawer-backdrop').hidden = false;
   // Make the underlying frame inert while retaining the modal as its sibling.
   for (const element of [...$('#meter').children]) if (!['drawer', 'drawer-backdrop', 'toast'].includes(element.id)) element.inert = true;
@@ -1194,11 +1257,12 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && requestedTab === 'history') historyCache?.retry();
   if (kind === 'analysis' && requestedTab === 'team') readTeamState();
   if (kind === 'analysis' && requestedTab === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
-  if (kind === 'analysis' && requestedTab === 'curves') { historyCache?.retry(); readCurveRecord(); }
+  if (kind === 'analysis' && ['curves', 'rotation', 'healing', 'overview', 'effects'].includes(requestedTab)) { historyCache?.retry(); readCurveRecord(); }
+  if (kind === 'analysis' && requestedTab === 'runs') historyCache?.retry();
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
   if (kind === 'analysis' && requestedTab === 'build') readCharacterData();
   if (kind === 'analysis' && requestedTab === 'worldBosses') readWorldData();
-  if (kind === 'settings') { readObsState(); readEventSchedule(); if (settingsTab === 'hiddenCube') readCubeState(); }
+  if (kind === 'settings') { readRuntimeState(); readObsState(); readEventSchedule(); if (settingsTab === 'hiddenCube') readCubeState(); }
   $('#close-drawer').focus();
   syncNativePanel(true);
 }
@@ -1209,7 +1273,7 @@ function closeDrawer() {
   $('#drawer').hidden = true; $('#drawer-backdrop').hidden = true;
   for (const element of [...$('#meter').children]) element.inert = false;
   if (restoreFocus?.isConnected && restoreFocus.getClientRects().length && !restoreFocus.disabled) restoreFocus.focus(); else $('#analysis-button').focus();
-  syncNativePanel(false);
+  syncNativePanel(false); applyAppearance();
 }
 
 function refreshDrawer(focusName) {
@@ -1232,6 +1296,7 @@ function beep() {
 }
 
 function tickTimers() {
+  $('#meter').classList.toggle('idle-fade', prefs.fadeWhenIdle && !drawer && !state.encounter_active && !['combat', 'combat_active'].includes(state.status));
   if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   const event = activeEvent(), bossTimer = chosenBossTimer(), scheduled = event ? scheduleTiming(event) : null, timing = scheduled ? { next: scheduled.nextOpening, remaining: scheduled.remainingMs } : bossTimer?.status === 'countdown' ? { next: bossTimer.server_time_ms, remaining: bossTimer.remaining } : null;
   const timerName = event?.name || (bossTimer ? `${t('map')} #${bossTimer.map_id} · #${bossTimer.slot_id}` : '');
@@ -1262,6 +1327,7 @@ function tickTimers() {
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
+$('#compact-button').addEventListener('click', () => savePreferences({ compactStrip: !prefs.compactStrip }));
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
 $('#team-chip').addEventListener('click', () => openDrawer('analysis', 'team'));
@@ -1315,7 +1381,7 @@ $('#drawer-content').addEventListener('change', async event => {
   if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (name === 'automaticTeamClass') { teamClassFilter = element.value; updateTeamLive(); return; }
   if (name === 'trainingSeconds') { trainingDurationDraft = element.value; const duration = validateTrainingDuration(trainingDurationDraft); if (duration !== null) trainingDuration = duration; updateTrainingLive(); return; }
-  if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); if (['communityScope', 'communityRecordId', 'communityAnonymous'].includes(name)) refreshCommunityDrawer(); return; }
+  if (element.form?.id?.startsWith('community-')) { captureCommunityForm(element.form); if (['communityScope', 'communityRecordId', 'communityAnonymous', 'communityVisibility'].includes(name)) refreshCommunityDrawer(); return; }
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
   if (name === 'cubeAutoListen') { await setCubeListening(element.checked); return; }
@@ -1335,6 +1401,9 @@ $('#drawer-content').addEventListener('change', async event => {
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
   if (name === 'calendarHorizonDays') { calendarHorizonDays = Number(element.value); return; }
   if (name === 'obsScope') { obsScope = element.value; return; }
+  if (name === 'obsLanEnabled') { obsLanEnabled = element.checked; return; }
+  if (name === 'obsPort') { obsPort = element.value; return; }
+  if (['onlyAboveGame', 'clickThroughWhenLocked', 'fadeWhenIdle', 'hidePlayerNames', 'compactStrip', 'autoCheckUpdates'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (name === 'obsHideNames') { obsHideNames = element.checked; return; }
   if (name?.startsWith('color-')) { savePreferences({ theme: 'custom', customColors: { ...prefs.customColors, [name.slice(6)]: element.value } }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === 'custom'))); return; }
   if (name === 'selectedPlayer') { selectedPlayer = element.value; refreshDrawer(name); return; }
@@ -1384,6 +1453,8 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
+  if (['check-update', 'download-update', 'install-update'].includes(actionName)) { await runUpdate(actionName); return; }
+  if (actionName === 'refresh-insights') { await readCurveRecord(); return; }
   if (actionName === 'team-create') { await teamAction('create_team_room'); return; }
   if (actionName === 'team-leave') { await teamAction('leave_team_room'); return; }
   if (actionName === 'team-copy-invite') {
@@ -1422,8 +1493,9 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'open-community-rank') { await openCommunityUrl(communityController.view.rankings.entries.find(entry => entry.share_id === id)?.url); return; }
   if (actionName === 'open-community' || actionName === 'copy-community') {
     const share = communityController.view.state.shares.find(entry => entry.id === id); if (!share) return;
-    if (actionName === 'open-community') await openCommunityUrl(share.url);
-    else { try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(share.url); toast(communityLabels[prefs.locale].copied); } catch { const field = $$('[data-community-url]').find(element => element.dataset.communityUrl === id); field?.focus(); field?.select(); toast(t('selectToCopy')); } }
+    let link; try { link = communityShareLink(await invoke('get_share_link', { id }), share.visibility); if (!link) throw new Error('Invalid share link'); } catch { toast(t('failed'), true); return; }
+    if (actionName === 'open-community') await openCommunityUrl(link, share.visibility);
+    else { try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(link); toast(communityLabels[prefs.locale].copied); } catch { if (share.visibility === 'private') { const field = document.createElement('textarea'); field.className = 'private-copy-field'; field.readOnly = true; field.value = link; field.setAttribute('aria-label', t('selectToCopy')); $('#drawer-content').append(field); field.focus(); field.select(); field.addEventListener('blur', () => { field.value = ''; field.remove(); }, { once: true }); toast(t('selectToCopy')); } else { const field = $$('[data-community-url]').find(element => element.dataset.communityUrl === id); field?.focus(); field?.select(); toast(t('selectToCopy')); } } }
     return;
   }
   if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
@@ -1515,6 +1587,7 @@ $('#drawer-content').addEventListener('submit', async event => {
     if (result) { communityDraft.consent = false; refreshCommunityDrawer(); toast(communityLabels[prefs.locale].published); if (result.rank_opt_in) await communityController.refreshRankings(communityRankingDraft); }
     return;
   }
+  if (form.id === 'hotkey-form') { await saveHotkeys(form); return; }
   if (form.id === 'community-rankings-form') { captureCommunityForm(form); if (native) await communityController.refreshRankings(communityRankingDraft); return; }
   if (form.id === 'character-form') {
     const name = String(values.characterName || '').trim(), selectedId = String(values.localPlayerId || '');
@@ -1572,13 +1645,19 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-state', event => receiveState(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-calendar-state', event => applyScheduleSnapshot(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-cube-state', event => applyCubeSnapshot(event.payload)); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-hotkey', async event => { if (event.payload?.action === 'settings') openDrawer('settings', 'controls'); if (event.payload?.action === 'copy-summary') { try { const text = communitySummary(await invoke('get_current_encounter'), { scope: prefs.damageScope, locale: prefs.locale, anonymous: true }); if (text) { await navigator.clipboard.writeText(text); toast(t('copied')); } } catch { toast(t('failed'), true); } } }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-preferences', event => { preferenceCommitter.load(async () => normalizePreferences(event.payload)).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
   await refreshState();
+  readRuntimeState();
   readWorldData();
   readEventSchedule();
   readCubeState();
   readTeamState();
   setInterval(() => { if (roomIntent || drawer === 'analysis' && tab === 'team') readTeamState(); }, 2000);
   setInterval(refreshState, 1500);
+  setInterval(() => { if (drawer === 'analysis' && !snapshot && ['curves', 'rotation', 'healing', 'overview', 'effects'].includes(tab)) readCurveRecord(); }, 3000);
   setInterval(() => { if (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses') readWorldData(); }, 15000);
   setInterval(() => { if (drawer === 'settings') readEventSchedule(); }, 30000);
   setInterval(() => { if (cubeState.enabled || drawer === 'settings' && settingsTab === 'hiddenCube') readCubeState(); }, 500);

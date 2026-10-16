@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { characterSnapshot, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from '../character.mjs';
+import { characterSnapshot, characterCollections, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from '../character.mjs';
 import { normalizePreferences, normalizeState, normalizeEncounter } from '../model.mjs';
 
 test('unbound gear stays unbound and unavailable equipment attributes stay unknown', () => {
@@ -45,4 +45,56 @@ test('lean metadata revisions and actor identity distinguish stale build/map res
   assert.equal(normalizeState(a).character_revision, 3); assert.equal('character_build' in a, false);
   const record = normalizeEncounter({ total_damage: 5, character_build: { actor_id: 7, equipment: [{ item_id: 9, enchant: null }] } });
   assert.equal(record.character_build.actor_id, '7'); assert.equal(record.character_build.equipment[0].enchant, null);
+});
+
+const extras = () => ({
+  actor_id: 7, name: 'Own', source: 'server-self',
+  combat_power: { current: 356559, highest: 400000, observed_at_ms: 1000, source: 'server-self', token: 'private' },
+  wing: { wing_id: 30500200, skin_id: 30400400, observed_at_ms: 1100, source: 'server-self' },
+  species: Array.from({ length: 5 }, (_, index) => ({ species_id: index + 2, level: 12, progress: 0, effects: [{ page: 1, slot: 0, kind: 3, stat_id: 42, value: -123 }] })),
+  species_observed_at_ms: 1200,
+});
+
+test('received power, equipped wing and all five genus groups survive immutable build normalization', () => {
+  const input = extras(), before = structuredClone(input);
+  const result = characterSnapshot({ own: input }).own;
+  assert.equal(result.combat_power.current, 356559);
+  assert.equal(result.wing.skin_id, 30400400);
+  assert.equal(result.species[0].progress, 0);
+  assert.equal(result.species[4].effects[0].value, -123);
+  assert.equal(result.species_observed_at_ms, 1200);
+  assert.equal(result.source, 'server-self');
+  assert.equal('token' in result.combat_power, false);
+  result.species[0].effects[0].value = 1;
+  assert.deepEqual(input, before);
+  assert.equal(normalizeEncounter({ total_damage: 0, character_build: input }).character_build.wing.wing_id, 30500200);
+});
+
+test('invalid new collection fields become unavailable; strict report mode rejects them', () => {
+  for (const mutate of [
+    data => data.combat_power.current = -1,
+    data => data.combat_power.observed_at_ms = Infinity,
+    data => data.combat_power.source = 'estimated',
+    data => data.wing.wing_id = 30400400,
+    data => data.wing.skin_id = 30500200,
+    data => data.species.pop(),
+    data => data.species[0].effects[0].value = Number.MAX_SAFE_INTEGER,
+    data => data.species[0].effects.push(data.species[0].effects[0]),
+  ]) {
+    const data = extras(); mutate(data);
+    assert.throws(() => characterCollections(data, { strict: true }), /Invalid build/);
+    assert.doesNotThrow(() => characterCollections(data));
+  }
+  assert.deepEqual(characterCollections(null), { combat_power: null, wing: null, species: [], species_observed_at_ms: null });
+});
+
+test('collection cards distinguish bound, pending and imported observations without invented unlock percentages', () => {
+  const input = extras();
+  const rendered = renderCharacterCollections(input, { locale: 'en' });
+  assert.match(rendered, /356,559/); assert.match(rendered, /Equipped wing/);
+  assert.match(rendered, /Genus #6/); assert.match(rendered, /threshold is unknown/);
+  assert.doesNotMatch(rendered, /100%|GPS|private/);
+  assert.match(renderCharacterCollections({ ...input, actor_id: null }, { locale: 'en' }), /Waiting for self identity/);
+  assert.match(renderCharacterCollections({ ...input, source: 'imported' }, { locale: 'en' }), /Imported · unverified/);
+  assert.equal(renderCharacterCollections({}), '');
 });

@@ -13,13 +13,13 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "release"
-ROOT_FILES = ("README.md", "LICENSE", ".gitignore", ".gitattributes", "CHANGELOG.md", "RELEASING.md", "SECURITY.md", "tools/package.py")
+ROOT_FILES = ("README.md", "LICENSE", ".gitignore", ".gitattributes", "CHANGELOG.md", "RELEASING.md", "SECURITY.md", "tools/package.py", "tools/sign_update.py")
 CONFIG_FILES = ("engine/Cargo.toml", "engine/Cargo.lock", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs", "src-tauri/windows-app-manifest.xml", "src-tauri/tauri.conf.json", "src-tauri/NATIVE_CAPTURE.md", "src-tauri/src/cube_reference.json", "dependency-notices/mapping.json")
 COMMUNITY_SHARED_FILES = (
     "app/layout.tsx", "app/globals.css", "app/page.tsx", "app/ui.tsx",
     "app/r/[id]/page.tsx", "app/r/[id]/report.tsx", "app/v1/[...path]/route.ts",
     "lib/community.mjs", "lib/community.test.mjs", "lib/rooms.mjs", "lib/rooms.test.mjs", "db/schema.ts",
-    "drizzle/0000_nebulous_lockheed.sql", "drizzle/0001_remarkable_doorman.sql", "drizzle/meta/_journal.json", "drizzle/meta/0000_snapshot.json", "drizzle/meta/0001_snapshot.json",
+    "drizzle/0000_nebulous_lockheed.sql", "drizzle/0001_remarkable_doorman.sql", "drizzle/0002_futuristic_rafael_vega.sql", "drizzle/meta/0002_snapshot.json", "drizzle/meta/_journal.json", "drizzle/meta/0000_snapshot.json", "drizzle/meta/0001_snapshot.json",
     "public/favicon.svg", "tsconfig.json", "next.config.ts", "postcss.config.mjs",
     "drizzle.config.ts", "cloudflare-env.d.ts",
 )

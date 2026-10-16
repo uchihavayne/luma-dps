@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { communityUrl, communityFilters, communityShareOptions, communityEligibility, communitySummary, communitySnapshot, communityRankings, createCommunityController, renderCommunity } from '../community.mjs';
+import { communityUrl, communityShareLink, communityFilters, communityShareOptions, communityEligibility, communitySummary, communitySnapshot, communityRankings, communityStatistics, createCommunityController, renderCommunity, renderCommunityStatistics } from '../community.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const share = id => ({ id, url: `https://reports.example.test/r/${id}`, created_at_ms: 1792000000000, scope: 'personal', anonymous: true, rank_opt_in: false, local_record_id: '7', validation: 'community' });
@@ -8,12 +8,69 @@ const rank = (id, dps = 1234) => ({ rank: 1, share_id: id, url: `https://reports
 const fixture = overrides => createCommunityController({ readState: async () => ({ configured: true, endpoint: 'https://reports.example.test', shares: [share('old')] }), readRankings: async () => ({ entries: [rank('old')], total: 1 }), publish: async () => share('new'), revoke: async () => ({}), ...overrides });
 
 test('sharing defaults to anonymous personal scope and never opts a record into rankings implicitly', () => {
-  assert.deepEqual(communityShareOptions(), { scope: 'personal', anonymous: true, rank_opt_in: false, context: { region: '', server: '', boss: '', difficulty: '' } });
+  assert.deepEqual(communityShareOptions(), { scope: 'personal', anonymous: true, rank_opt_in: false, context: { region: '', server: '', boss: '', difficulty: '' }, visibility: 'public' });
   assert.equal(communityShareOptions({ anonymous: false }).anonymous, false);
   assert.equal(communityShareOptions({ anonymous: 'false', rank_opt_in: 'true' }).anonymous, true);
   assert.equal(communityShareOptions({ anonymous: 'false', rank_opt_in: 'true' }).rank_opt_in, false);
   assert.equal(communityShareOptions({ scope: 'party', rank_opt_in: true }).rank_opt_in, false);
   assert.equal(communityShareOptions({ scope: 'observed', rank_opt_in: true }).rank_opt_in, false);
+});
+
+test('private and unlisted visibility never ranks implicitly or exposes capabilities in routine state', () => {
+  for (const visibility of ['unlisted', 'private']) {
+    const options = communityShareOptions({ visibility, rank_opt_in: true });
+    assert.equal(options.visibility, visibility); assert.equal(options.rank_opt_in, false);
+    assert.equal(communityEligibility({}, options), 'publicOnly');
+  }
+  const key = 'a'.repeat(64), url = `https://reports.example.test/r/abc#view=${key}`;
+  assert.equal(communityUrl(url), '');
+  assert.equal(communityShareLink(url, 'private'), url);
+  assert.equal(communityShareLink(url), '');
+  assert.equal(communityShareLink('https://reports.example.test/r/abc?view=secret', 'private'), '');
+  const state = communitySnapshot({ shares: [{ ...share('private'), visibility: 'private', view_token: key }, { ...share('leak'), url }] });
+  assert.equal(state.shares.length, 1); assert.equal(state.shares[0].visibility, 'private');
+  assert.doesNotMatch(JSON.stringify(state), /aaaaaaa|view_token/);
+});
+
+const stats = (dps = 5000) => ({ source: 'community-upload', weighting: 'submitted-records', status: 'available', cohort_minimum: 5, entries: [{ class_name: 'Ranger', count: 5, cp_known_count: 4, status: 'available', minimum_dps: 1000, maximum_dps: dps, median_dps: 3000, p95_dps: dps }] });
+
+test('class cohorts preserve unavailable quantiles and percentiles cannot be manufactured from sparse or invalid counts', () => {
+  assert.equal(communityStatistics().status, 'unavailable');
+  const value = stats(); value.entries[0].count = 4; value.entries[0].cp_known_count = 4;
+  assert.equal(communityStatistics(value).entries[0].median_dps, null);
+  assert.equal(communityStatistics(stats()).entries[0].median_dps, 3000);
+  const inconsistent = stats(); inconsistent.entries[0].median_dps = 99999;
+  assert.equal(communityStatistics(inconsistent).entries[0].p95_dps, null);
+  assert.equal(communityRankings({ entries: [{ ...rank('valid'), percentile: 90, cohort_count: 4, percentile_method: 'record-midrank' }] }).entries[0].percentile, null);
+  assert.equal(communityRankings({ entries: [{ ...rank('valid'), percentile: 90, cohort_count: 5, percentile_method: 'record-midrank', combat_power: 356559 }] }).entries[0].percentile, 90);
+  assert.equal(communityRankings({ entries: [{ ...rank('valid'), combat_power: 0 }] }).entries[0].combat_power, null);
+  assert.equal(communityFilters({ cp_band: '300000-399999' }).cp_band, '300000-399999');
+  assert.equal(communityFilters({ cp_band: '0 OR 1=1' }).cp_band, '');
+});
+
+test('statistics follow filters with independent errors and stale queries cannot replace a fresh cohort', async () => {
+  const old = deferred();
+  const service = fixture({ readStatistics: filters => filters.server === 'old' ? old.promise : Promise.resolve(stats(6000)) });
+  const older = service.refreshRankings({ server: 'old' });
+  await service.refreshRankings({ server: 'new' });
+  old.resolve(stats(5000)); await older;
+  assert.equal(service.view.statistics.entries[0].maximum_dps, 6000);
+  assert.equal(service.view.filters.server, 'new'); assert.equal(service.view.readingStatistics, false);
+  const failed = fixture({ readStatistics: async () => { throw new Error('stats offline'); } });
+  await failed.refreshRankings();
+  assert.equal(failed.view.rankings.entries.length, 1); assert.equal(failed.view.error, '');
+  assert.equal(failed.view.statistics.status, 'unavailable'); assert.match(failed.view.statisticsError, /stats offline/);
+});
+
+test('privacy and cohort rendering includes same-interface controls, bounded escaped labels and no private key field', () => {
+  const value = communitySnapshot({ configured: true, shares: [{ ...share('abc'), visibility: 'private', view_token: 'a'.repeat(64) }] });
+  const view = { state: value, rankings: communityRankings(), mutation: false, statistics: stats() };
+  const html = renderCommunity({ view, locale: 'en', native: true, draft: { visibility: 'private' } });
+  assert.match(html, /name="communityVisibility"/); assert.match(html, /name="rankingCpBand"/); assert.match(html, /Private link/); assert.match(html, /Class statistics/);
+  assert.doesNotMatch(html, /aaaaaaa|data-community-url="abc"/);
+  const malicious = stats(); malicious.entries[0].class_name = '<script>alert(1)</script>';
+  const rendered = renderCommunityStatistics(malicious, { locale: 'en' });
+  assert.doesNotMatch(rendered, /<script>/); assert.match(rendered, /&lt;script&gt;/); assert.match(rendered, /not unique players/);
 });
 
 test('public URLs reject executable protocols, credentials and malformed values', () => {

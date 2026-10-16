@@ -23,6 +23,85 @@ function api(db, path, method = 'GET', body, options = {}) {
 }
 async function create(db, body = payload(), options) { const response = await api(db, '/v1/shares', 'POST', body, options); return { response, result: await response.json() }; }
 
+const comparison = '/v1/statistics?region=EU&server=Example&boss=Example%20Boss&difficulty=Normal&scope=personal';
+
+test('private viewing uses a separate durable capability hash and bearer header, never query or metadata', async () => {
+  const db = database(), view = 'c'.repeat(64), body = payload({ visibility: 'private', view_token: view });
+  const { response, result } = await create(db, body);
+  assert.equal(response.status, 201); assert.equal(result.visibility, 'private'); assert.equal(result.url.includes('#'), false);
+  assert.equal(db.raw.prepare('SELECT view_hash FROM shares').get().view_hash, await digest(view));
+  assert.doesNotMatch(JSON.stringify(result), /view_token|view_hash|cccccccc/);
+  assert.equal((await api(db, `/v1/shares/${result.id}`)).status, 404);
+  assert.equal((await api(db, `/v1/shares/${result.id}?view_token=${view}`)).status, 404);
+  assert.equal((await api(db, `/v1/shares/${result.id}`, 'GET', null, { headers: { Authorization: `Bearer ${'d'.repeat(64)}` } })).status, 404);
+  const read = await api(db, `/v1/shares/${result.id}`, 'GET', null, { headers: { Authorization: `Bearer ${view}` } });
+  assert.equal(read.status, 200); assert.equal(read.headers.get('Cache-Control'), 'no-store'); assert.match(read.headers.get('X-Robots-Tag'), /noindex/);
+  assert.doesNotMatch(JSON.stringify(await read.json()), /view_token|view_hash|cccccccc/);
+  assert.equal((await api(db, `/v1/shares/${result.id}`, 'DELETE', null, { headers: { Authorization: `Bearer ${view}` } })).status, 403);
+  assert.equal((await api(db, `/v1/shares/${result.id}`, 'DELETE', null, { headers: { Authorization: `Bearer ${body.delete_token}` } })).status, 200);
+});
+
+test('private retry preserves privacy and altered capabilities/options cannot recover a different report', async () => {
+  const db = database(), body = payload({ visibility: 'private', view_token: 'c'.repeat(64) });
+  const first = await create(db, body), same = await create(db, body);
+  assert.equal(same.response.status, 200); assert.equal(same.result.id, first.result.id);
+  assert.equal((await create(db, { ...body, visibility: 'public', view_token: null })).response.status, 409);
+  assert.equal((await create(db, { ...body, view_token: 'd'.repeat(64) })).response.status, 409);
+  assert.equal((await create(db, { ...body, rank_opt_in: true })).response.status, 400);
+  assert.equal((await create(database(), payload({ visibility: 'private', view_token: 'b'.repeat(64) }))).response.status, 400);
+  assert.equal((await create(database(), payload({ visibility: 'private' }))).response.status, 400);
+});
+
+test('unlisted records are link-readable but cannot enter public rankings or class statistics', async () => {
+  const db = database(), { result, response } = await create(db, payload({ visibility: 'unlisted' }));
+  assert.equal(response.status, 201); assert.equal((await api(db, `/v1/shares/${result.id}`)).status, 200);
+  assert.equal((await create(database(), payload({ visibility: 'unlisted', rank_opt_in: true }))).response.status, 400);
+  // Even inconsistent legacy/manual flags cannot bypass the read-side boundary.
+  db.raw.prepare('UPDATE shares SET ranked=1').run();
+  assert.equal((await (await api(db, '/v1/rankings')).json()).total, 0);
+  assert.equal((await (await api(db, comparison)).json()).entries.length, 0);
+});
+
+test('additive privacy migration preserves legacy public reports and deletion ownership', async () => {
+  const raw = new DatabaseSync(':memory:');
+  for (const name of ['0000_nebulous_lockheed.sql', '0001_remarkable_doorman.sql']) raw.exec(readFileSync(new URL(`../drizzle/${name}`, import.meta.url), 'utf8'));
+  raw.prepare('INSERT INTO shares VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('1'.repeat(32), 'a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64), '{}', 2, NOW, NOW + 1000, 1, 0, 'personal', 'Player 1', 'Ranger', 'EU', 'Example', 'Boss', 'Normal', 1, 1, 1000);
+  for (const name of readdirSync(new URL('../drizzle/', import.meta.url)).filter(name => name.endsWith('.sql') && !name.startsWith('0000_') && !name.startsWith('0001_')).sort()) raw.exec(readFileSync(new URL(`../drizzle/${name}`, import.meta.url), 'utf8'));
+  const row = raw.prepare('SELECT * FROM shares').get();
+  assert.equal(row.visibility, 'public'); assert.equal(row.view_hash, null); assert.equal(row.combat_power, null); assert.equal(row.token_hash, 'a'.repeat(64)); assert.equal(row.id, '1'.repeat(32));
+});
+
+test('statistics require comparison context, at least five records and keep missing CP unknown', async () => {
+  const db = database();
+  const row = await create(db, payload({ rank_opt_in: true })); assert.equal(row.response.status, 201);
+  const incomplete = await (await api(db, '/v1/statistics')).json();
+  assert.equal(incomplete.status, 'context-required'); assert.deepEqual(incomplete.entries, []);
+  const sparse = await (await api(db, comparison)).json();
+  assert.equal(sparse.entries[0].count, 1); assert.equal(sparse.entries[0].status, 'insufficient-cohort'); assert.equal(sparse.entries[0].median_dps, null); assert.equal(sparse.entries[0].cp_known_count, 0);
+  const rank = await (await api(db, comparison.replace('/statistics', '/rankings'))).json();
+  assert.equal(rank.entries[0].percentile, null); assert.equal(rank.entries[0].combat_power, null);
+  assert.equal((await api(db, `${comparison}&cp_band=unknown`)).status, 200);
+  assert.equal((await api(db, `${comparison}&cp_band=invalid`)).status, 400);
+});
+
+test('class summaries and midrank percentiles are record-weighted, class-scoped and CP-filtered', async () => {
+  const db = database();
+  for (let i = 1; i <= 6; i++) {
+    const value = report(); value.total_damage = 60000 * i; value.dps = 1000 * i; value.players[0].damage = value.total_damage; value.players[0].dps = value.dps; value.players[0].skills[0].damage = value.total_damage; value.players[0].skills[0].min = 1000; value.players[0].skills[0].max = 5000; value.targets[0].damage = value.total_damage;
+    if (i <= 5) value.combat_power = { current: 356559, highest: 400000, source: 'server-self-at-start' };
+    assert.equal((await create(db, payload({ record: value, rank_opt_in: true, delete_token: i.toString(16).padStart(64, '0') }), { now: NOW + i * 61000 })).response.status, 201);
+  }
+  const stats = await (await api(db, `${comparison}&cp_band=300000-399999`, 'GET', null, { now: NOW + 500000 })).json();
+  assert.equal(stats.weighting, 'submitted-records'); const row = stats.entries[0];
+  assert.equal(row.count, 5); assert.equal(row.cp_known_count, 5); assert.equal(row.median_dps, 3000); assert.equal(row.p95_dps, 5000); assert.equal(row.minimum_dps, 1000); assert.equal(row.maximum_dps, 5000);
+  const rankings = await (await api(db, `${comparison.replace('/statistics', '/rankings')}&cp_band=300000-399999`, 'GET', null, { now: NOW + 500000 })).json();
+  assert.equal(rankings.total, 5); assert.equal(rankings.entries[0].percentile, 90); assert.equal(rankings.entries[0].cohort_count, 5); assert.equal(rankings.entries[0].percentile_method, 'record-midrank');
+  const unknown = await (await api(db, `${comparison}&cp_band=unknown`, 'GET', null, { now: NOW + 500000 })).json();
+  assert.equal(unknown.entries[0].count, 1); assert.equal(unknown.entries[0].median_dps, null);
+  assert.equal((await (await api(db, `${comparison}&class_name=cleric`)).json()).entries.length, 0);
+  assert.equal((await (await api(db, comparison.replace('Normal', 'Nightmare'))).json()).entries.length, 0);
+});
+
 test('database migrations and health are real, unavailable storage fails closed', async () => {
   assert.equal((await api(database(), '/v1/health')).status, 200);
   assert.equal((await api(null, '/v1/health')).status, 503);
@@ -79,7 +158,7 @@ test('ranking rejects mixed adds, invented boss labels and accepts case-insensit
 test('expired exact retry is replaced even when many older expired rows await bounded cleanup', async () => {
   const db = database(), { result } = await create(db);
   db.raw.prepare('UPDATE shares SET expires_at=?').run(NOW - 1);
-  for (let i = 0; i < 25; i++) db.raw.prepare('INSERT INTO shares SELECT ?,token_hash,?,record_hash,record_json,bytes,created_at,?,anonymous,ranked,scope,name,class_name,region,server,boss,difficulty,dps,damage,duration FROM shares WHERE id=?').run(i.toString(16).padStart(32, '0'), i.toString(16).padStart(64, '0'), NOW - 1000, result.id);
+  for (let i = 0; i < 25; i++) db.raw.prepare('INSERT INTO shares SELECT ?,token_hash,?,record_hash,record_json,bytes,created_at,?,anonymous,ranked,scope,name,class_name,region,server,boss,difficulty,dps,damage,duration,visibility,view_hash,combat_power FROM shares WHERE id=?').run(i.toString(16).padStart(32, '0'), i.toString(16).padStart(64, '0'), NOW - 1000, result.id);
   const retry = await create(db); assert.equal(retry.response.status, 201); assert.notEqual(retry.result.id, result.id);
 });
 test('one client cannot drain global submission quota by repeating per-minute rejected attempts', async () => {

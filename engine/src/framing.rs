@@ -151,6 +151,7 @@ fn anchor_opcode(frame: &[u8]) -> bool {
             | Some([0, 0x51])
             | Some([0x26, 0xe2])
             | Some([0x50, 0x36])
+            | Some([0x56, 0x36])
             | Some([0, 0x90])
             | Some([0x0b, 0x61])
             | Some([0x3b, 0xe3])
@@ -161,7 +162,9 @@ fn anchor_opcode(frame: &[u8]) -> bool {
 fn decoded_anchor(frame: &[u8]) -> bool {
     use crate::packets::Event;
     match crate::packets::decode(frame) {
-        Ok(Some(Event::Damage(hit))) => hit.amount > 0,
+        Ok(Some(Event::Damage(hit)))
+        | Ok(Some(Event::Healing(hit)))
+        | Ok(Some(Event::PeriodicDamage { hit, .. })) => hit.amount > 0,
         Ok(Some(Event::Identity { id, .. }))
         | Ok(Some(Event::Npc { id, .. }))
         | Ok(Some(Event::Health { id, .. }))
@@ -197,6 +200,8 @@ fn decoded_anchor(frame: &[u8]) -> bool {
                     profile.equipment.iter().any(|item| item.stones.is_some())
                 }
                 CharacterEvent::PetInventory { pets, .. } => !pets.is_empty(),
+                CharacterEvent::CombatPower { .. } => true,
+                CharacterEvent::Wing { .. } | CharacterEvent::Species { .. } => false,
                 CharacterEvent::PetGains { .. } | CharacterEvent::PetLevel { .. } => false,
             }
         }

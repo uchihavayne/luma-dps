@@ -1,11 +1,12 @@
-//! Optional local OBS browser source. The listener is loopback only and every
-//! endpoint requires a fresh per-start random token. Capture is not started here.
+//! Optional OBS browser source. Loopback is the default. LAN binding requires an
+//! explicit option and still accepts only loopback/private IPv4 peers, exact
+//! numeric local hosts and a fresh per-start token. Capture is not started here.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -47,6 +48,84 @@ pub struct ObsInfo {
     pub port: u16,
     pub scope: ObsScope,
     pub hide_names: bool,
+    pub lan_enabled: bool,
+    /// These bearer-token URLs are returned only over the desktop IPC API.
+    /// Never include them in diagnostics, public reports or error messages.
+    pub lan_urls: Vec<String>,
+    pub bind_address: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObsOptions {
+    pub lan_enabled: bool,
+    pub port: Option<u16>,
+}
+impl ObsOptions {
+    pub fn validate(self) -> Result<Self, String> {
+        if self.port.is_some_and(|port| port < 1024) {
+            return Err("Choose an OBS port from 1024 to 65535, or use an automatic port".into());
+        }
+        Ok(self)
+    }
+}
+
+fn private_lan(address: Ipv4Addr) -> bool {
+    address.is_private() && !address.is_unspecified() && !address.is_loopback()
+}
+
+/// Enumerates the OS interface table without probing remote hosts or changing
+/// routing/firewall settings. Network-byte-order u32s are read as memory bytes.
+#[cfg(windows)]
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetIpAddrTable, MIB_IPADDRROW_XP, MIB_IPADDRTABLE, MIB_IPADDR_DELETED,
+        MIB_IPADDR_DISCONNECTED,
+    };
+    let mut size = 0u32;
+    if unsafe { GetIpAddrTable(std::ptr::null_mut(), &mut size, 0) } != 122 {
+        return Vec::new();
+    }
+    if size < std::mem::size_of::<MIB_IPADDRTABLE>() as u32 || size > 1024 * 1024 {
+        return Vec::new();
+    }
+    // usize allocation guarantees alignment for the native table and rows.
+    let mut storage = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+    let table = storage.as_mut_ptr().cast::<MIB_IPADDRTABLE>();
+    if unsafe { GetIpAddrTable(table, &mut size, 0) } != 0 {
+        return Vec::new();
+    }
+    let count = unsafe { (*table).dwNumEntries } as usize;
+    let offset = std::mem::offset_of!(MIB_IPADDRTABLE, table);
+    let capacity = storage.len() * std::mem::size_of::<usize>();
+    if count > 4096
+        || offset
+            .checked_add(count.saturating_mul(std::mem::size_of::<MIB_IPADDRROW_XP>()))
+            .is_none_or(|end| end > capacity)
+    {
+        return Vec::new();
+    }
+    let rows = unsafe {
+        std::slice::from_raw_parts(
+            storage
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<MIB_IPADDRROW_XP>(),
+            count,
+        )
+    };
+    let addresses: BTreeSet<_> = rows
+        .iter()
+        .filter(|row| u32::from(row.wType) & (MIB_IPADDR_DELETED | MIB_IPADDR_DISCONNECTED) == 0)
+        .map(|row| Ipv4Addr::from(row.dwAddr.to_ne_bytes()))
+        .filter(|address| private_lan(*address))
+        .collect();
+    addresses.into_iter().take(8).collect()
+}
+#[cfg(not(windows))]
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    Vec::new()
 }
 
 pub struct RunningServer {
@@ -100,17 +179,80 @@ pub fn start(
     hide_names: bool,
     provider: SnapshotProvider,
 ) -> Result<RunningServer, String> {
-    start_with_token(scope, hide_names, provider, random_token()?)
+    start_with_options(scope, hide_names, ObsOptions::default(), provider)
 }
 
+pub fn start_with_options(
+    scope: ObsScope,
+    hide_names: bool,
+    options: ObsOptions,
+    provider: SnapshotProvider,
+) -> Result<RunningServer, String> {
+    let options = options.validate()?;
+    let addresses = if options.lan_enabled {
+        lan_addresses()
+    } else {
+        Vec::new()
+    };
+    if options.lan_enabled && addresses.is_empty() {
+        return Err("No private IPv4 LAN address is available; use the local OBS source".into());
+    }
+    start_configured(
+        scope,
+        hide_names,
+        options,
+        addresses,
+        provider,
+        random_token()?,
+    )
+}
+
+#[cfg(test)]
 fn start_with_token(
     scope: ObsScope,
     hide_names: bool,
     provider: SnapshotProvider,
     token: String,
 ) -> Result<RunningServer, String> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .map_err(|_| "Could not open the local OBS source")?;
+    start_configured(
+        scope,
+        hide_names,
+        ObsOptions::default(),
+        Vec::new(),
+        provider,
+        token,
+    )
+}
+
+fn start_configured(
+    scope: ObsScope,
+    hide_names: bool,
+    options: ObsOptions,
+    addresses: Vec<Ipv4Addr>,
+    provider: SnapshotProvider,
+    token: String,
+) -> Result<RunningServer, String> {
+    let options = options.validate()?;
+    if token.len() != 32 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid OBS authentication token".into());
+    }
+    let addresses: Vec<_> = addresses
+        .into_iter()
+        .filter(|address| private_lan(*address))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(8)
+        .collect();
+    if options.lan_enabled && addresses.is_empty() {
+        return Err("No private IPv4 LAN address is available; use the local OBS source".into());
+    }
+    let bind_address = if options.lan_enabled {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let listener = TcpListener::bind((bind_address, options.port.unwrap_or(0)))
+        .map_err(|_| "Could not open the OBS source; the port may already be in use")?;
     listener
         .set_nonblocking(true)
         .map_err(|_| "Could not configure the local OBS source")?;
@@ -123,7 +265,21 @@ fn start_with_token(
         port,
         scope,
         hide_names,
+        lan_enabled: options.lan_enabled,
+        lan_urls: if options.lan_enabled {
+            addresses
+                .iter()
+                .map(|address| format!("http://{address}:{port}/overlay?key={token}"))
+                .collect()
+        } else {
+            Vec::new()
+        },
+        bind_address: bind_address.to_string(),
     };
+    let mut allowed_hosts = BTreeSet::from([format!("127.0.0.1:{port}")]);
+    if options.lan_enabled {
+        allowed_hosts.extend(addresses.iter().map(|address| format!("{address}:{port}")));
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let worker_stop = stop.clone();
     let worker = thread::Builder::new()
@@ -132,9 +288,9 @@ fn start_with_token(
             let mut aliases = Aliases::default();
             while !worker_stop.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok((stream, peer)) if peer.ip().is_loopback() => handle(
+                    Ok((stream, peer)) if peer_allowed(peer.ip(), options.lan_enabled) => handle(
                         stream,
-                        port,
+                        &allowed_hosts,
                         &token,
                         scope,
                         hide_names,
@@ -156,6 +312,13 @@ fn start_with_token(
         stop,
         worker: Some(worker),
     })
+}
+
+fn peer_allowed(address: IpAddr, lan_enabled: bool) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_loopback() || (lan_enabled && private_lan(address)),
+        IpAddr::V6(_) => false,
+    }
 }
 
 fn metric(value: Option<&Value>) -> Option<f64> {
@@ -266,10 +429,7 @@ fn stream_snapshot(raw: &Value, scope: ObsScope, hide_names: bool, aliases: &mut
         rows.iter()
             .filter(|row| match scope {
                 ObsScope::Personal => actor(row.get("id")) == local,
-                ObsScope::Party => {
-                    row.get("in_party").and_then(Value::as_bool) == Some(true)
-                        || actor(row.get("id")).is_some_and(|id| members.contains(&id))
-                }
+                ObsScope::Party => actor(row.get("id")).is_some_and(|id| members.contains(&id)),
                 ObsScope::Observed => actor(row.get("id")).is_some(),
             })
             .take(50)
@@ -417,9 +577,13 @@ fn token_equal(provided: &str, expected: &str) -> bool {
         == 0
 }
 
-fn route(request: &Request, port: u16, token: &str) -> Result<&'static str, u16> {
-    let host = format!("127.0.0.1:{port}");
-    if request.headers.get("host") != Some(&host) {
+fn route(
+    request: &Request,
+    allowed_hosts: &BTreeSet<String>,
+    token: &str,
+) -> Result<&'static str, u16> {
+    let host = request.headers.get("host").ok_or(403u16)?;
+    if !allowed_hosts.contains(host) {
         return Err(403);
     }
     let origin = format!("http://{host}");
@@ -464,7 +628,7 @@ fn response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]
 }
 fn handle(
     mut stream: TcpStream,
-    port: u16,
+    allowed_hosts: &BTreeSet<String>,
     token: &str,
     scope: ObsScope,
     hide_names: bool,
@@ -525,7 +689,7 @@ fn handle(
             return;
         }
     };
-    let endpoint = match route(&request, port, token) {
+    let endpoint = match route(&request, allowed_hosts, token) {
         Ok(endpoint) => endpoint,
         Err(status) => {
             response(
@@ -577,6 +741,9 @@ fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hosts(port: u16) -> BTreeSet<String> {
+        BTreeSet::from([format!("127.0.0.1:{port}")])
+    }
     fn state() -> Value {
         json!({"local_player_id":7,"local_identity_source":"server","personal_total_damage":1000,"personal_dps":20,"personal_elapsed_ms":50000,"party_member_ids":[7],"party_membership_source":"server","party_total_damage":1000,"party_dps":20,"party_elapsed_ms":50000,"total_damage":3000,"dps":50,"elapsed_ms":60000,"players":[{"id":7,"name":"SelfName","class_name":"ranger","damage":1000,"dps":16.6},{"id":8,"name":"NearbyName","class_name":"cleric","damage":2000,"dps":33.3}],"personal_targets":[{"id":50,"name":"SecretTarget","damage":1000}],"targets":[{"id":50,"name":"SecretTarget","damage":3000}],"character_build":{"name":"SecretBuild"},"capture":{"status":"capturing","detail":"private endpoint","missed_packets":1},"diagnostics":{"stream_gaps":2}})
     }
@@ -628,6 +795,14 @@ mod tests {
         }
     }
     #[test]
+    fn party_scope_cannot_be_overridden_by_an_out_of_roster_row_flag() {
+        let mut raw = state();
+        raw["players"][1]["in_party"] = json!(true);
+        let output = stream_snapshot(&raw, ObsScope::Party, false, &mut Aliases::default());
+        assert_eq!(output["players"].as_array().unwrap().len(), 1);
+        assert!(!output.to_string().contains("NearbyName"));
+    }
+    #[test]
     fn explicit_observed_scope_and_optional_names_are_preserved_as_data_not_html() {
         let mut raw = state();
         raw["players"][0]["name"] = json!("<script>alert(1)</script>");
@@ -655,7 +830,7 @@ mod tests {
             assert_eq!(
                 route(
                     &parse_request(&request(path, 8080, None)).unwrap(),
-                    8080,
+                    &hosts(8080),
                     &good
                 ),
                 Err(401)
@@ -663,14 +838,14 @@ mod tests {
             let path = format!("{path}?key={good}");
             assert!(route(
                 &parse_request(&request(&path, 8080, None)).unwrap(),
-                8080,
+                &hosts(8080),
                 &good
             )
             .is_ok());
             assert_eq!(
                 route(
                     &parse_request(&request(&path, 8080, Some("https://evil.test"))).unwrap(),
-                    8080,
+                    &hosts(8080),
                     &good
                 ),
                 Err(403)
@@ -679,7 +854,7 @@ mod tests {
         let mut parsed =
             parse_request(&request(&format!("/state?key={good}"), 8080, None)).unwrap();
         parsed.headers.insert("host".into(), "evil.test".into());
-        assert_eq!(route(&parsed, 8080, &good), Err(403));
+        assert_eq!(route(&parsed, &hosts(8080), &good), Err(403));
     }
     #[test]
     fn malformed_and_body_requests_cannot_be_used_for_files_or_alternate_scope() {
@@ -705,7 +880,111 @@ mod tests {
             None,
         ))
         .unwrap();
-        assert_eq!(route(&parsed, 8080, &"a".repeat(32)), Err(401));
+        assert_eq!(route(&parsed, &hosts(8080), &"a".repeat(32)), Err(401));
+    }
+    #[test]
+    fn lan_hosts_and_origins_must_match_a_bounded_local_numeric_allowlist() {
+        let key = "d".repeat(32);
+        let allowed =
+            BTreeSet::from(["127.0.0.1:8080".to_string(), "192.168.1.2:8080".to_string()]);
+        let mut parsed = parse_request(&request(&format!("/state?key={key}"), 8080, None)).unwrap();
+        parsed
+            .headers
+            .insert("host".into(), "192.168.1.2:8080".into());
+        parsed
+            .headers
+            .insert("origin".into(), "http://192.168.1.2:8080".into());
+        assert_eq!(route(&parsed, &allowed, &key), Ok("json"));
+        for host in [
+            "192.168.1.3:8080",
+            "example.com:8080",
+            "0.0.0.0:8080",
+            "192.168.1.2:80",
+            "[::1]:8080",
+        ] {
+            parsed.headers.insert("host".into(), host.into());
+            assert_eq!(route(&parsed, &allowed, &key), Err(403));
+        }
+        parsed
+            .headers
+            .insert("host".into(), "192.168.1.2:8080".into());
+        parsed
+            .headers
+            .insert("origin".into(), "http://127.0.0.1:8080".into());
+        assert_eq!(route(&parsed, &allowed, &key), Err(403));
+        parsed.headers.remove("origin");
+        for path in [
+            "/",
+            "/settings",
+            "/api",
+            "/overlay/../state",
+            "/state?scope=observed",
+            "/state?key=bad",
+        ] {
+            parsed.path = if path.contains('?') {
+                path.to_string()
+            } else {
+                format!("{path}?key={key}")
+            };
+            assert!(route(&parsed, &allowed, &key).is_err());
+        }
+    }
+    #[test]
+    fn lan_opt_in_rejects_public_peers_and_default_mode_stays_loopback_only() {
+        for address in ["10.1.2.3", "172.16.0.1", "192.168.1.7"] {
+            let address = address.parse::<IpAddr>().unwrap();
+            assert!(peer_allowed(address, true));
+            assert!(!peer_allowed(address, false));
+        }
+        for address in [
+            "8.8.8.8",
+            "0.0.0.0",
+            "224.0.0.1",
+            "169.254.1.1",
+            "::1",
+            "::ffff:192.168.1.1",
+        ] {
+            assert!(!peer_allowed(address.parse().unwrap(), true));
+        }
+        assert!(peer_allowed("127.0.0.1".parse().unwrap(), false));
+        assert!(!ObsOptions::default().lan_enabled);
+        assert!(ObsOptions {
+            lan_enabled: false,
+            port: Some(80)
+        }
+        .validate()
+        .is_err());
+        assert!(ObsOptions {
+            lan_enabled: true,
+            port: Some(0)
+        }
+        .validate()
+        .is_err());
+        assert!(ObsOptions {
+            lan_enabled: true,
+            port: Some(65535)
+        }
+        .validate()
+        .is_ok());
+        assert!(start_configured(
+            ObsScope::Personal,
+            true,
+            ObsOptions {
+                lan_enabled: true,
+                port: None
+            },
+            vec!["8.8.8.8".parse().unwrap()],
+            Arc::new(state),
+            "e".repeat(32)
+        )
+        .is_err());
+        assert!(start_with_token(
+            ObsScope::Personal,
+            true,
+            Arc::new(state),
+            "not a valid token".into()
+        )
+        .is_err());
     }
     #[test]
     fn loopback_server_authorizes_data_and_stops_without_leaving_listener() {
@@ -713,6 +992,9 @@ mod tests {
         let key = "b".repeat(32);
         let mut server = start_with_token(ObsScope::Personal, true, provider, key.clone()).unwrap();
         let port = server.info().port;
+        assert!(!server.info().lan_enabled);
+        assert!(server.info().lan_urls.is_empty());
+        assert_eq!(server.info().bind_address, "127.0.0.1");
         let unauthorized = read(port, &request("/state", port, None));
         assert!(unauthorized.starts_with("HTTP/1.1 401"));
         let authorized = read(port, &request(&format!("/state?key={key}"), port, None));
@@ -743,5 +1025,25 @@ mod tests {
         assert_eq!(first.len(), 32);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second)
+    }
+    #[test]
+    fn occupied_fixed_port_returns_safe_error_without_exposing_the_token() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let key = "f".repeat(32);
+        let error = start_configured(
+            ObsScope::Personal,
+            true,
+            ObsOptions {
+                lan_enabled: false,
+                port: Some(occupied.local_addr().unwrap().port()),
+            },
+            Vec::new(),
+            Arc::new(state),
+            key.clone(),
+        )
+        .err()
+        .unwrap();
+        assert!(!error.contains(&key));
+        assert!(error.contains("port"));
     }
 }

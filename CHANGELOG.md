@@ -2,6 +2,18 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.16.0 preview · 2026-10-16
+
+- Decode supported own character power, equipped wing and species progression; retain actual zone boundaries without guessing dungeon identity or completion. Clear stale character observations after capture discontinuity.
+- Keep explicit received periodic healing and per-skill HPS separate from damage, personal DPS and training. Correct trailing periodic skill IDs and exclude the narrowly identified ambiguous NPC recovery proc from DPS with partial-coverage disclosure.
+- Add rotation/activity analysis, per-skill received effect overlap, fresh boss HP trend projections and grouped map/local sessions in the same analysis drawer. Preserve full bounded timelines, HP observations and healing through local history and anonymous exports.
+- Add six configurable global shortcuts, 200% UI scale, compact strip, optional click-through lock with a working rescue shortcut, game-aware topmost behavior, idle fade and roster name hiding. Preserve settings drafts, analysis expansions and normal window geometry.
+- Extend optional OBS streaming to a second computer on a private LAN. Keep exposure off by default, access keys fresh and party scope tied to confirmed membership.
+- Add free public/unlisted/private sharing, separate hashed viewing capabilities and public opt-in class/CP-band community statistics. Private and unlisted reports cannot enter rankings. Sparse cohorts remain unavailable; community percentiles are record-based and not official game rankings.
+- Add update checks and explicit download/install using an embedded publisher public key, RSA-PSS signatures, SHA-256 and an atomic native replacement helper. No unsigned update fallback or automatic installation.
+
+Automated tests cover the specified layouts and failure cases. Live EU content, second-PC OBS and an actual self-update still require final interactive checks. Full catalogs, universal live healing, exact Cube coordinates and official game-verified world rankings are not claimed; see [feature coverage](docs/feature-parity.md).
+
 ## 0.15.0 preview · 2026-10-16
 
 - Read supported actor-bound cast cooldowns directly from game traffic. Confirmed party members do not need Luma, an invitation or a room. Keep actual cooldown duration, observed uses and next-charge recharge separate; never invent available charges or readiness when a timer expires.

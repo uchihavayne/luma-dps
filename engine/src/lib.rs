@@ -86,6 +86,8 @@ pub struct SkillState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlayerState {
+    pub healing_skills: Vec<SkillState>,
+    pub healing_coverage: String,
     pub id: u64,
     pub name: String,
     pub class_name: String,
@@ -122,6 +124,9 @@ pub struct TargetState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
+    pub context: EncounterContext,
+    pub healing_samples: Vec<DamageSample>,
+    pub healing_sample_complete: bool,
     pub network_latency: latency::Snapshot,
     pub id: u64,
     pub started_ms: u64,
@@ -164,7 +169,18 @@ pub struct Encounter {
     pub unclassified_player_target_events: u64,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EncounterContext {
+    pub source: String,
+    pub map_id: Option<u32>,
+    pub zone_observed_at_ms: Option<u64>,
+    pub session_id: String,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Diagnostics {
+    /// Excluded documented NPC-effect ticks, scoped to the current encounter.
+    pub ambiguous_periodic_events: u64,
+    pub ambiguous_periodic_amount: u64,
     pub tcp_packets: u64,
     pub frames: u64,
     pub damage_events: u64,
@@ -264,6 +280,10 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    current_context: EncounterContext,
+    party_id: Option<u32>,
+    healing_samples: Vec<DamageSample>,
+    healing_sample_complete: bool,
     latency: latency::Trace,
     streams: net::StreamSet,
     frames: framing::FrameStreams,
@@ -318,6 +338,10 @@ pub struct MeterEngine {
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            current_context: EncounterContext::default(),
+            party_id: None,
+            healing_samples: Vec::new(),
+            healing_sample_complete: true,
             latency: latency::Trace::default(),
             streams: Default::default(),
             frames: Default::default(),
@@ -425,7 +449,18 @@ impl MeterEngine {
             self.party_wire_members.clear();
             self.party_snapshot_complete = false;
             self.assistance.clear();
-            self.character.clear_pets();
+            self.character.clear();
+            if let Some((actor, name)) = self.own_id.and_then(|actor| {
+                self.identities
+                    .get(&actor)
+                    .filter(|row| row.player && !row.npc && !row.pet && !row.removed)
+                    .and_then(|row| row.name.as_ref().map(|name| (actor, name.clone())))
+            }) {
+                // The old build is unknown after a gap. An existing explicit
+                // self identity can still own newly received observations;
+                // the encounter-start copy remains immutable.
+                self.character.bind_self(actor, &name, None, now);
+            }
             self.character_revision = self.character_revision.wrapping_add(1);
             if segment.syn {
                 self.frames.mark_start(&segment.connection)
@@ -526,6 +561,76 @@ impl MeterEngine {
     }
     pub fn ingest_event(&mut self, event: Event, now: u64) {
         match event {
+            Event::PeriodicDamage { hit, effect_id } => {
+                if self.paused || hit.amount == 0 {
+                    return;
+                }
+                let source = Self::owner_in(&self.identities, hit.source);
+                let known_player = self
+                    .identities
+                    .get(&source)
+                    .is_some_and(|row| row.player && !row.npc && !row.pet);
+                let known_npc = self
+                    .identities
+                    .get(&hit.target)
+                    .is_some_and(|row| row.npc && !row.player && !row.pet);
+                let npc_effect =
+                    (100_000_000..1_000_000_000).contains(&effect_id) && effect_id % 100 == 11;
+                let player_skill = (11..=18).contains(&(hit.skill / 1_000_000));
+                if known_player && known_npc && npc_effect && player_skill {
+                    // This observed effect shape may restore the NPC rather
+                    // than damage it. Keep the uncertainty explicit instead
+                    // of inventing healing attribution or counting it as DPS.
+                    self.diagnostics.ambiguous_periodic_events =
+                        self.diagnostics.ambiguous_periodic_events.saturating_add(1);
+                    self.diagnostics.ambiguous_periodic_amount = self
+                        .diagnostics
+                        .ambiguous_periodic_amount
+                        .saturating_add(hit.amount);
+                    self.sample_complete = false;
+                    self.dirty();
+                } else {
+                    self.ingest_event(Event::Damage(hit), now);
+                }
+            }
+            Event::PartyContext {
+                party_id,
+                capacity: _,
+            } => {
+                if self.party_id != Some(party_id) {
+                    let (prior, _) = self.party_in(&self.identities, self.own_id);
+                    for actor in prior {
+                        if Some(actor) != self.own_id {
+                            self.cooldowns.remove_actor(actor);
+                        }
+                    }
+                    self.party_names = None;
+                    self.party_sync_confirmed = false;
+                    self.party_wire_members.clear();
+                    self.party_classes.clear();
+                    self.manual_party_ids = None;
+                    self.party_snapshot_complete = false;
+                    self.party_id = Some(party_id);
+                    self.dirty();
+                }
+            }
+            Event::ZoneChange { zone_id } => {
+                if self.current_context.map_id != Some(zone_id) {
+                    self.finish(self.last_hit);
+                    self.cooldowns.clear();
+                    self.cooldowns.bind_self(self.own_id);
+                    self.assistance.clear();
+                    self.bosses.clear();
+                    self.current_context = EncounterContext {
+                        source: "server-zone".into(),
+                        map_id: Some(zone_id),
+                        zone_observed_at_ms: Some(now),
+                        session_id: format!("zone-{zone_id}-{now}-{}", self.generation),
+                    };
+                    self.dirty();
+                }
+            }
+            Event::Healing(hit) => self.observe_healing(hit, now),
             Event::Resource(event) => {
                 self.resources.ingest(event, now);
                 self.character_revision = self.character_revision.wrapping_add(1);
@@ -970,6 +1075,10 @@ impl MeterEngine {
                 if self.started.is_none() {
                     self.completed = None;
                     self.damage_samples.clear();
+                    self.healing_samples.clear();
+                    self.healing_sample_complete = true;
+                    self.diagnostics.ambiguous_periodic_events = 0;
+                    self.diagnostics.ambiguous_periodic_amount = 0;
                     self.sample_complete = true;
                     self.encounter_build = None;
                     self.encounter_build_taken = false;
@@ -1051,6 +1160,149 @@ impl MeterEngine {
             }
         }
     }
+    fn observe_healing(&mut self, hit: packets::Hit, now: u64) {
+        if self.paused
+            || hit.source == 0
+            || hit.target == 0
+            || hit.source > u64::from(u32::MAX)
+            || hit.target > u64::from(u32::MAX)
+            || !(11_000_000..20_000_000).contains(&hit.skill)
+        {
+            return;
+        }
+        let owner = Self::owner_in(&self.identities, hit.source);
+        let player = |id: u64| {
+            self.identities
+                .get(&id)
+                .is_some_and(|row| row.player && !row.npc && !row.pet)
+        };
+        if !player(owner) || !player(hit.target) {
+            return;
+        }
+        if self.started.is_some() && now.saturating_sub(self.last_hit) >= IDLE_MS {
+            self.finish(self.last_hit.saturating_add(IDLE_MS));
+        }
+        if self.started.is_none() {
+            self.completed = None;
+            self.damage_samples.clear();
+            self.sample_complete = true;
+            self.healing_samples.clear();
+            self.healing_sample_complete = true;
+            self.diagnostics.ambiguous_periodic_events = 0;
+            self.diagnostics.ambiguous_periodic_amount = 0;
+            self.encounter_build = None;
+            self.encounter_build_taken = false;
+            self.started = Some(now);
+            self.paused_ms = 0;
+            self.diagnostics.truncated_encounter = false;
+        }
+        self.last_hit = now;
+        if self.hit_count >= MAX_HITS || self.healing_samples.len() >= MAX_SAMPLES {
+            self.healing_sample_complete = false;
+            self.diagnostics.truncated_encounter = true;
+            return;
+        }
+        self.hit_count += 1;
+        self.healing_samples.push(DamageSample {
+            timestamp_ms: now,
+            source: hit.source,
+            player_id: owner,
+            target: hit.target,
+            skill: hit.skill,
+            amount: hit.amount,
+            critical: hit.critical,
+            tick: hit.tick,
+            flags: hit.flags,
+            angle: hit.angle,
+            metric: "healing".into(),
+        });
+        if !self.encounter_build_taken && self.own_id == Some(owner) {
+            self.encounter_build = self.character.own_snapshot();
+            self.encounter_build_taken = true;
+        }
+        self.dirty();
+    }
+
+    fn apply_healing(&self, record: &mut Encounter) {
+        let identities = self
+            .completed
+            .as_ref()
+            .map(|value| &value.identities)
+            .unwrap_or(&self.identities);
+        let samples = self
+            .completed
+            .as_ref()
+            .map(|value| &value.record.healing_samples)
+            .unwrap_or(&self.healing_samples);
+        record.healing_sample_complete = self
+            .completed
+            .as_ref()
+            .map(|value| value.record.healing_sample_complete)
+            .unwrap_or(self.healing_sample_complete && self.diagnostics.stream_gaps == 0);
+        record.healing_samples = samples
+            .iter()
+            .filter(|sample| sample.timestamp_ms >= record.started_ms)
+            .cloned()
+            .collect();
+        let mut skills: BTreeMap<u64, BTreeMap<u32, SkillState>> = BTreeMap::new();
+        for sample in &mut record.healing_samples {
+            let actor = Self::owner_in(identities, sample.source);
+            sample.player_id = actor;
+            let row = skills
+                .entry(actor)
+                .or_default()
+                .entry(sample.skill)
+                .or_insert_with(|| SkillState {
+                    id: sample.skill,
+                    name: format!("Skill #{}", sample.skill),
+                    min: sample.amount,
+                    ..Default::default()
+                });
+            row.hits += 1;
+            row.damage = row.damage.saturating_add(sample.amount);
+            row.crit_hits += u64::from(sample.critical);
+            row.tick_hits += u64::from(sample.tick);
+            row.direct_hits += u64::from(!sample.tick);
+            row.min = row.min.min(sample.amount);
+            row.max = row.max.max(sample.amount);
+        }
+        for (actor, actor_skills) in skills {
+            let index = record
+                .players
+                .iter()
+                .position(|row| row.id == actor)
+                .unwrap_or_else(|| {
+                    let identity = identities.get(&actor);
+                    record.players.push(PlayerState {
+                        id: actor,
+                        name: self.display_name(actor, identity),
+                        class_name: identity
+                            .and_then(|row| row.class.clone())
+                            .unwrap_or_else(|| "Unknown".into()),
+                        identity_confirmed: identity.is_some_and(|row| row.player),
+                        is_local: record.local_player_id == Some(actor),
+                        in_party: record.party_member_ids.contains(&actor),
+                        ..PlayerState::default()
+                    });
+                    record.players.len() - 1
+                });
+            let row = &mut record.players[index];
+            row.healing = Some(
+                actor_skills
+                    .values()
+                    .map(|skill| skill.damage)
+                    .fold(0, u64::saturating_add),
+            );
+            row.healing_skills = actor_skills.into_values().collect();
+            row.healing_coverage = "explicit-received".into();
+        }
+        record.personal_healing = record
+            .players
+            .iter()
+            .find(|row| Some(row.id) == record.local_player_id)
+            .and_then(|row| row.healing);
+    }
+
     pub fn tick(&mut self, now: u64) {
         self.assistance.tick(now);
         if self.training.status == "running"
@@ -1068,6 +1320,10 @@ impl MeterEngine {
     }
     pub fn connection_changed(&mut self) {
         self.finish(self.last_hit);
+        self.current_context = EncounterContext::default();
+        self.party_id = None;
+        self.healing_samples.clear();
+        self.healing_sample_complete = true;
         self.latency.clear();
         self.streams = Default::default();
         self.frames = Default::default();
@@ -1487,6 +1743,11 @@ impl MeterEngine {
                 record.sample_complete = false;
             }
             remaining = remaining.saturating_sub(record.received_samples.len());
+            if record.healing_samples.len() > remaining {
+                record.healing_samples.truncate(remaining);
+                record.healing_sample_complete = false;
+            }
+            remaining = remaining.saturating_sub(record.healing_samples.len());
         }
     }
     fn duration(&self, now: u64) -> u64 {
@@ -1779,6 +2040,11 @@ impl MeterEngine {
             record.started_ms = completed.record.started_ms;
             record.ended_ms = completed.record.ended_ms
         }
+        record.context = self
+            .completed
+            .as_ref()
+            .map(|value| value.record.context.clone())
+            .unwrap_or_else(|| self.current_context.clone());
         record
     }
     fn snapshot(&self, now: u64, mode: &str) -> Encounter {
@@ -1886,8 +2152,10 @@ impl MeterEngine {
                 .personal_damage_taken
                 .map(|damage| damage as f64 / (elapsed as f64 / 1000.0).max(1.0));
         }
+        self.apply_healing(&mut record);
         for player in &mut record.players {
             player.dps = player.damage as f64 / divisor;
+            player.hps = player.healing.map(|amount| amount as f64 / divisor);
             let (first, elapsed) = incoming_span(player.id);
             player.damage_taken_started_ms = first;
             player.damage_taken_elapsed_ms = elapsed;
@@ -1903,6 +2171,9 @@ impl MeterEngine {
         } else {
             self.latency.snapshot(record.started_ms, record.ended_ms)
         };
+        record.personal_hps = record
+            .personal_healing
+            .map(|amount| amount as f64 / divisor);
         record
     }
     fn finish(&mut self, now: u64) {
@@ -1915,6 +2186,10 @@ impl MeterEngine {
         self.attach_samples(&mut record);
         record.character_build = self.encounter_build.clone();
         record.assist = self.assistance.snapshot(now);
+        record
+            .assist
+            .health_history
+            .retain(|row| row.observed_at_ms >= record.started_ms && row.observed_at_ms <= now);
         record
             .assist
             .timeline
@@ -1942,6 +2217,11 @@ impl MeterEngine {
                 }
             }
         }
+        for sample in &self.healing_samples {
+            relevant.insert(sample.source);
+            relevant.insert(sample.target);
+            relevant.insert(Self::owner_in(&self.identities, sample.source));
+        }
         let identities = relevant
             .into_iter()
             .filter_map(|id| {
@@ -1963,6 +2243,8 @@ impl MeterEngine {
         });
         self.started = None;
         self.damage_samples.clear();
+        self.healing_samples.clear();
+        self.healing_sample_complete = true;
         self.sample_complete = true;
         self.hit_count = 0;
         self.alive_targets.clear();
@@ -2208,6 +2490,16 @@ impl MeterEngine {
             record.id = self.encounter_id.saturating_add(1);
             self.encounter_id = record.id.saturating_add(1);
             record.source = "imported".into();
+            record.context.source = "imported".into();
+            if let Some(build) = &mut record.character_build {
+                build.source = "imported".into();
+                if let Some(power) = &mut build.combat_power {
+                    power.source = "imported".into();
+                }
+                if let Some(wing) = &mut build.wing {
+                    wing.source = "imported".into();
+                }
+            }
             if !["personal", "party", "observed"].contains(&record.actor_scope.as_str()) {
                 record.actor_scope = "observed".into();
             }
@@ -2237,6 +2529,10 @@ impl MeterEngine {
                 .timeline
                 .retain(|event| event.at_ms >= record.started_ms && event.at_ms <= now);
         }
+        record
+            .assist
+            .health_history
+            .retain(|row| (record.started_ms..=record.ended_ms).contains(&row.observed_at_ms));
         if self.target_mode == "boss" {
             record
                 .damage_samples
@@ -2441,6 +2737,45 @@ fn record_details_bounded(record: &Encounter) -> bool {
             && build.skills.len() <= 255
             && build.boards.len() <= 32
             && build.boards.iter().all(|board| board.node_ids.len() <= 255)
+            && build.combat_power.as_ref().is_none_or(|row| {
+                (1..=100_000_000).contains(&row.current)
+                    && (1..=100_000_000).contains(&row.highest)
+                    && row.observed_at_ms <= record.ended_ms
+                    && ["server-self", "server-self-unbound", "imported"]
+                        .contains(&row.source.as_str())
+            })
+            && build.wing.as_ref().is_none_or(|row| {
+                (30_000_000..=30_599_999).contains(&row.wing_id)
+                    && !(30_400_000..=30_499_999).contains(&row.wing_id)
+                    && row
+                        .skin_id
+                        .is_none_or(|value| (30_400_000..=30_499_999).contains(&value))
+                    && row.observed_at_ms <= record.ended_ms
+                    && ["server-self", "server-self-unbound", "imported"]
+                        .contains(&row.source.as_str())
+            })
+            && if build.species.is_empty() {
+                build.species_observed_at_ms.is_none()
+            } else {
+                build.species.len() == 5
+                    && build
+                        .species_observed_at_ms
+                        .is_some_and(|at| at <= record.ended_ms)
+                    && build.species.iter().enumerate().all(|(index, row)| {
+                        let mut slots = std::collections::HashSet::new();
+                        row.species_id == (index + 2) as u8
+                            && (1..=99).contains(&row.level)
+                            && row.progress <= 9_007_199_254_740_991
+                            && row.effects.len() <= 160
+                            && row.effects.iter().all(|effect| {
+                                (1..=5).contains(&effect.page)
+                                    && effect.slot < 32
+                                    && effect.stat_id > 0
+                                    && effect.value.unsigned_abs() <= 1_000_000_000_000
+                                    && slots.insert((effect.page, effect.slot))
+                            })
+                    })
+            }
             && build.equipment.iter().all(|item| {
                 item.stones.as_ref().is_none_or(|stones| stones.len() <= 6)
                     && item.stats.as_ref().is_none_or(|stats| stats.len() <= 8)
@@ -2453,10 +2788,47 @@ fn record_details_bounded(record: &Encounter) -> bool {
     build_valid
         && record.network_latency.is_valid()
         && record
+            .personal_hps
+            .is_none_or(|value| value.is_finite() && value >= 0.0)
+        && record
             .network_latency
             .samples
             .iter()
             .all(|sample| (record.started_ms..=record.ended_ms).contains(&sample.observed_at_ms))
+        && record.healing_samples.len() <= MAX_SAMPLES
+        && record.context.source.len() <= 40
+        && record.context.session_id.len() <= 128
+        && record
+            .context
+            .map_id
+            .is_none_or(|id| (1..=10_000_000).contains(&id))
+        && record
+            .context
+            .zone_observed_at_ms
+            .is_none_or(|at| at <= record.ended_ms)
+        && record.healing_samples.iter().all(|row| {
+            row.metric == "healing"
+                && (record.started_ms..=record.ended_ms).contains(&row.timestamp_ms)
+                && (1..=u64::from(u32::MAX)).contains(&row.source)
+                && (1..=u64::from(u32::MAX)).contains(&row.player_id)
+                && (1..=u64::from(u32::MAX)).contains(&row.target)
+                && (1..=300_000_000).contains(&row.skill)
+                && row.amount <= 2_000_000_000
+        })
+        && record.assist.health_history.len() <= 512
+        && record.assist.health_history.iter().all(|row| {
+            (1..=10_000_000).contains(&row.actor_id)
+                && (record.started_ms..=record.ended_ms).contains(&row.observed_at_ms)
+                && row.current_hp.is_none_or(|hp| hp <= 10_000_000_000_000)
+                && row.reported_max_hp.is_none_or(|hp| {
+                    hp > 0
+                        && hp <= 10_000_000_000_000
+                        && row.current_hp.is_none_or(|current| current <= hp)
+                })
+                && row
+                    .observed_peak_hp
+                    .is_none_or(|hp| hp <= 10_000_000_000_000)
+        })
         && record.received_samples.len() <= MAX_SAMPLES
         && record.assist.casts.len() <= 64
         && record.assist.effects.len() <= 256
@@ -2479,6 +2851,15 @@ fn record_details_bounded(record: &Encounter) -> bool {
                 && player.class_name.len() <= 128
                 && player.skills.iter().all(|skill| skill.name.len() <= 256)
                 && player.incoming_skills.len() <= 500
+                && player.healing_skills.len() <= 500
+                && player
+                    .healing_skills
+                    .iter()
+                    .all(|skill| skill.name.len() <= 256)
+                && ["", "explicit-received"].contains(&player.healing_coverage.as_str())
+                && player
+                    .hps
+                    .is_none_or(|value| value.is_finite() && value >= 0.0)
                 && player
                     .incoming_skills
                     .iter()

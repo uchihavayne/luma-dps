@@ -31,3 +31,10 @@ The service has no subscription, premium entitlement or login requirement. It re
 Rankings accept only opted-in complete personal encounters of at least 10 seconds against one named boss. The boss label must match the received target name. Context labels such as region, server and difficulty are supplied by the uploader. These are community submissions, not an official game-verified world ranking. Mixed-target encounters remain shareable without entering rankings.
 
 The repository's root license covers Luma source. Third-party packages retain their respective licenses; dependencies are fetched from the locked package manifest during installation and are not embedded in the Windows application by this directory.
+
+
+## Report visibility and statistics
+
+Reports can be public, unlisted or private. Private reports require an independent viewing capability; only its hash is stored by the service. The viewing link uses a URL fragment and the report page sends its key as a bearer token. Viewing and revocation keys are independent. Unlisted and private reports cannot enter public listings, rankings or statistics. Apply migration `0002` after the existing migrations; it preserves earlier public reports.
+
+Statistics cover opted-in public records only, with class, encounter context and 100,000-point CP bands. Cohorts smaller than five expose no percentile/aggregate values. Values describe uploaded records, not an official world population or verified in-game ranking. Character CP is included only when observed for the confirmed own character before that fight.

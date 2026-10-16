@@ -53,8 +53,8 @@ test('party curve requires explicit membership while observed scope consciously 
 test('partial sampling never yields a claimed complete burst or activity and bounded imports disclose truncation', () => {
   const curve = damageCurve({ ...record(), sample_complete: false });
   assert.equal(curve.complete, false); assert.equal(curve.bestBurst, null); assert.equal(curve.activityMs, null);
-  const normalized = normalizeEncounter({ ...record(), total_damage: 1400, damage_samples: Array(5001).fill(record().damage_samples[0]) });
-  assert.equal(normalized.damage_samples.length, 5000); assert.equal(normalized.sample_complete, false);
+  const normalized = normalizeEncounter({ ...record(), total_damage: 1400, damage_samples: Array(20001).fill(record().damage_samples[0]) });
+  assert.equal(normalized.damage_samples.length, 20000); assert.equal(normalized.sample_complete, false);
 });
 
 test('empty, malformed, unknown identity or overlong records cannot synthesize a curve', () => {

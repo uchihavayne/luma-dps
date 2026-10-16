@@ -64,6 +64,39 @@ pub struct ObservedBoard {
     pub node_ids: Vec<u32>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedCombatPower {
+    pub current: u32,
+    pub highest: u32,
+    pub observed_at_ms: u64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedWing {
+    pub wing_id: u32,
+    pub skin_id: Option<u32>,
+    pub observed_at_ms: u64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedSpeciesEffect {
+    pub page: u8,
+    pub slot: u8,
+    pub kind: u8,
+    pub stat_id: u16,
+    pub value: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObservedSpecies {
+    pub species_id: u8,
+    pub level: u32,
+    pub progress: u64,
+    pub effects: Vec<ObservedSpeciesEffect>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CharacterBuild {
     pub actor_id: Option<u64>,
@@ -79,6 +112,14 @@ pub struct CharacterBuild {
     pub equipment_complete: bool,
     pub skills_complete: bool,
     pub source: String,
+    #[serde(default)]
+    pub combat_power: Option<ObservedCombatPower>,
+    #[serde(default)]
+    pub wing: Option<ObservedWing>,
+    #[serde(default)]
+    pub species: Vec<ObservedSpecies>,
+    #[serde(default)]
+    pub species_observed_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +136,17 @@ pub struct InspectedCharacter {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CharacterEvent {
+    CombatPower {
+        current: u32,
+        highest: u32,
+    },
+    Wing {
+        wing_id: u32,
+        skin_id: Option<u32>,
+    },
+    Species {
+        species: Vec<ObservedSpecies>,
+    },
     Equipment {
         items: Vec<ObservedItem>,
         complete: bool,
@@ -583,7 +635,7 @@ fn inspect(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     })))
 }
 
-fn pet_inventory(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+fn pet_inventory_prefix(frame: &[u8]) -> Result<(CharacterEvent, usize), CharacterError> {
     let mut reader = Reader {
         bytes: frame,
         offset: 2,
@@ -642,10 +694,176 @@ fn pet_inventory(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError>
     // The same login frame continues with independently counted species data.
     // Only the validated pet prefix is used; that tail is not a pet catalog.
     pets.sort_by_key(|pet| pet.pet_id);
-    Ok(Some(CharacterEvent::PetInventory {
-        active_pet_id: (active != 0).then_some(active),
-        pets,
-    }))
+    Ok((
+        CharacterEvent::PetInventory {
+            active_pet_id: (active != 0).then_some(active),
+            pets,
+        },
+        reader.offset,
+    ))
+}
+
+/// Species knowledge shares the pet login frame. Only a complete, unique chain
+/// of all five received blocks is accepted. Names and stat meanings are not
+/// guessed from an external catalog.
+pub fn decode_species(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    if frame.get(..2) != Some(&[0, 0x90]) {
+        return Ok(None);
+    }
+    if frame.len() > MAX_FRAME {
+        return Err(CharacterError::Limit);
+    }
+    let (_, start) = pet_inventory_prefix(frame)?;
+    let mut found = None;
+    let mut candidates = 0;
+    for offset in start..frame.len().saturating_sub(14) {
+        if frame.get(offset..offset + 2) != Some(&[2, 2]) {
+            continue;
+        }
+        candidates += 1;
+        if candidates > 32 {
+            return Err(CharacterError::Limit);
+        }
+        if let Ok(species) = species_chain(frame, offset) {
+            if found.is_some() {
+                return Err(CharacterError::Invalid);
+            }
+            found = Some(CharacterEvent::Species { species });
+        }
+    }
+    Ok(found)
+}
+
+fn species_chain(frame: &[u8], offset: usize) -> Result<Vec<ObservedSpecies>, CharacterError> {
+    let mut reader = Reader {
+        bytes: frame,
+        offset,
+    };
+    let mut species = Vec::with_capacity(5);
+    for species_id in 2..=6 {
+        if species_id > 2
+            && reader
+                .bytes
+                .get(reader.offset)
+                .is_some_and(|byte| *byte > 9)
+        {
+            reader.byte()?;
+        }
+        if reader.byte()? != species_id || reader.byte()? != species_id {
+            return Err(CharacterError::Invalid);
+        }
+        let level = reader.word()?;
+        let progress = u64::from_le_bytes(reader.take()?);
+        let pages = reader.byte()?;
+        if !(1..=99).contains(&level)
+            || progress > 9_007_199_254_740_991
+            || !(1..=5).contains(&pages)
+        {
+            return Err(CharacterError::Invalid);
+        }
+        let mut effects = Vec::new();
+        for page in 1..=pages {
+            if reader
+                .bytes
+                .get(reader.offset)
+                .is_some_and(|byte| *byte > 9)
+            {
+                reader.byte()?;
+            }
+            if reader.byte()? != page {
+                return Err(CharacterError::Invalid);
+            }
+            let slots = reader.byte()?;
+            if slots > 32 {
+                return Err(CharacterError::Limit);
+            }
+            for slot in 0..slots {
+                if reader
+                    .bytes
+                    .get(reader.offset)
+                    .is_some_and(|byte| *byte != slot && *byte > 9)
+                {
+                    reader.byte()?;
+                }
+                if reader.byte()? != slot {
+                    return Err(CharacterError::Invalid);
+                }
+                let kind = reader.byte()?;
+                let stat_id = u16::from_le_bytes(reader.take()?);
+                let value = i64::from_le_bytes(reader.take()?);
+                if value.unsigned_abs() > 1_000_000_000_000 || stat_id == 0 && value != 0 {
+                    return Err(CharacterError::Invalid);
+                }
+                if stat_id != 0 {
+                    effects.push(ObservedSpeciesEffect {
+                        page,
+                        slot,
+                        kind,
+                        stat_id,
+                        value,
+                    });
+                }
+            }
+        }
+        species.push(ObservedSpecies {
+            species_id,
+            level,
+            progress,
+            effects,
+        });
+    }
+    Ok(species)
+}
+
+/// A wing observation is accepted only by the caller after validating the own
+/// character identity record. An ambiguous anchor never establishes ownership.
+pub fn decode_own_wing(frame: &[u8]) -> Option<CharacterEvent> {
+    if frame.get(..2) != Some(&[0x33, 0x36]) || frame.len() > MAX_FRAME {
+        return None;
+    }
+    let anchor = [0xa0, 0x86, 1, 0, 0xa0, 0x86, 1, 0];
+    let anchors: Vec<_> = frame
+        .windows(anchor.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == anchor).then_some(index))
+        .take(2)
+        .collect();
+    if anchors.len() != 1 {
+        return None;
+    }
+    let flags = anchors[0].checked_add(16)?;
+    let wing_at = if frame.get(flags..flags + 5) == Some(&[1, 0, 0, 0, 1]) {
+        flags + 5
+    } else if frame.get(flags) == Some(&1) {
+        flags + 1
+    } else {
+        return None;
+    };
+    let wing_id = word_at(frame, wing_at)?;
+    if !(30_000_000..=30_599_999).contains(&wing_id) || (30_400_000..=30_499_999).contains(&wing_id)
+    {
+        return None;
+    }
+    let skin_id =
+        word_at(frame, wing_at + 4).filter(|value| (30_400_000..=30_499_999).contains(value));
+    Some(CharacterEvent::Wing { wing_id, skin_id })
+}
+
+fn combat_power(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    if frame.len() != 18 {
+        return Err(CharacterError::Invalid);
+    }
+    let current = word_at(frame, 2).ok_or(CharacterError::Truncated)?;
+    let highest = word_at(frame, 10).ok_or(CharacterError::Truncated)?;
+    if !zeros(frame, 6, 4)
+        || !zeros(frame, 14, 4)
+        || !(1..=100_000_000).contains(&current)
+        || !(1..=100_000_000).contains(&highest)
+    {
+        return Err(CharacterError::Invalid);
+    }
+    // Ordering is not a gate: the server can update current/highest separately.
+    Ok(Some(CharacterEvent::CombatPower { current, highest }))
 }
 
 fn pet_gains(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
@@ -693,6 +911,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
             | [0, 0x90]
             | [0x0d, 0x90]
             | [0x14, 0x90]
+            | [0x56, 0x36]
     ) {
         return Ok(None);
     }
@@ -704,9 +923,10 @@ pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
         [0, 0x51] => skills(frame),
         [0x26, 0xe2] => daevanion(frame),
         [0x50, 0x36] => inspect(frame),
-        [0, 0x90] => pet_inventory(frame),
+        [0, 0x90] => pet_inventory_prefix(frame).map(|(event, _)| Some(event)),
         [0x0d, 0x90] => pet_gains(frame),
         [0x14, 0x90] => pet_level(frame),
+        [0x56, 0x36] => combat_power(frame),
         _ => Ok(None),
     }
 }
@@ -783,6 +1003,21 @@ impl CharacterStore {
         build.name = name;
         build.server_id = server_id;
         build.source = "server-self".into();
+        if !same_character {
+            build.combat_power = build.combat_power.filter(|value| {
+                now >= value.observed_at_ms && now - value.observed_at_ms <= PENDING_MS
+            });
+            build.wing = build.wing.filter(|value| {
+                now >= value.observed_at_ms && now - value.observed_at_ms <= PENDING_MS
+            });
+            if build
+                .species_observed_at_ms
+                .is_none_or(|at| now < at || now - at > PENDING_MS)
+            {
+                build.species.clear();
+                build.species_observed_at_ms = None;
+            }
+        }
         self.own = Some(build);
     }
     pub fn ingest(&mut self, event: CharacterEvent, now: u64) {
@@ -822,6 +1057,45 @@ impl CharacterStore {
         };
         build.observed_at_ms = now;
         match event {
+            CharacterEvent::CombatPower { current, highest } => {
+                if !(1..=100_000_000).contains(&current) || !(1..=100_000_000).contains(&highest) {
+                    return;
+                }
+                build.combat_power = Some(ObservedCombatPower {
+                    current,
+                    highest,
+                    observed_at_ms: now,
+                    source: "server-self".into(),
+                });
+            }
+            CharacterEvent::Wing { wing_id, skin_id } => {
+                if !(30_000_000..=30_599_999).contains(&wing_id)
+                    || (30_400_000..=30_499_999).contains(&wing_id)
+                    || skin_id.is_some_and(|value| !(30_400_000..=30_499_999).contains(&value))
+                {
+                    return;
+                }
+                build.wing = Some(ObservedWing {
+                    wing_id,
+                    skin_id,
+                    observed_at_ms: now,
+                    source: "server-self".into(),
+                });
+            }
+            CharacterEvent::Species { species } => {
+                if species.len() != 5
+                    || species.iter().enumerate().any(|(index, row)| {
+                        row.species_id != (index + 2) as u8
+                            || !(1..=99).contains(&row.level)
+                            || row.progress > 9_007_199_254_740_991
+                            || row.effects.len() > 160
+                    })
+                {
+                    return;
+                }
+                build.species = species;
+                build.species_observed_at_ms = Some(now);
+            }
             CharacterEvent::Equipment { items, complete } => {
                 build.equipment = items;
                 build.equipment_complete = complete;
@@ -957,6 +1231,9 @@ impl CharacterStore {
             build.equipment_observed_at_ms.is_some()
                 || build.skills_observed_at_ms.is_some()
                 || build.boards_observed_at_ms.is_some()
+                || build.combat_power.is_some()
+                || build.wing.is_some()
+                || build.species_observed_at_ms.is_some()
         })
     }
     pub fn own_snapshot(&self) -> Option<CharacterBuild> {

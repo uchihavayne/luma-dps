@@ -20,6 +20,15 @@ export function assistanceTimeline(value = {}) {
   return (Array.isArray(value.timeline) ? value.timeline : []).slice(-1000).filter(event => kinds.includes(event?.kind) && time(event.at_ms) !== null).map(event => ({ kind: event.kind, at_ms: event.at_ms, actor_id: id(event.actor_id), skill_id: id(event.skill_id), target_id: id(event.target_id), instance_id: id(event.instance_id) })).slice(-30).reverse();
 }
 
+// Full retained observations for reports and analysis, independent of the short
+// live timeline. Never reconstruct HP points from a previous value.
+export function encounterAssistance(value = {}) {
+  const live = assistanceState(value);
+  const kinds = ['windup', 'cast', 'effect-applied', 'effect-refreshed', 'effect-removed', 'effect-expired', 'stagger-break'];
+  const health = rows => (Array.isArray(rows) ? rows : []).slice(-512).filter(row => row && id(row.actor_id) !== null && time(row.observed_at_ms) !== null).map(row => ({ actor_id: id(row.actor_id), current_hp: time(row.current_hp), reported_max_hp: time(row.reported_max_hp), observed_peak_hp: time(row.observed_peak_hp), observed_at_ms: row.observed_at_ms }));
+  return { ...live, timeline: (Array.isArray(value?.timeline) ? value.timeline : []).slice(-1000).filter(row => kinds.includes(row?.kind) && time(row.at_ms) !== null).map(row => ({ kind: row.kind, at_ms: row.at_ms, actor_id: id(row.actor_id), skill_id: id(row.skill_id), target_id: id(row.target_id), instance_id: id(row.instance_id) })), health: health(value?.health).slice(-256), health_history: health(value?.health_history) };
+}
+
 export function ownTargetedWindups(state, now = Date.now()) {
   if (!['server', 'manual', 'name-match'].includes(state?.local_identity_source) || state.local_player_id === null || state.local_player_id === undefined) return [];
   const localId = String(state.local_player_id);

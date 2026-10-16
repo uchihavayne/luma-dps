@@ -44,4 +44,19 @@ Confirm no DEMO data enters a native session, calendar updates fail safely offli
 
 The Windows workflow has read-only repository permissions, tests before building, and uploads review artifacts. It does not publish a release, sign the EXE, create a repository or start live capture. The action pins and compiler are verified against the primary [checkout](https://github.com/actions/checkout/releases/tag/v7.0.1), [setup-node](https://github.com/actions/setup-node/releases/tag/v7.1.0), [setup-python](https://github.com/actions/setup-python/releases/tag/v6.0.0), [upload-artifact](https://github.com/actions/upload-artifact/releases/tag/v7.0.2) and [Rust 1.95.0](https://blog.rust-lang.org/2026/04/16/Rust-1.95.0/) release pages.
 
-After owner approval, publish the prepared tree and create a GitHub **prerelease** with the matching portable/source/checksum files. State the tested Windows/region and pending live gates plainly. Review repository visibility and application source terms, and configure an appropriate private channel for vulnerability reports. Do not upload the development workspace, capture files, probe snapshots or user history. Signing can be added when the publisher has its own certificate; checksums are not a signature.
+After owner approval, publish the prepared tree and create a GitHub **prerelease** with the matching portable/source/checksum files. State the tested Windows/region and pending live gates plainly. Review repository visibility and application source terms, and configure an appropriate private channel for vulnerability reports. Do not upload the development workspace, capture files, probe snapshots or user history. Windows Authenticode signing remains separate from the application update signature; no Authenticode certificate is claimed.
+
+
+## Publisher-authenticated portable updates
+
+The app embeds a Luma RSA-3072 public trust anchor. The publisher private key is encrypted with Windows DPAPI for the publisher account in `.cache/luma-update-signing.dpapi`. It is excluded from source, archives, CI and Git. Retain an encrypted backup with that Windows account/profile; do not regenerate the trust anchor for routine releases. End users receive no private key or signing dependency.
+
+After CI passes, download and audit the exact commit's artifacts. Extract the matching EXE, then sign its update manifest on the publisher machine:
+
+```powershell
+python tools/sign_update.py --version 0.16.0 --exe release/Luma-DPS-0.16.0.exe --commit <exact-40-character-commit> --notes-file <release-notes-file> --out-dir release
+```
+
+Publisher tooling additionally requires `cryptography`; the built app verifies signatures through Windows CNG. Publish the standalone versioned EXE, `luma-update.json` and `luma-update.sig` alongside the portable/source ZIPs and checksum file in the same GitHub release. The manifest signs the exact version, commit, asset name, byte length, SHA-256 and release notes. Regenerate the public checksum file after signing to include every published artifact except the checksum file itself. Do not sign an unreviewed binary or mutate an asset after signing.
+
+Update checks read the fixed public Luma GitHub release feed and can be disabled in Settings. Download and installation are explicit actions. The native helper revalidates the signature and EXE, checks the old process image, waits for shutdown, replaces atomically and retains a rollback backup. A missing/invalid signature leaves the running installation unchanged. Validate the actual update/restart flow on a disposable copy before calling the updater live-verified.

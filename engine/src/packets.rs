@@ -31,6 +31,20 @@ pub struct MemberProfile {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Damage(Hit),
+    /// A flag-0A tick retains its distinct effect code for contextual
+    /// classification. Some NPC effects triggered by player skills restore the
+    /// NPC's HP and must not be silently credited as player damage.
+    PeriodicDamage {
+        hit: Hit,
+        effect_id: u32,
+    },
+    /// A received tick's explicit healing field. Effective healing and overheal
+    /// are not supplied by this record.
+    Healing(Hit),
+    /// The local player's announced zone, not a field-monster map list.
+    ZoneChange {
+        zone_id: u32,
+    },
     Assistance(crate::assistance::AssistEvent),
     FieldBoss(crate::field_boss::FieldBossEvent),
     Character(crate::character::CharacterEvent),
@@ -79,6 +93,10 @@ pub enum Event {
     },
     PartyMembers {
         members: Vec<PartyMember>,
+    },
+    PartyContext {
+        party_id: u32,
+        capacity: u8,
     },
     PartyMemberRemoved {
         key: u32,
@@ -187,14 +205,33 @@ fn npc_subtree(
 /// A counted update is merged into live membership; missing slots are not a
 /// disband signal. The first complete typed prefix is the next member, before
 /// any later member that also falls inside the bounded opaque tail window.
-fn party_roster(frame: &[u8]) -> Result<Vec<PartyMember>, ReadError> {
+fn party_header(frame: &[u8]) -> Result<(u32, u8, usize), ReadError> {
     let mut bytes = Bytes::new(frame);
-    bytes.word()?;
-    bytes.text()?;
+    let party_id = bytes.word()?;
+    let title_len = usize::from(bytes.byte()?);
+    if title_len > 96 {
+        return Err(ReadError::Invalid);
+    }
+    let title_start = bytes.offset;
+    bytes.skip(title_len)?;
+    let title =
+        std::str::from_utf8(&frame[title_start..bytes.offset]).map_err(|_| ReadError::Invalid)?;
+    if title.chars().any(char::is_control) {
+        return Err(ReadError::Invalid);
+    }
     let capacity = bytes.byte()?;
     if !(1..=12).contains(&capacity) {
         return Err(ReadError::Invalid);
     }
+    Ok((party_id, capacity, bytes.offset))
+}
+
+fn party_roster(frame: &[u8]) -> Result<Vec<PartyMember>, ReadError> {
+    let (_, capacity, offset) = party_header(frame)?;
+    let mut bytes = Bytes {
+        data: frame,
+        offset,
+    };
     bytes.skip(17)?;
     let count = bytes.variable()?;
     if count > u32::from(capacity) {
@@ -447,13 +484,42 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             | [0, 0x90]
             | [0x0d, 0x90]
             | [0x14, 0x90]
+            | [0x56, 0x36]
     ) {
+        if opcode == [0, 0x90] {
+            let pets = crate::character::decode(frame).map_err(|_| ReadError::Invalid)?;
+            let species = crate::character::decode_species(frame).ok().flatten();
+            let updates: Vec<_> = pets
+                .into_iter()
+                .chain(species)
+                .map(Event::Character)
+                .collect();
+            return Ok(match updates.len() {
+                0 => None,
+                1 => updates.into_iter().next(),
+                _ => Some(Event::Updates(updates)),
+            });
+        }
         return crate::character::decode(frame)
             .map(|event| event.map(Event::Character))
             .map_err(|_| ReadError::Invalid);
     }
     let mut bytes = Bytes::new(frame);
     match opcode {
+        [0x21, 0x36] => {
+            // Login/loading route: counter u32, then the actual local zone id.
+            // The optional body carries position and transfer context; no
+            // coordinate or run grouping inference is made here.
+            if !(10..=4096).contains(&frame.len()) {
+                return Err(ReadError::Invalid);
+            }
+            bytes.word()?;
+            let zone_id = bytes.word()?;
+            if !(1..=10_000_000).contains(&zone_id) {
+                return Err(ReadError::Invalid);
+            }
+            Ok(Some(Event::ZoneChange { zone_id }))
+        }
         [4, 0x38] => {
             let target = u64::from(bytes.variable()?);
             let switch = bytes.variable()?;
@@ -470,9 +536,9 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                     bytes.skip(8)?;
                     (0, 0)
                 }
-                6 => {
+                5..=7 => {
                     let flags = bytes.byte()?;
-                    bytes.variable()?;
+                    bytes.byte()?;
                     let angle = bytes.byte()?;
                     bytes.skip(8)?;
                     (flags, angle)
@@ -500,24 +566,52 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             let kind = bytes.byte()?;
             let source = u64::from(bytes.variable()?);
             bytes.variable()?;
-            if ![2, 10].contains(&kind) {
+            if ![2, 10, 11].contains(&kind) {
                 return Ok(None);
             }
-            let skill = bytes.word()?;
+            // The first u32 is an effect-instance code, not the skill. A
+            // 0x08 flag supplies a trailing skill; the old flags=2 form has
+            // only the legacy code and remains supported as such.
+            let effect_id = bytes.word()?;
             let amount = u64::from(bytes.variable()?);
-            if source == 0 || target == 0 || skill == 0 || amount > 2_000_000_000 {
+            let healed = if kind & 1 != 0 {
+                Some(u64::from(bytes.variable()?))
+            } else {
+                None
+            };
+            let skill = if kind & 8 != 0 {
+                bytes.word()?
+            } else {
+                effect_id
+            };
+            if bytes.offset != frame.len()
+                || source == 0
+                || target == 0
+                || skill == 0
+                || amount > 2_000_000_000
+                || healed.is_some_and(|value| value > 2_000_000_000)
+            {
                 return Err(ReadError::Invalid);
             }
-            Ok(Some(Event::Damage(Hit {
+            let hit = Hit {
                 source,
                 target,
                 skill,
-                amount,
+                // In a healing tick `amount` is the remaining heal total.
+                // It must never be added to either DPS or the tick's HPS.
+                amount: healed.unwrap_or(amount),
                 critical: false,
                 tick: true,
                 flags: 0,
                 angle: 0,
-            })))
+            };
+            Ok(Some(if healed.is_some() {
+                Event::Healing(hit)
+            } else if kind == 10 {
+                Event::PeriodicDamage { hit, effect_id }
+            } else {
+                Event::Damage(hit)
+            }))
         }
         [0x33, 0x36] | [0x45, 0x36] | [0x44, 0x36] => {
             let own = opcode[0] == 0x33;
@@ -537,12 +631,18 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             } else {
                 None
             };
-            Ok(Some(Event::Identity {
+            let identity = Event::Identity {
                 id,
                 name,
                 class,
                 own,
-            }))
+            };
+            if own {
+                if let Some(wing) = crate::character::decode_own_wing(frame) {
+                    return Ok(Some(Event::Updates(vec![identity, Event::Character(wing)])));
+                }
+            }
+            Ok(Some(identity))
         }
         [0x42, 0x36] => {
             let id = u64::from(bytes.variable()?);
@@ -642,9 +742,18 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             }
             Ok(Some(Event::Health { id, current }))
         }
-        [2, 0x97] => Ok(Some(Event::PartyMembers {
-            members: party_roster(frame)?,
-        })),
+        [2, 0x97] => {
+            let members = party_roster(frame)?;
+            let (party_id, capacity, _) = party_header(frame)?;
+            let event = Event::PartyMembers { members };
+            // Zero is not a validated disband signal. It cannot clear a known
+            // party or establish a new party context.
+            Ok(Some(if party_id == 0 {
+                event
+            } else {
+                Event::Updates(vec![Event::PartyContext { party_id, capacity }, event])
+            }))
+        }
         [0x1f, 0x97] => Ok(Some(Event::PartyMembers {
             members: vec![party_member_update(frame)?],
         })),
@@ -733,17 +842,76 @@ mod tests {
         }
     }
     #[test]
+    fn extended_hit_forms_five_six_and_seven_share_fixed_byte_region() {
+        let base = raw("0438e9de020600c80b9147ff003f02020002aff4b76301000000e4506a0100");
+        for form in 5..=7 {
+            let mut frame = base.clone();
+            let mut offset = 2;
+            varint(&frame, &mut offset).unwrap();
+            frame[offset] = form;
+            let Some(Event::Damage(hit)) = decode(&frame).unwrap() else {
+                panic!("missing extended form");
+            };
+            assert_eq!((hit.source, hit.target, hit.amount), (1480, 44905, 106));
+            // The opaque region byte is fixed-width; a high bit does not
+            // consume the following direction byte as a ULEB continuation.
+            let mut fields = Bytes::new(&frame);
+            fields.variable().unwrap();
+            fields.variable().unwrap();
+            fields.variable().unwrap();
+            fields.variable().unwrap();
+            fields.word().unwrap();
+            fields.byte().unwrap();
+            fields.variable().unwrap();
+            fields.byte().unwrap();
+            let middle = fields.offset;
+            frame[middle] = 0x80;
+            let Some(Event::Damage(high)) = decode(&frame).unwrap() else {
+                panic!("high-bit byte lost hit");
+            };
+            assert_eq!((high.amount, high.angle), (hit.amount, hit.angle));
+        }
+    }
+    #[test]
     fn server_tick_amount_is_damage_but_healing_is_not() {
-        let Some(Event::Damage(hit)) =
+        let Some(Event::PeriodicDamage { hit, effect_id }) =
             decode(&raw("0538812a0abdd1019002bb1227073332931200")).unwrap()
         else {
             panic!("missing tick")
         };
         assert_eq!((hit.source, hit.target, hit.amount), (26813, 5377, 51));
+        assert_eq!(hit.skill, 1_217_330);
+        assert_eq!(effect_id, 120_001_211);
         assert!(hit.tick);
         assert!(decode(&raw("0538b12701b127b601032c530bb739"))
             .unwrap()
             .is_none());
+    }
+    #[test]
+    fn periodic_heal_uses_explicit_healed_value_and_never_remaining_amount_as_damage() {
+        let mut frame = vec![5, 0x38, 8, 11, 7, 1];
+        frame.extend(1_700_000_022u32.to_le_bytes());
+        frame.extend([123, 83]); // remaining total, actual tick heal
+        frame.extend(17_050_000u32.to_le_bytes());
+        let Some(Event::Healing(hit)) = decode(&frame).unwrap() else {
+            panic!("missing heal");
+        };
+        assert_eq!(
+            (hit.source, hit.target, hit.amount, hit.skill),
+            (7, 8, 83, 17_050_000)
+        );
+        assert!(hit.tick);
+        for end in 0..frame.len() {
+            assert!(!matches!(
+                decode(&frame[..end]),
+                Ok(Some(Event::Damage(_) | Event::Healing(_)))
+            ));
+        }
+        let mut trailing = frame.clone();
+        trailing.push(0);
+        assert!(decode(&trailing).is_err());
+        frame[3] = 9; // announcement: no actual tick amount
+        assert!(decode(&frame).unwrap().is_none());
     }
     #[test]
     fn self_identity_is_bound_to_its_own_frame() {

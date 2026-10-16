@@ -642,30 +642,33 @@ fn framed_party_rosters_include_later_filled_slots_and_reject_truncation() {
     let frame = roster(&[Some("Local"), None, Some("Friend")]);
     assert_eq!(
         decode(&frame),
-        Ok(Some(Event::PartyMembers {
-            members: vec![
-                luma_engine::packets::PartyMember {
-                    key: 1,
-                    server: 1304,
-                    slot: 1,
-                    name: "Local".into(),
-                    class: 14
-                },
-                luma_engine::packets::PartyMember {
-                    key: 3,
-                    server: 1304,
-                    slot: 3,
-                    name: "Friend".into(),
-                    class: 14
-                }
-            ]
-        }))
+        Ok(Some(Event::Updates(vec![
+            Event::PartyContext {
+                party_id: 42,
+                capacity: 3
+            },
+            Event::PartyMembers {
+                members: vec![
+                    luma_engine::packets::PartyMember {
+                        key: 1,
+                        server: 1304,
+                        slot: 1,
+                        name: "Local".into(),
+                        class: 14
+                    },
+                    luma_engine::packets::PartyMember {
+                        key: 3,
+                        server: 1304,
+                        slot: 3,
+                        name: "Friend".into(),
+                        class: 14
+                    }
+                ]
+            }
+        ])))
     );
     for length in 0..frame.len() - 2 {
-        assert!(!matches!(
-            decode(&frame[..length]),
-            Ok(Some(Event::PartyMembers { .. }))
-        ));
+        assert!(!matches!(decode(&frame[..length]), Ok(Some(_))));
     }
     assert!(decode(&roster(&[Some("Local"), Some("Local")])).is_err());
 }
