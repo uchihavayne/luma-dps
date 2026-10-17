@@ -19,6 +19,8 @@ const IDLE_MS: u64 = 10_000;
 const MAX_HITS: usize = 250_000;
 const MAX_SAMPLES: usize = 20_000;
 const MAX_HISTORY_SAMPLES: usize = 100_000;
+const PROFILE_PENDING_MS: u64 = 30_000;
+const MAX_PENDING_PROFILES: usize = 64;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -296,6 +298,7 @@ pub struct MeterEngine {
     party_names: Option<Vec<String>>,
     party_sync_confirmed: bool,
     party_wire_members: BTreeMap<(u16, u32), packets::PartyMember>,
+    pending_profiles: Vec<(packets::MemberProfile, u64)>,
     party_snapshot_complete: bool,
     party_classes: BTreeMap<String, u32>,
     manual_party_ids: Option<Vec<u64>>,
@@ -354,6 +357,7 @@ impl Default for MeterEngine {
             party_names: None,
             party_sync_confirmed: false,
             party_wire_members: BTreeMap::new(),
+            pending_profiles: Vec::new(),
             party_snapshot_complete: false,
             party_classes: BTreeMap::new(),
             manual_party_ids: None,
@@ -424,6 +428,42 @@ impl MeterEngine {
         self.manual_party_ids = None;
         self.dirty();
     }
+    fn bind_pending_profiles(&mut self, now: u64) {
+        let profiles = std::mem::take(&mut self.pending_profiles);
+        for (profile, observed_at) in profiles {
+            if now < observed_at || now - observed_at > PROFILE_PENDING_MS {
+                continue;
+            }
+            let known: Vec<_> = self
+                .party_wire_members
+                .values()
+                .filter(|member| member.server == profile.server && member.name == profile.name)
+                .collect();
+            if !self.party_sync_confirmed || known.len() != 1 {
+                self.pending_profiles.push((profile, observed_at));
+                continue;
+            }
+            if self.own_id == Some(profile.id)
+                && self
+                    .identities
+                    .get(&profile.id)
+                    .and_then(|row| row.name.as_deref())
+                    != Some(profile.name.as_str())
+            {
+                continue;
+            }
+            let class = known[0].class;
+            self.ingest_event(
+                Event::Identity {
+                    id: profile.id,
+                    name: profile.name,
+                    class: Some(class),
+                    own: false,
+                },
+                now,
+            );
+        }
+    }
     pub fn ingest_tcp(&mut self, packet: &[u8], incoming: bool, now: u64) {
         if !incoming {
             return;
@@ -447,6 +487,7 @@ impl MeterEngine {
             self.party_names = None;
             self.party_classes.clear();
             self.party_wire_members.clear();
+            self.pending_profiles.clear();
             self.party_snapshot_complete = false;
             self.assistance.clear();
             self.character.clear();
@@ -560,6 +601,9 @@ impl MeterEngine {
         }
     }
     pub fn ingest_event(&mut self, event: Event, now: u64) {
+        self.pending_profiles.retain(|(_, observed_at)| {
+            now >= *observed_at && now - observed_at <= PROFILE_PENDING_MS
+        });
         match event {
             Event::PeriodicDamage { hit, effect_id } => {
                 if self.paused || hit.amount == 0 {
@@ -598,6 +642,9 @@ impl MeterEngine {
                 capacity: _,
             } => {
                 if self.party_id != Some(party_id) {
+                    if self.party_id.is_some() {
+                        self.pending_profiles.clear();
+                    }
                     let (prior, _) = self.party_in(&self.identities, self.own_id);
                     for actor in prior {
                         if Some(actor) != self.own_id {
@@ -713,11 +760,28 @@ impl MeterEngine {
                 class,
                 own,
             } => {
+                if !own
+                    && self.own_id == Some(id)
+                    && self.identities.get(&id).is_some_and(|entry| {
+                        !entry.removed && entry.name.as_deref().is_some_and(|old| old != name)
+                    })
+                {
+                    // A nearby/inspection record cannot replace the current
+                    // server-confirmed local character with somebody else.
+                    return;
+                }
+                self.pending_profiles
+                    .retain(|(profile, _)| profile.id != id);
                 let changed_name = self
                     .identities
                     .get(&id)
                     .and_then(|entry| entry.name.as_deref())
                     .is_some_and(|old| old != name);
+                let may_resolve_completed = !changed_name
+                    && self
+                        .identities
+                        .get(&id)
+                        .is_none_or(|entry| !entry.removed && !entry.npc && !entry.pet);
                 if changed_name
                     && self
                         .aggregates
@@ -740,6 +804,7 @@ impl MeterEngine {
                         .is_some_and(|old| old != name)
                 {
                     self.cooldowns.clear();
+                    self.pending_profiles.clear();
                     self.party_sync_confirmed = false;
                     self.party_names = None;
                     self.party_classes.clear();
@@ -763,6 +828,7 @@ impl MeterEngine {
                 if own && self.own_id.is_some_and(|old| old != id) {
                     self.finish(self.last_hit);
                     self.identities.clear();
+                    self.pending_profiles.clear();
                     self.cooldowns.clear();
                     self.manual_own_id = None;
                     self.manual_party_ids = None;
@@ -809,6 +875,12 @@ impl MeterEngine {
                         self.alias_bound_id = None;
                     }
                 }
+                if !may_resolve_completed {
+                    // An actor ID is a scene handle. A new occupant cannot
+                    // inherit the previous occupant's class, health or owner.
+                    self.identities.insert(id, Identity::default());
+                    self.pending_owners.remove(&id);
+                }
                 let identity = self.identities.entry(id).or_default();
                 identity.name = Some(name);
                 identity.player = true;
@@ -820,7 +892,30 @@ impl MeterEngine {
                     identity.class = Some(class.into())
                 }
                 if let Some(completed) = &mut self.completed {
-                    if completed.generation == self.generation {
+                    // A late name may resolve an unnamed actor in the current
+                    // completed view. Reused actor IDs must never relabel the
+                    // previous player's damage after a despawn or rename.
+                    let relevant =
+                        completed
+                            .aggregates
+                            .keys()
+                            .any(|(source, target)| *source == id || *target == id)
+                            || completed.record.healing_samples.iter().any(|row| {
+                                row.player_id == id || row.source == id || row.target == id
+                            });
+                    if may_resolve_completed
+                        && relevant
+                        && completed.generation == self.generation
+                        && completed.identities.get(&id).is_none_or(|old| {
+                            !old.removed
+                                && !old.npc
+                                && !old.pet
+                                && old
+                                    .name
+                                    .as_deref()
+                                    .is_none_or(|name| Some(name) == identity.name.as_deref())
+                        })
+                    {
                         completed.identities.insert(id, identity.clone());
                     }
                 }
@@ -832,6 +927,8 @@ impl MeterEngine {
                 model: _,
                 kind,
             } => {
+                self.pending_profiles
+                    .retain(|(profile, _)| profile.id != id);
                 if self.identities.get(&id).is_some_and(|entry| entry.player)
                     && self
                         .aggregates
@@ -895,6 +992,7 @@ impl MeterEngine {
                 self.dirty();
             }
             Event::PartyRoster { names } => {
+                self.pending_profiles.clear();
                 self.party_names = Some(names.into_iter().take(12).collect());
                 self.party_sync_confirmed = true;
                 self.party_wire_members.clear();
@@ -938,8 +1036,14 @@ impl MeterEngine {
                 }
                 self.party_snapshot_complete = false;
                 self.refresh_wire_party();
+                self.bind_pending_profiles(now);
             }
             Event::PartyMemberRemoved { key, server } => {
+                if let Some(member) = self.party_wire_members.get(&(server, key)) {
+                    self.pending_profiles.retain(|(profile, _)| {
+                        profile.server != member.server || profile.name != member.name
+                    });
+                }
                 let own_name = self
                     .own_id
                     .and_then(|id| self.identities.get(&id))
@@ -960,40 +1064,15 @@ impl MeterEngine {
                 }
             }
             Event::MemberProfiles { members } => {
-                if !self.party_sync_confirmed {
-                    return;
-                }
                 for profile in members.into_iter().take(12) {
-                    let known: Vec<_> = self
-                        .party_wire_members
-                        .values()
-                        .filter(|member| {
-                            member.server == profile.server && member.name == profile.name
-                        })
-                        .collect();
-                    if known.len() != 1 {
-                        continue;
+                    self.pending_profiles
+                        .retain(|(old, _)| old.id != profile.id);
+                    if self.pending_profiles.len() == MAX_PENDING_PROFILES {
+                        self.pending_profiles.remove(0);
                     }
-                    if self.own_id == Some(profile.id)
-                        && self
-                            .identities
-                            .get(&profile.id)
-                            .and_then(|identity| identity.name.as_deref())
-                            != Some(profile.name.as_str())
-                    {
-                        continue;
-                    }
-                    let class = known[0].class;
-                    self.ingest_event(
-                        Event::Identity {
-                            id: profile.id,
-                            name: profile.name,
-                            class: Some(class),
-                            own: false,
-                        },
-                        now,
-                    );
+                    self.pending_profiles.push((profile, now));
                 }
+                self.bind_pending_profiles(now);
             }
             Event::Cooldown {
                 skill,
@@ -1041,6 +1120,8 @@ impl MeterEngine {
                 self.dirty();
             }
             Event::Removed { id, death } => {
+                self.pending_profiles
+                    .retain(|(profile, _)| profile.id != id);
                 // Keep attribution until the encounter ends; an entity leaving
                 // the scene does not change damage it already dealt.
                 self.identities.entry(id).or_default().removed = true;
@@ -1349,6 +1430,7 @@ impl MeterEngine {
         self.party_names = None;
         self.party_sync_confirmed = false;
         self.party_wire_members.clear();
+        self.pending_profiles.clear();
         self.party_snapshot_complete = false;
         self.party_classes.clear();
         self.manual_party_ids = None;
@@ -1368,6 +1450,7 @@ impl MeterEngine {
         self.party_names = None;
         self.party_classes.clear();
         self.party_wire_members.clear();
+        self.pending_profiles.clear();
         self.party_snapshot_complete = false;
         self.character.clear();
         if let Some(id) = self.own_id {

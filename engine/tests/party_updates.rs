@@ -141,8 +141,11 @@ fn profile_records_cannot_create_membership_or_promote_an_own_character() {
         },
         20,
     );
+    // A structurally valid earlier profile is held briefly, then resolves only
+    // when its exact home-server/name pair appears in the current roster.
+    assert_eq!(engine.party_identity_roster()["members"][0]["actor_id"], 2);
     apply(&mut engine, &profile(2, 1401, "Healer"), 30);
-    assert!(engine.party_identity_roster()["members"][0]["actor_id"].is_null());
+    assert_eq!(engine.party_identity_roster()["members"][0]["actor_id"], 2);
     apply(&mut engine, &profile(2, 1304, "Healer"), 40);
     assert_eq!(engine.party_identity_roster()["members"][0]["actor_id"], 2);
     assert_eq!(engine.live_state(40).local_player_id, None);

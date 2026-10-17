@@ -155,3 +155,56 @@ test('a failed older write cannot roll back a newer capture action even without 
   assert.equal(await old, false); await stop;
   assert.deepEqual(rejected, [null]); assert.deepEqual(order, ['stop']);
 });
+
+test('a queued opacity edit confirms the native fullscreen state returned after a deferred mode toggle', async () => {
+  const toggle = deferred(), written = [], confirmed = [];
+  let nativePreferences = { fullscreenOverlay: false, opacity: 0.96 };
+  const writer = createPreferenceCommitter(nativePreferences, {
+    write: async value => {
+      written.push(structuredClone(value));
+      // Native owns mode transitions; an older queued appearance draft cannot
+      // undo a transition that completed before this write began.
+      nativePreferences = { ...value, fullscreenOverlay: nativePreferences.fullscreenOverlay };
+      return nativePreferences;
+    },
+    onConfirmed: value => confirmed.push(value),
+  });
+  const switching = writer.run(async () => {
+    await toggle.promise;
+    nativePreferences = { ...nativePreferences, fullscreenOverlay: true };
+  });
+  const saving = writer.save({ fullscreenOverlay: false, opacity: 0.4 });
+  await Promise.resolve();
+  assert.deepEqual(written, []);
+  toggle.resolve();
+  await switching;
+  assert.equal(await saving, true);
+  assert.deepEqual(written, [{ fullscreenOverlay: false, opacity: 0.4 }]);
+  assert.deepEqual(confirmed, [{ fullscreenOverlay: true, opacity: 0.4 }]);
+  assert.notStrictEqual(confirmed[0], nativePreferences);
+});
+
+test('a later save failure rolls back to the actual native acknowledgement instead of a stale queued mode flag', async () => {
+  const toggle = deferred(), rejected = [];
+  let nativePreferences = { fullscreenOverlay: false, opacity: 0.96 }, writes = 0;
+  const writer = createPreferenceCommitter(nativePreferences, {
+    write: async value => {
+      if (++writes === 2) throw new Error('settings disk is full');
+      nativePreferences = { ...value, fullscreenOverlay: nativePreferences.fullscreenOverlay };
+      return nativePreferences;
+    },
+    onRejected: (_, rollback) => rejected.push(rollback),
+  });
+  const switching = writer.run(async () => {
+    await toggle.promise;
+    nativePreferences = { ...nativePreferences, fullscreenOverlay: true };
+  });
+  const saving = writer.save({ fullscreenOverlay: false, opacity: 0.4 });
+  toggle.resolve();
+  await switching;
+  assert.equal(await saving, true);
+  // A caller mutating a returned object must not change the saved baseline.
+  nativePreferences.fullscreenOverlay = false;
+  assert.equal(await writer.save({ fullscreenOverlay: false, opacity: 0.2 }), false);
+  assert.deepEqual(rejected, [{ fullscreenOverlay: true, opacity: 0.4 }]);
+});

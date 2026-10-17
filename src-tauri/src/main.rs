@@ -6,6 +6,7 @@ mod community;
 mod cube_locator;
 mod cube_signal;
 mod event_schedule;
+mod fullscreen_overlay;
 mod hotkeys;
 mod local_history;
 mod native_capture;
@@ -98,6 +99,18 @@ impl HotkeyRuntime {
                 .any(|binding| binding.enabled && binding.action == hotkeys::Action::ToggleLock)
         })
     }
+    fn fullscreen_rescue_available(&self) -> bool {
+        self.service.as_ref().is_ok_and(|service| {
+            service.state().bindings.iter().any(|binding| {
+                binding.enabled && binding.action == hotkeys::Action::ToggleFullscreen
+            })
+        })
+    }
+}
+
+#[derive(Default)]
+struct FullscreenRuntime {
+    state: Mutex<fullscreen_overlay::State>,
 }
 struct UpdateRuntime {
     service: Result<Arc<updates::UpdateService>, String>,
@@ -117,12 +130,26 @@ impl UpdateRuntime {
 }
 
 fn configured_hotkeys(preferences: &Preferences) -> Vec<hotkeys::Binding> {
-    preferences
+    let mut bindings: Vec<hotkeys::Binding> = preferences
         .extra
         .get("hotkeys")
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .and_then(|bindings| hotkeys::normalize_bindings(bindings).ok())
-        .unwrap_or_else(hotkeys::default_bindings)
+        .unwrap_or_else(hotkeys::default_bindings);
+    // Older configurations contain six actions. Add the new rescue once;
+    // an explicitly disabled rescue remains disabled.
+    if !bindings
+        .iter()
+        .any(|binding| binding.action == hotkeys::Action::ToggleFullscreen)
+    {
+        if let Some(rescue) = hotkeys::default_bindings()
+            .into_iter()
+            .find(|binding| binding.action == hotkeys::Action::ToggleFullscreen)
+        {
+            bindings.push(rescue);
+        }
+    }
+    bindings
 }
 fn cursor_pass_through(
     preferences: &Preferences,
@@ -168,6 +195,15 @@ fn set_hotkeys(
     let has_rescue = bindings
         .iter()
         .any(|binding| binding.enabled && binding.action == hotkeys::Action::ToggleLock);
+    if fullscreen_overlay_enabled(&preferences)
+        && !bindings
+            .iter()
+            .any(|binding| binding.enabled && binding.action == hotkeys::Action::ToggleFullscreen)
+    {
+        return Err(
+            "Exit the full-screen overlay before disabling its global exit shortcut".into(),
+        );
+    }
     cursor_pass_through(
         &preferences,
         shared.panel_open.load(Ordering::Relaxed),
@@ -179,6 +215,9 @@ fn set_hotkeys(
         if !runtime.rescue_available() {
             let _ = window.set_ignore_cursor_events(false);
         }
+        if !runtime.fullscreen_rescue_available() {
+            recover_fullscreen_without_rescue(&window, &shared, &previous);
+        }
         return Err(error);
     }
     preferences.extra.insert(
@@ -189,6 +228,9 @@ fn set_hotkeys(
         let rollback = service.update(old);
         if !runtime.rescue_available() {
             let _ = window.set_ignore_cursor_events(false);
+        }
+        if !runtime.fullscreen_rescue_available() {
+            recover_fullscreen_without_rescue(&window, &shared, &previous);
         }
         return Err(if let Err(rollback) = rollback {
             format!("{error}; shortcut restoration failed: {rollback}")
@@ -311,11 +353,21 @@ fn change_locked(
     let pass_through = cursor_pass_through(&preferences, panel_open, runtime.rescue_available())?;
     persist(shared, &preferences)?;
     if let Err(error) = window
-        .set_resizable(!locked && !panel_open && !compact_strip(&preferences))
+        .set_resizable(
+            !locked
+                && !panel_open
+                && !compact_strip(&preferences)
+                && !fullscreen_overlay_enabled(&preferences),
+        )
         .and_then(|_| window.set_ignore_cursor_events(pass_through))
     {
         let _ = persist(shared, &previous);
-        let _ = window.set_resizable(!previous.locked && !panel_open && !compact_strip(&previous));
+        let _ = window.set_resizable(
+            !previous.locked
+                && !panel_open
+                && !compact_strip(&previous)
+                && !fullscreen_overlay_enabled(&previous),
+        );
         let _ = window.set_ignore_cursor_events(
             cursor_pass_through(&previous, panel_open, runtime.rescue_available()).unwrap_or(false),
         );
@@ -329,6 +381,7 @@ fn change_locked(
     preferences.height = current.height;
     *current = preferences.clone();
     let _ = window.emit("luma-preferences", &preferences);
+    invalidate_fullscreen_pointer(window);
     Ok(preferences)
 }
 
@@ -383,6 +436,31 @@ fn handle_global_hotkey(
             let _ = window.set_focus();
         }
         hotkeys::Action::CopySummary => {}
+        hotkeys::Action::ToggleFullscreen => {
+            let runtime = app
+                .try_state::<Arc<HotkeyRuntime>>()
+                .ok_or("Global hotkeys are unavailable")?;
+            let cube = app
+                .try_state::<Arc<cube_locator::Service>>()
+                .ok_or("Cube service is unavailable")?;
+            let mut preferences = shared
+                .preferences
+                .lock()
+                .map_err(|_| "Preferences unavailable")?
+                .clone();
+            let enabled = !fullscreen_overlay_enabled(&preferences);
+            preferences
+                .extra
+                .insert("fullscreenOverlay".into(), Value::Bool(enabled));
+            change_preferences(
+                &window,
+                shared,
+                &cube,
+                &runtime,
+                preferences,
+                PreferenceOrigin::NativeWindowAction,
+            )?;
+        }
     }
     let _ = app.emit("luma-hotkey", serde_json::json!({"action":action}));
     if let Ok(state) = snapshot(shared) {
@@ -411,6 +489,9 @@ fn apply_compact_transition(
     previous: &Preferences,
     next: &Preferences,
 ) -> Result<(), tauri::Error> {
+    if fullscreen_overlay_enabled(next) || fullscreen_overlay_enabled(previous) {
+        return Ok(());
+    }
     if compact_strip(previous) == compact_strip(next) {
         return Ok(());
     }
@@ -445,6 +526,383 @@ fn apply_compact_transition(
             next.height
         },
     ))
+}
+
+fn fullscreen_overlay_enabled(preferences: &Preferences) -> bool {
+    preferences
+        .extra
+        .get("fullscreenOverlay")
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+fn recover_fullscreen_without_rescue(
+    window: &WebviewWindow,
+    shared: &Shared,
+    previous: &Preferences,
+) {
+    if !fullscreen_overlay_enabled(previous) {
+        return;
+    }
+    let mut preferences = previous.clone();
+    preferences
+        .extra
+        .insert("fullscreenOverlay".into(), Value::Bool(false));
+    if apply_fullscreen_transition(window, shared, previous, &preferences).is_err() {
+        // Releasing input is mandatory if the OS cannot restore the window.
+        let _ = window.set_ignore_cursor_events(true);
+        let _ = window.hide();
+        if let Some(runtime) = window.try_state::<Arc<FullscreenRuntime>>() {
+            if let Ok(mut state) = runtime.state.lock() {
+                state.commit(false, None);
+            }
+        }
+    }
+    let _ = persist(shared, &preferences);
+    if let Ok(mut current) = shared.preferences.lock() {
+        *current = preferences.clone();
+    }
+    let _ = window.emit("luma-preferences", &preferences);
+    let _ = window.emit(
+        "luma-fullscreen-error",
+        "Full-screen mode exited because its global exit shortcut is unavailable",
+    );
+}
+
+fn invalidate_fullscreen_pointer(window: &WebviewWindow) {
+    if let Some(runtime) = window.try_state::<Arc<FullscreenRuntime>>() {
+        if let Ok(mut state) = runtime.state.lock() {
+            state.revision = state.revision.wrapping_add(1);
+        }
+    }
+}
+
+fn captured_geometry(
+    window: &WebviewWindow,
+    geometry: PanelGeometry,
+) -> Result<fullscreen_overlay::Geometry, String> {
+    let center_x = i64::from(geometry.position.x) + i64::from(geometry.size.width) / 2;
+    let center_y = i64::from(geometry.position.y) + i64::from(geometry.size.height) / 2;
+    let original_scale = window
+        .available_monitors()
+        .ok()
+        .into_iter()
+        .flatten()
+        .find(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            center_x >= i64::from(position.x)
+                && center_y >= i64::from(position.y)
+                && center_x < i64::from(position.x) + i64::from(size.width)
+                && center_y < i64::from(position.y) + i64::from(size.height)
+        })
+        .map(|monitor| monitor.scale_factor());
+    let normal = fullscreen_overlay::Geometry {
+        x: geometry.position.x,
+        y: geometry.position.y,
+        width: geometry.size.width,
+        height: geometry.size.height,
+        scale: original_scale.unwrap_or(window.scale_factor().map_err(|error| error.to_string())?),
+    };
+    if !normal.valid() {
+        return Err("The meter window geometry is unavailable".into());
+    }
+    Ok(normal)
+}
+
+fn prepare_fullscreen_preferences(
+    window: &WebviewWindow,
+    shared: &Shared,
+    hotkeys: &HotkeyRuntime,
+    previous: &Preferences,
+    next: &mut Preferences,
+) -> Result<(), String> {
+    // Only native code may supply restoration geometry.
+    match previous.extra.get("fullscreenRestoreGeometry") {
+        Some(value) => {
+            next.extra
+                .insert("fullscreenRestoreGeometry".into(), value.clone());
+        }
+        None => {
+            next.extra.remove("fullscreenRestoreGeometry");
+        }
+    }
+    if !fullscreen_overlay_enabled(next) {
+        return Ok(());
+    }
+    if !hotkeys.fullscreen_rescue_available() {
+        return Err(
+            "Enable a working full-screen overlay global shortcut before using full-screen mode"
+                .into(),
+        );
+    }
+    if !fullscreen_overlay_enabled(previous) {
+        let geometry = shared
+            .panel_restore
+            .lock()
+            .map_err(|_| "Panel window geometry unavailable")?
+            .as_ref()
+            .copied()
+            .unwrap_or(PanelGeometry {
+                position: window.outer_position().map_err(|error| error.to_string())?,
+                size: window.inner_size().map_err(|error| error.to_string())?,
+            });
+        let normal = captured_geometry(window, geometry)?;
+        next.extra.insert(
+            "fullscreenRestoreGeometry".into(),
+            serde_json::to_value(normal).map_err(|_| "Could not save meter geometry")?,
+        );
+    }
+    Ok(())
+}
+
+fn restored_fullscreen_geometry(
+    window: &WebviewWindow,
+    normal: fullscreen_overlay::Geometry,
+    compact: bool,
+) -> Result<(PanelGeometry, tauri::Monitor), String> {
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| error.to_string())?;
+    let area = |monitor: &tauri::Monitor| {
+        let rect = monitor.work_area();
+        fullscreen_overlay::Area {
+            x: rect.position.x,
+            y: rect.position.y,
+            width: rect.size.width,
+            height: rect.size.height,
+        }
+    };
+    let monitor = monitors
+        .iter()
+        .find(|monitor| normal.intersects(area(monitor)))
+        .cloned()
+        .or(window
+            .current_monitor()
+            .map_err(|error| error.to_string())?)
+        .or(window
+            .primary_monitor()
+            .map_err(|error| error.to_string())?)
+        .ok_or("No monitor is available for the meter")?;
+    let normal = normal.fit(area(&monitor), monitor.scale_factor(), compact);
+    Ok((
+        PanelGeometry {
+            position: tauri::PhysicalPosition::new(normal.x, normal.y),
+            size: tauri::PhysicalSize::new(normal.width, normal.height),
+        },
+        monitor,
+    ))
+}
+
+fn apply_fullscreen_transition(
+    window: &WebviewWindow,
+    shared: &Shared,
+    previous: &Preferences,
+    next: &Preferences,
+) -> Result<(), String> {
+    let enabled = fullscreen_overlay_enabled(next);
+    if enabled == fullscreen_overlay_enabled(previous) {
+        return Ok(());
+    }
+    let runtime = window
+        .try_state::<Arc<FullscreenRuntime>>()
+        .ok_or("Full-screen overlay service is unavailable")?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| "Full-screen overlay state unavailable")?;
+    let mut normal = if enabled {
+        next.extra
+            .get("fullscreenRestoreGeometry")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<fullscreen_overlay::Geometry>(value).ok())
+    } else {
+        state.normal.or_else(|| {
+            previous
+                .extra
+                .get("fullscreenRestoreGeometry")
+                .cloned()
+                .and_then(|value| {
+                    serde_json::from_value::<fullscreen_overlay::Geometry>(value).ok()
+                })
+        })
+    }
+    .filter(|geometry| geometry.valid())
+    .ok_or("The original meter geometry is unavailable")?;
+    shared
+        .size_transition_until
+        .store(now_ms() + 1000, Ordering::Relaxed);
+    shared.geometry_save_due.store(0, Ordering::Relaxed);
+    let panel_open = shared.panel_open.load(Ordering::Relaxed);
+    if enabled {
+        let result = window
+            .set_ignore_cursor_events(true)
+            .and_then(|_| window.set_max_size(None::<tauri::LogicalSize<f64>>))
+            .and_then(|_| window.set_resizable(false))
+            .and_then(|_| window.set_fullscreen(true));
+        if let Err(error) = result {
+            let _ = window.set_fullscreen(false);
+            let _ = window.set_max_size(Some(tauri::LogicalSize::new(1600.0, 1600.0)));
+            let _ =
+                window.set_resizable(!previous.locked && !panel_open && !compact_strip(previous));
+            let _ = window.set_ignore_cursor_events(false);
+            return Err(error.to_string());
+        }
+        state.commit(true, Some(normal));
+    } else {
+        normal.width = (next.width * normal.scale).round() as u32;
+        normal.height = (if compact_strip(next) {
+            44.0
+        } else {
+            next.height
+        } * normal.scale)
+            .round() as u32;
+        let (normal_geometry, monitor) =
+            restored_fullscreen_geometry(window, normal, compact_strip(next))?;
+        let target = if panel_open {
+            drawer_geometry(
+                normal_geometry,
+                *monitor.work_area(),
+                monitor.scale_factor(),
+            )?
+        } else {
+            normal_geometry
+        };
+        let result = window
+            .set_fullscreen(false)
+            .and_then(|_| window.set_position(target.position))
+            .and_then(|_| {
+                window.set_min_size(Some(tauri::LogicalSize::new(
+                    320.0,
+                    meter_min_height(next, panel_open),
+                )))
+            })
+            .and_then(|_| window.set_max_size(Some(tauri::LogicalSize::new(1600.0, 1600.0))))
+            .and_then(|_| window.set_size(target.size))
+            .and_then(|_| window.set_resizable(!next.locked && !panel_open && !compact_strip(next)))
+            .and_then(|_| window.set_ignore_cursor_events(false));
+        if let Err(error) = result {
+            let _ = window.set_max_size(None::<tauri::LogicalSize<f64>>);
+            let _ = window.set_resizable(false);
+            let _ = window.set_fullscreen(true);
+            state.revision = state.revision.wrapping_add(1);
+            return Err(error.to_string());
+        }
+        *shared
+            .panel_restore
+            .lock()
+            .map_err(|_| "Panel window geometry unavailable")? =
+            panel_open.then_some(normal_geometry);
+        state.commit(false, None);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_fullscreen_overlay(
+    window: WebviewWindow,
+    shared: State<Arc<Shared>>,
+    cube: State<Arc<cube_locator::Service>>,
+    hotkeys: State<Arc<HotkeyRuntime>>,
+    enabled: bool,
+) -> Result<Preferences, String> {
+    let mut preferences = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?
+        .clone();
+    preferences
+        .extra
+        .insert("fullscreenOverlay".into(), Value::Bool(enabled));
+    change_preferences(
+        &window,
+        &shared,
+        &cube,
+        &hotkeys,
+        preferences,
+        PreferenceOrigin::NativeWindowAction,
+    )
+}
+
+#[tauri::command]
+fn set_overlay_hit_regions(
+    runtime: State<Arc<FullscreenRuntime>>,
+    regions: Vec<fullscreen_overlay::HitRegion>,
+) -> Result<(), String> {
+    fullscreen_overlay::validate_regions(&regions)?;
+    let mut state = runtime
+        .state
+        .lock()
+        .map_err(|_| "Full-screen overlay state unavailable")?;
+    state.regions = regions;
+    state.revision = state.revision.wrapping_add(1);
+    Ok(())
+}
+
+fn start_fullscreen_pointer_worker(
+    window: WebviewWindow,
+    shared: Arc<Shared>,
+    runtime: Arc<FullscreenRuntime>,
+) {
+    std::thread::spawn(move || {
+        let mut applied = None;
+        while !shared.stopping.load(Ordering::Relaxed) {
+            let state = runtime
+                .state
+                .lock()
+                .ok()
+                .map(|state| (state.active, state.regions.clone(), state.revision));
+            if let Some((true, regions, revision)) = state {
+                let forced = shared.preferences.lock().ok().is_some_and(|preferences| {
+                    preferences.locked
+                        && preferences
+                            .extra
+                            .get("clickThroughWhenLocked")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        && !shared.panel_open.load(Ordering::Relaxed)
+                });
+                let inside = fullscreen_overlay::cursor_position()
+                    .and_then(|(x, y)| {
+                        let position = window.inner_position().ok()?;
+                        let scale = window.scale_factor().ok()?;
+                        (scale.is_finite() && scale > 0.0).then(|| {
+                            fullscreen_overlay::contains(
+                                &regions,
+                                (f64::from(x) - f64::from(position.x)) / scale,
+                                (f64::from(y) - f64::from(position.y)) / scale,
+                            )
+                        })
+                    })
+                    .unwrap_or(false);
+                let desired = forced || !inside;
+                if applied != Some((revision, desired)) {
+                    let target = window.clone();
+                    let policy = runtime.clone();
+                    // Native mode transitions and cursor writes are serialized
+                    // on the UI thread. Revalidate after dispatch so an update
+                    // calculated before exit cannot disable normal-window input.
+                    if window
+                        .app_handle()
+                        .run_on_main_thread(move || {
+                            if let Ok(mut state) = policy.state.lock() {
+                                state.apply_pointer_update(revision, || {
+                                    target.set_ignore_cursor_events(desired).is_ok()
+                                });
+                            }
+                        })
+                        .is_ok()
+                    {
+                        applied = Some((revision, desired));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            } else {
+                applied = None;
+                std::thread::sleep(Duration::from_millis(125));
+            }
+        }
+    });
 }
 
 fn team_own_data(payload: Value, capture_live: bool, at: u64) -> Value {
@@ -574,6 +1032,25 @@ impl Preferences {
     }
 
     fn validate(&self) -> Result<(), String> {
+        for key in ["fullscreenOverlay"] {
+            if self.extra.get(key).is_some_and(|value| !value.is_boolean()) {
+                return Err("Invalid full-screen overlay preference".into());
+            }
+        }
+        for (key, min, max) in [
+            ("overlayX", 0.0, 20_000.0),
+            ("overlayY", 0.0, 20_000.0),
+            ("overlayWidth", 280.0, 1200.0),
+            ("overlayHeight", 200.0, 1200.0),
+        ] {
+            if self.extra.get(key).is_some_and(|value| {
+                value
+                    .as_f64()
+                    .is_none_or(|number| !number.is_finite() || !(min..=max).contains(&number))
+            }) {
+                return Err("Invalid overlay panel geometry".into());
+            }
+        }
         if let Some(name) = self.extra.get("characterName") {
             validate_character_name(name.as_str().ok_or("Character name must be text")?)?;
         }
@@ -588,7 +1065,7 @@ impl Preferences {
         if !self.text_scale.is_finite()
             || !(0.65..=2.0).contains(&self.text_scale)
             || !self.opacity.is_finite()
-            || !(0.35..=1.0).contains(&self.opacity)
+            || !(0.0..=1.0).contains(&self.opacity)
             || !self.width.is_finite()
             || !(320.0..=1600.0).contains(&self.width)
             || !self.height.is_finite()
@@ -886,6 +1363,108 @@ mod latency_capture_tests {
 #[cfg(test)]
 mod shell_tests {
     use super::*;
+
+    #[test]
+    fn queued_settings_cannot_undo_native_window_toggles_but_explicit_actions_can() {
+        for native_enabled in [false, true] {
+            let mut previous = Preferences::default();
+            previous.locked = native_enabled;
+            previous
+                .extra
+                .insert("fullscreenOverlay".into(), Value::Bool(native_enabled));
+            let mut queued = previous.clone();
+            queued.locked = !native_enabled;
+            queued
+                .extra
+                .insert("fullscreenOverlay".into(), Value::Bool(!native_enabled));
+            queued.theme = "pearl".into();
+            queued.opacity = 0.4;
+            queued
+                .extra
+                .insert("overlayX".into(), serde_json::json!(80));
+
+            let mut settings = queued.clone();
+            preserve_native_window_preferences(
+                &previous,
+                &mut settings,
+                PreferenceOrigin::Settings,
+            );
+            assert_eq!(settings.locked, native_enabled);
+            assert_eq!(fullscreen_overlay_enabled(&settings), native_enabled);
+            assert_eq!(settings.theme, "pearl");
+            assert_eq!(settings.opacity, 0.4);
+            assert_eq!(settings.extra["overlayX"], 80);
+
+            preserve_native_window_preferences(
+                &previous,
+                &mut queued,
+                PreferenceOrigin::NativeWindowAction,
+            );
+            assert_eq!(queued.locked, !native_enabled);
+            assert_eq!(fullscreen_overlay_enabled(&queued), !native_enabled);
+        }
+    }
+
+    #[test]
+    fn older_shortcuts_gain_only_the_new_fullscreen_rescue_and_explicit_disable_survives() {
+        let mut preferences = Preferences::default();
+        let old: Vec<_> = hotkeys::default_bindings()
+            .into_iter()
+            .filter(|binding| binding.action != hotkeys::Action::ToggleFullscreen)
+            .collect();
+        preferences
+            .extra
+            .insert("hotkeys".into(), serde_json::to_value(&old).unwrap());
+        let migrated = configured_hotkeys(&preferences);
+        assert_eq!(&migrated[..6], &old);
+        assert_eq!(migrated.len(), 7);
+        assert_eq!(migrated[6].action, hotkeys::Action::ToggleFullscreen);
+        assert_eq!(migrated[6].shortcut, "Ctrl+Alt+Shift+F5");
+        let mut disabled = migrated;
+        disabled[6].enabled = false;
+        preferences
+            .extra
+            .insert("hotkeys".into(), serde_json::to_value(&disabled).unwrap());
+        assert_eq!(configured_hotkeys(&preferences), disabled);
+    }
+
+    #[test]
+    fn fullscreen_canvas_preferences_never_replace_normal_meter_dimensions() {
+        let mut preferences = Preferences::default();
+        let original = (preferences.width, preferences.height);
+        preferences
+            .extra
+            .insert("fullscreenOverlay".into(), Value::Bool(true));
+        for (key, value) in [
+            ("overlayX", 40.0),
+            ("overlayY", 60.0),
+            ("overlayWidth", 500.0),
+            ("overlayHeight", 700.0),
+        ] {
+            preferences
+                .extra
+                .insert(key.into(), serde_json::json!(value));
+        }
+        assert!(preferences.validate().is_ok());
+        assert!(fullscreen_overlay_enabled(&preferences));
+        assert_eq!((preferences.width, preferences.height), original);
+        preferences.opacity = 0.0;
+        assert!(preferences.validate().is_ok());
+        preferences.opacity = -0.01;
+        assert!(preferences.validate().is_err());
+        preferences.opacity = 1.0;
+        preferences
+            .extra
+            .insert("fullscreenOverlay".into(), serde_json::json!("true"));
+        assert!(preferences.validate().is_err());
+        preferences
+            .extra
+            .insert("fullscreenOverlay".into(), Value::Bool(false));
+        preferences
+            .extra
+            .insert("overlayWidth".into(), serde_json::json!(5000));
+        assert!(preferences.validate().is_err());
+    }
 
     #[test]
     fn click_through_requires_a_rescue_and_drawers_always_accept_input() {
@@ -2151,7 +2730,47 @@ fn set_preferences(
     shared: State<Arc<Shared>>,
     cube: State<Arc<cube_locator::Service>>,
     hotkeys: State<Arc<HotkeyRuntime>>,
+    preferences: Preferences,
+) -> Result<Preferences, String> {
+    change_preferences(
+        &window,
+        &shared,
+        &cube,
+        &hotkeys,
+        preferences,
+        PreferenceOrigin::Settings,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PreferenceOrigin {
+    Settings,
+    NativeWindowAction,
+}
+
+fn preserve_native_window_preferences(
+    previous: &Preferences,
+    incoming: &mut Preferences,
+    origin: PreferenceOrigin,
+) {
+    if matches!(origin, PreferenceOrigin::Settings) {
+        // Theme/range/gesture saves contain whole snapshots. They may have
+        // been queued before a global shortcut or an explicit window action.
+        incoming.locked = previous.locked;
+        incoming.extra.insert(
+            "fullscreenOverlay".into(),
+            Value::Bool(fullscreen_overlay_enabled(previous)),
+        );
+    }
+}
+
+fn change_preferences(
+    window: &WebviewWindow,
+    shared: &Shared,
+    cube: &Arc<cube_locator::Service>,
+    hotkeys: &HotkeyRuntime,
     mut preferences: Preferences,
+    origin: PreferenceOrigin,
 ) -> Result<Preferences, String> {
     let _change = shared
         .preference_change
@@ -2162,6 +2781,9 @@ fn set_preferences(
         .lock()
         .map_err(|_| "Preferences unavailable")?
         .clone();
+    // Read and preserve these fields while holding preference_change, so a
+    // queued settings snapshot cannot race an authoritative native toggle.
+    preserve_native_window_preferences(&previous, &mut preferences, origin);
     // Native resize owns geometry. Theme/UI saves can contain stale dimensions.
     preferences.width = previous.width;
     preferences.height = previous.height;
@@ -2175,6 +2797,7 @@ fn set_preferences(
         }
     }
     preferences.discard_session_marks();
+    prepare_fullscreen_preferences(window, shared, hotkeys, &previous, &mut preferences)?;
     preferences.validate()?;
     let pass_through = cursor_pass_through(
         &preferences,
@@ -2186,7 +2809,8 @@ fn set_preferences(
         .set_resizable(
             !preferences.locked
                 && !shared.panel_open.load(Ordering::Relaxed)
-                && !compact_strip(&preferences),
+                && !compact_strip(&preferences)
+                && !fullscreen_overlay_enabled(&preferences),
         )
         .and_then(|_| window.set_ignore_cursor_events(pass_through))
         .and_then(|_| apply_compact_transition(&window, &shared, &previous, &preferences))
@@ -2203,10 +2827,32 @@ fn set_preferences(
         let _ = window.set_resizable(
             !previous.locked
                 && !shared.panel_open.load(Ordering::Relaxed)
-                && !compact_strip(&previous),
+                && !compact_strip(&previous)
+                && !fullscreen_overlay_enabled(&previous),
         );
         let _ = apply_compact_transition(&window, &shared, &preferences, &previous);
+        invalidate_fullscreen_pointer(window);
         return Err(error.to_string());
+    }
+    if let Err(error) = apply_fullscreen_transition(window, shared, &previous, &preferences) {
+        let _ = persist(shared, &previous);
+        let _ = apply_compact_transition(window, shared, &preferences, &previous);
+        let _ = window.set_resizable(
+            !previous.locked
+                && !shared.panel_open.load(Ordering::Relaxed)
+                && !compact_strip(&previous)
+                && !fullscreen_overlay_enabled(&previous),
+        );
+        let _ = window.set_ignore_cursor_events(
+            cursor_pass_through(
+                &previous,
+                shared.panel_open.load(Ordering::Relaxed),
+                hotkeys.rescue_available(),
+            )
+            .unwrap_or(false),
+        );
+        invalidate_fullscreen_pointer(window);
+        return Err(error);
     }
     shared
         .engine
@@ -2247,6 +2893,8 @@ fn set_preferences(
             let _ = cube.stop();
         }
     }
+    invalidate_fullscreen_pointer(window);
+    let _ = window.emit("luma-preferences", &preferences);
     Ok(preferences)
 }
 
@@ -2394,6 +3042,14 @@ fn start_resize(window: WebviewWindow, shared: State<Arc<Shared>>) -> Result<(),
         .preferences
         .lock()
         .ok()
+        .is_some_and(|preferences| fullscreen_overlay_enabled(&preferences))
+    {
+        return Err("Resize the meter panel inside the full-screen canvas".into());
+    }
+    if shared
+        .preferences
+        .lock()
+        .ok()
         .is_some_and(|preferences| compact_strip(&preferences))
     {
         return Err("Expand the compact strip before resizing".into());
@@ -2421,6 +3077,14 @@ fn start_drag(window: WebviewWindow, shared: State<Arc<Shared>>) -> Result<(), S
     if shared
         .preferences
         .lock()
+        .ok()
+        .is_some_and(|preferences| fullscreen_overlay_enabled(&preferences))
+    {
+        return Err("Move the meter panel inside the full-screen canvas".into());
+    }
+    if shared
+        .preferences
+        .lock()
         .map_err(|_| "Preferences unavailable")?
         .locked
         && !shared.panel_open.load(Ordering::Relaxed)
@@ -2437,6 +3101,14 @@ fn resize_by(
     dx: f64,
     dy: f64,
 ) -> Result<(), String> {
+    if shared
+        .preferences
+        .lock()
+        .ok()
+        .is_some_and(|preferences| fullscreen_overlay_enabled(&preferences))
+    {
+        return Err("Resize the meter panel inside the full-screen canvas".into());
+    }
     if shared
         .preferences
         .lock()
@@ -2499,6 +3171,11 @@ fn set_panel_open(
         .lock()
         .map_err(|_| "Preferences unavailable")?
         .clone();
+    if fullscreen_overlay_enabled(&preferences) {
+        shared.panel_open.store(open, Ordering::Relaxed);
+        invalidate_fullscreen_pointer(&window);
+        return Ok(());
+    }
     let previous = PanelGeometry {
         position: window.outer_position().map_err(|error| error.to_string())?,
         size: window.inner_size().map_err(|error| error.to_string())?,
@@ -2794,6 +3471,8 @@ fn main() {
             cancel_training,
             get_preferences,
             set_preferences,
+            set_fullscreen_overlay,
+            set_overlay_hit_regions,
             set_local_player,
             set_character_name,
             set_party_members,
@@ -2819,7 +3498,7 @@ fn main() {
             let cube = Arc::new(cube_locator::Service::new(data_dir.clone())?);
             app.manage(cube.clone());
             let preferences_path = data_dir.join("preferences.json");
-            let preferences = fs::metadata(&preferences_path)
+            let mut preferences = fs::metadata(&preferences_path)
                 .ok()
                 .filter(|metadata| metadata.len() <= 4 * 1024 * 1024)
                 .and_then(|_| fs::read(preferences_path).ok())
@@ -2827,6 +3506,10 @@ fn main() {
                 .map(Preferences::migrate_legacy_dimensions)
                 .filter(|value| value.validate().is_ok())
                 .unwrap_or_default();
+            let requested_fullscreen = fullscreen_overlay_enabled(&preferences);
+            // Register and verify the global exit shortcut before expanding a
+            // restored full-monitor window.
+            preferences.extra.insert("fullscreenOverlay".into(), Value::Bool(false));
             if let Some((source, threshold)) = preferences.automatic_cube_capture() {
                 // This starts only the background worker. It waits for AION2
                 // and never opens a microphone or another process's output.
@@ -2854,6 +3537,17 @@ fn main() {
                     if compact_strip(&preferences){44.0}else{preferences.height},
                 ))?;
                 window.set_resizable(!preferences.locked && !compact_strip(&preferences))?;
+                if requested_fullscreen {
+                    if let Some(normal) = preferences.extra.get("fullscreenRestoreGeometry").cloned()
+                        .and_then(|value| serde_json::from_value::<fullscreen_overlay::Geometry>(value).ok())
+                        .filter(|geometry| geometry.valid())
+                    {
+                        if let Ok((geometry, _)) = restored_fullscreen_geometry(&window, normal, compact_strip(&preferences)) {
+                            window.set_position(geometry.position)?;
+                            window.set_size(geometry.size)?;
+                        }
+                    }
+                }
             }
             let calendar = event_schedule::Service::start(data_dir.join("event-calendars.json"));
             let shared = Arc::new(Shared {
@@ -2884,12 +3578,40 @@ fn main() {
                 });
                 if dispatch.is_err(){let _=handle.emit("luma-hotkey",serde_json::json!({"action":action,"error":"Global shortcut could not reach the Luma window"}));}
             });
-            let hotkey_runtime=Arc::new(HotkeyRuntime{service:hotkeys::HotkeyService::start(bindings,callback).map(Arc::new)});
+            let hotkey_service = hotkeys::HotkeyService::start(bindings.clone(), callback).map(Arc::new);
+            if let Ok(service) = &hotkey_service {
+                if !service.state().errors.is_empty() && bindings.iter().any(|binding|
+                    binding.enabled && binding.action == hotkeys::Action::ToggleFullscreen)
+                {
+                    // A newly added F5 conflict must not disable the six older
+                    // working shortcuts. Keep fullscreen unavailable safely.
+                    let fallback = bindings.into_iter().map(|mut binding| {
+                        if binding.action == hotkeys::Action::ToggleFullscreen { binding.enabled = false; }
+                        binding
+                    }).collect();
+                    let _ = service.update(fallback);
+                }
+            }
+            let hotkey_runtime=Arc::new(HotkeyRuntime{service:hotkey_service});
             if let Some(window)=app.get_webview_window("main"){
                 let enabled=shared.preferences.lock().ok().and_then(|preferences|cursor_pass_through(&preferences,false,hotkey_runtime.rescue_available()).ok()).unwrap_or(false);
                 let _=window.set_ignore_cursor_events(enabled);
             }
-            app.manage(hotkey_runtime);
+            app.manage(hotkey_runtime.clone());
+            let fullscreen_runtime = Arc::new(FullscreenRuntime::default());
+            app.manage(fullscreen_runtime.clone());
+            if let Some(window) = app.get_webview_window("main") {
+                if requested_fullscreen {
+                    let mut requested = shared.preferences.lock()
+                        .map_err(|_| "Preferences unavailable")?.clone();
+                    requested.extra.insert("fullscreenOverlay".into(), Value::Bool(true));
+                    if let Err(error) = change_preferences(&window, &shared, &cube, &hotkey_runtime, requested, PreferenceOrigin::NativeWindowAction) {
+                        let _ = window.emit("luma-fullscreen-error", error);
+                        if let Ok(preferences) = shared.preferences.lock() { let _ = persist(&shared, &preferences); }
+                    }
+                }
+                start_fullscreen_pointer_worker(window, shared.clone(), fullscreen_runtime);
+            }
             let updates=Arc::new(UpdateRuntime{service:updates::UpdateService::new(shared.data_dir.clone(),env!("CARGO_PKG_VERSION")).map(Arc::new)});
             let automatic=shared.preferences.lock().ok().is_some_and(|preferences|preferences.extra.get("autoCheckUpdates").and_then(Value::as_bool)!=Some(false));
             app.manage(updates.clone());
@@ -3010,7 +3732,8 @@ fn main() {
                     tauri::WindowEvent::Resized(size) => {
                         if shared.panel_open.load(Ordering::Relaxed)
                             || now_ms() < shared.size_transition_until.load(Ordering::Relaxed)
-                            || shared.preferences.lock().ok().is_some_and(|preferences|compact_strip(&preferences))
+                            || shared.preferences.lock().ok().is_some_and(|preferences|
+                                compact_strip(&preferences) || fullscreen_overlay_enabled(&preferences))
                         {
                             return;
                         }

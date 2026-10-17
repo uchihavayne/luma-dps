@@ -39,9 +39,12 @@ export function createPreferenceCommitter(initial, { write, onConfirmed, onRejec
         if (queued === batch) queued = null;
         let success = false;
         try {
-          await write(batch.snapshot);
-          lastConfirmed = structuredClone(batch.snapshot);
-          onConfirmed?.(structuredClone(batch.snapshot));
+          const written = await write(batch.snapshot);
+          const acknowledged = written && typeof written === 'object'
+            && [Object.prototype, null].includes(Object.getPrototypeOf(written))
+            ? written : batch.snapshot;
+          lastConfirmed = structuredClone(acknowledged);
+          onConfirmed?.(structuredClone(acknowledged));
           success = true;
         } catch (error) {
           onRejected?.(error, batch.revision === epoch ? structuredClone(lastConfirmed) : null);

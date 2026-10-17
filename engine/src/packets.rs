@@ -681,6 +681,26 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             let id = u64::from(bytes.variable()?);
             bytes.skip(4)?;
             let owner = u64::from(bytes.variable()?);
+            // A player acting nearby is announced with the same prefix as
+            // the short ownership notice, followed by home server and name.
+            // Read that typed tail in place: scanning arbitrary later bytes
+            // can mistake a guild name for the acting character's name.
+            if bytes.offset < frame.len() {
+                if frame.len() > 4096 || owner == 0 {
+                    return Err(ReadError::Invalid);
+                }
+                let server = u16::from(bytes.byte()?) | u16::from(bytes.byte()?) << 8;
+                if !(1000..3000).contains(&server) {
+                    return Err(ReadError::Invalid);
+                }
+                let name = bytes.character_text()?;
+                return Ok(Some(Event::Identity {
+                    id: owner,
+                    name,
+                    class: None,
+                    own: false,
+                }));
+            }
             if id == 0 || owner == 0 || id == owner {
                 return Ok(None);
             }

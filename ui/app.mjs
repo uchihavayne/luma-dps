@@ -22,6 +22,7 @@ import { renderCombatInsights, renderEffectAttribution, renderBossProjection } f
 import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
+import { overlayRect, overlayGesture } from './overlay.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -54,6 +55,7 @@ const remindedEventCycles = new Set();
 let calendarHorizonDays = 7;
 let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true, obsLanEnabled = false, obsPort = '';
 let hotkeyState = { bindings: [], errors: [] }, hotkeyPending = false, updateState = {}, updatePending = false;
+let fullscreenPending = false, overlayRegionFrame = 0, overlayRegionFingerprint = '', overlayRegionFailures = 0, hudGesture = null;
 let scheduleSnapshot = null, scheduleDataRevision = 0, schedulePending = false, scheduledCacheKey = '', scheduledCache = [], scheduleTimingSecond = -1;
 const scheduleTimings = new Map();
 let cubeState = normalizeCubeState(), cubePending = false, cubePollPending = false, cubeReadError = '', cubeReceivedCount = 0, cubeAutoListenIntent = null;
@@ -121,8 +123,8 @@ Object.assign(words.tr, { targetFontSize: 'Hedef adı boyutu (px)', resizeHelp: 
 Object.assign(words.en, { targetFontSize: 'Target name size (px)', resizeHelp: 'Arrow keys: 10 px · Shift + arrow: 20 px', timerElapsed: 'Timer elapsed', readyConfirmed: 'Ready · server confirmed', serverObserved: 'SERVER OBSERVATION', charges: 'Charges' });
 Object.assign(words.tr, { dragPanel: 'Bu başlıktan tutup pencereyi taşıyın.' });
 Object.assign(words.en, { dragPanel: 'Drag this header to move the window.' });
-Object.assign(words.tr, { personal: 'Kişisel', party: 'Grup', observed: 'Gözlenen', personalDps: 'KİŞİSEL DPS', personalDamage: 'KİŞİSEL HASAR', partyDps: 'GRUP DPS', partyDamage: 'GRUP HASARI', observedDps: 'GÖZLENEN DPS', observedDamage: 'GÖZLENEN HASAR', scope: 'Ölçüm kapsamı', character: 'Karakterim', characterName: 'Karakter adı', characterId: 'Bu oturumdaki karakterin', characterHelp: 'Adın otomatik gelmediyse aşağıda kendi satırını seçip adını yaz. Seçim yalnızca bu oturum için geçerlidir; yeniden girişte doğrula.', nameOnlyHelp: 'Yalnızca ad kaydedersen alınan oyuncu adı tam ve tekil eşleştiğinde kullanılır. Hasar miktarından karakterin tahmin edilmez.', chooseCharacter: 'Karakterini seç', characterUnknown: 'Kendi satırın henüz belirlenmedi. ◎ ile karakterini seç; yakındaki oyuncular kişisel hasarına eklenmez.', partyUnknown: 'Grup üyeleri belirlenmedi. ◎ ile grup listeni seç; yakındaki oyuncular otomatik grup sayılmaz.', partyHelp: 'Üyelik bilgisi alınmadığında gruptaki oyuncuları kendin seçebilirsin. Bu elle seçilen listedir.', manualParty: 'Grubum · elle seç', saveCharacter: 'Karakteri kaydet', clearCharacter: 'Seçimi temizle', saveParty: 'Grubu kaydet', autoDetect: 'Otomatik / henüz bilinmiyor', me: 'BEN', profileSource: 'Kimlik', layout: 'Hazır tasarımlar', layoutHelp: 'Renk paletinden bağımsız dört Luma tasarımı. Yazı, sıklık ve satır bilgilerini ayrıca değiştirebilirsin.', density: 'Liste sıklığı', comfortable: 'Rahat', compact: 'Sık', showClass: 'Sınıf bilgisini göster', showShares: 'Hasar yüzdesini göster', rowMetric: 'Satırda gösterilen', rowBoth: 'DPS ve hasar', rowDps: 'Yalnızca DPS', rowDamage: 'Yalnızca hasar', allObserved: 'Tüm gözlenen oyuncular', averageHit: 'Ortalama vuruş', skillSort: 'Yetenek sıralaması', skillDamage: 'Hasar', skillHits: 'Vuruş', skillCrit: 'Kritik oranı', encounterObserved: 'Karşılaşmada gözlenen', selectedScope: 'Seçili kapsam', personalWaiting: 'Kişisel hasar bekleniyor', partyWaiting: 'Grup hasarı bekleniyor', identityManual: 'Elle seçildi', identityServer: 'Sunucudan alındı', rosterManual: 'Elle seçilen grup', rosterServer: 'Sunucudan alınan grup', statsReceived: 'Bu istatistikler alınan olayları kapsar.' });
-Object.assign(words.en, { personal: 'Personal', party: 'Group', observed: 'Observed', personalDps: 'PERSONAL DPS', personalDamage: 'PERSONAL DAMAGE', partyDps: 'GROUP DPS', partyDamage: 'GROUP DAMAGE', observedDps: 'OBSERVED DPS', observedDamage: 'OBSERVED DAMAGE', scope: 'Measurement scope', character: 'My character', characterName: 'Character name', characterId: 'Your character in this session', characterHelp: 'If your name has not arrived automatically, select your own row below and enter your name. This selection applies to this session; verify it after reconnecting.', nameOnlyHelp: 'With only a saved name, an exact unique received player name can match it. Damage amounts never identify your character.', chooseCharacter: 'Choose your character', characterUnknown: 'Your own row is not identified yet. Use ◎ to choose your character; nearby players never enter your personal damage.', partyUnknown: 'Group members are not identified. Use ◎ to select your group; nearby players are not automatically group members.', partyHelp: 'When membership is unavailable, you can explicitly select your group members. This is a manually chosen roster.', manualParty: 'My group · manual selection', saveCharacter: 'Save character', clearCharacter: 'Clear selection', saveParty: 'Save group', autoDetect: 'Automatic / not yet known', me: 'ME', profileSource: 'Identity', layout: 'Layout presets', layoutHelp: 'Four Luma designs independent of your color palette. Adjust fonts, density and row information separately.', density: 'List density', comfortable: 'Comfortable', compact: 'Compact', showClass: 'Show class information', showShares: 'Show damage percentages', rowMetric: 'Information in each row', rowBoth: 'DPS and damage', rowDps: 'DPS only', rowDamage: 'Damage only', allObserved: 'All observed players', averageHit: 'Average hit', skillSort: 'Skill sorting', skillDamage: 'Damage', skillHits: 'Hits', skillCrit: 'Critical rate', encounterObserved: 'Observed in this encounter', selectedScope: 'Selected scope', personalWaiting: 'Waiting for personal damage', partyWaiting: 'Waiting for group damage', identityManual: 'Manually selected', identityServer: 'Received from server', rosterManual: 'Manually chosen group', rosterServer: 'Received group', statsReceived: 'These statistics cover received events.' });
+Object.assign(words.tr, { personal: 'Kişisel', party: 'Grup', observed: 'Gözlenen', personalDps: 'KİŞİSEL DPS', personalDamage: 'KİŞİSEL HASAR', partyDps: 'GRUP DPS', partyDamage: 'GRUP HASARI', observedDps: 'GÖZLENEN DPS', observedDamage: 'GÖZLENEN HASAR', scope: 'Ölçüm kapsamı', character: 'Karakterim', characterName: 'Karakter adı', characterId: 'Bu oturumdaki karakterin', characterHelp: 'Adın otomatik gelmediyse aşağıda kendi satırını seçip adını yaz. Seçim yalnızca bu oturum için geçerlidir; yeniden girişte doğrula.', nameOnlyHelp: 'Yalnızca ad kaydedersen alınan oyuncu adı tam ve tekil eşleştiğinde kullanılır. Hasar miktarından karakterin tahmin edilmez.', chooseCharacter: 'Karakterini seç', characterUnknown: 'Kendi satırın henüz belirlenmedi. ◎ ile karakterini seç; yakındaki oyuncular kişisel hasarına eklenmez.', partyUnknown: 'Grup üyeleri belirlenmedi. ◎ ile grup listeni seç; yakındaki oyuncular otomatik grup sayılmaz.', partyHelp: 'Üyelik bilgisi alınmadığında gruptaki oyuncuları kendin seçebilirsin. Bu elle seçilen listedir.', manualParty: 'Grubum · elle seç', saveCharacter: 'Karakteri kaydet', clearCharacter: 'Seçimi temizle', saveParty: 'Grubu kaydet', autoDetect: 'Otomatik / henüz bilinmiyor', me: 'BEN', profileSource: 'Kimlik', layout: 'Hazır tasarımlar', layoutHelp: 'Renk paletinden bağımsız beş Luma tasarımı. Yazı, sıklık ve satır bilgilerini ayrıca değiştirebilirsin.', density: 'Liste sıklığı', comfortable: 'Rahat', compact: 'Sık', showClass: 'Sınıf bilgisini göster', showShares: 'Hasar yüzdesini göster', rowMetric: 'Satırda gösterilen', rowBoth: 'DPS ve hasar', rowDps: 'Yalnızca DPS', rowDamage: 'Yalnızca hasar', allObserved: 'Tüm gözlenen oyuncular', averageHit: 'Ortalama vuruş', skillSort: 'Yetenek sıralaması', skillDamage: 'Hasar', skillHits: 'Vuruş', skillCrit: 'Kritik oranı', encounterObserved: 'Karşılaşmada gözlenen', selectedScope: 'Seçili kapsam', personalWaiting: 'Kişisel hasar bekleniyor', partyWaiting: 'Grup hasarı bekleniyor', identityManual: 'Elle seçildi', identityServer: 'Sunucudan alındı', rosterManual: 'Elle seçilen grup', rosterServer: 'Sunucudan alınan grup', statsReceived: 'Bu istatistikler alınan olayları kapsar.' });
+Object.assign(words.en, { personal: 'Personal', party: 'Group', observed: 'Observed', personalDps: 'PERSONAL DPS', personalDamage: 'PERSONAL DAMAGE', partyDps: 'GROUP DPS', partyDamage: 'GROUP DAMAGE', observedDps: 'OBSERVED DPS', observedDamage: 'OBSERVED DAMAGE', scope: 'Measurement scope', character: 'My character', characterName: 'Character name', characterId: 'Your character in this session', characterHelp: 'If your name has not arrived automatically, select your own row below and enter your name. This selection applies to this session; verify it after reconnecting.', nameOnlyHelp: 'With only a saved name, an exact unique received player name can match it. Damage amounts never identify your character.', chooseCharacter: 'Choose your character', characterUnknown: 'Your own row is not identified yet. Use ◎ to choose your character; nearby players never enter your personal damage.', partyUnknown: 'Group members are not identified. Use ◎ to select your group; nearby players are not automatically group members.', partyHelp: 'When membership is unavailable, you can explicitly select your group members. This is a manually chosen roster.', manualParty: 'My group · manual selection', saveCharacter: 'Save character', clearCharacter: 'Clear selection', saveParty: 'Save group', autoDetect: 'Automatic / not yet known', me: 'ME', profileSource: 'Identity', layout: 'Layout presets', layoutHelp: 'Five Luma designs independent of your color palette. Adjust fonts, density and row information separately.', density: 'List density', comfortable: 'Comfortable', compact: 'Compact', showClass: 'Show class information', showShares: 'Show damage percentages', rowMetric: 'Information in each row', rowBoth: 'DPS and damage', rowDps: 'DPS only', rowDamage: 'Damage only', allObserved: 'All observed players', averageHit: 'Average hit', skillSort: 'Skill sorting', skillDamage: 'Damage', skillHits: 'Hits', skillCrit: 'Critical rate', encounterObserved: 'Observed in this encounter', selectedScope: 'Selected scope', personalWaiting: 'Waiting for personal damage', partyWaiting: 'Waiting for group damage', identityManual: 'Manually selected', identityServer: 'Received from server', rosterManual: 'Manually chosen group', rosterServer: 'Received group', statsReceived: 'These statistics cover received events.' });
 Object.assign(words.tr, { dpsGoal: 'Seçili kapsamda DPS hedefi (0 = kapalı)', alertHelp: 'DPS uyarısı seçili Kişisel / Grup / Gözlenen kapsamını kullanır. Etkinlik uyarısı kaydettiğin saati kullanır.' });
 Object.assign(words.en, { dpsGoal: 'DPS goal for selected scope (0 = off)', alertHelp: 'DPS alerts use your selected Personal / Group / Observed scope. Event alerts use your saved timer.' });
 Object.assign(words.tr, { reportFormat: 'Rapor biçimi', anonymize: 'Oyuncu adlarını gizle', reportHelp: 'Rapor seçili Kişisel / Grup / Gözlenen kapsamını kullanır. HTML, internetsiz açılabilen ve yazdırılabilen ayrıntılı rapordur.', reportSaved: 'Rapor kaydedildi', reportScope: 'Rapor kapsamı' });
@@ -235,13 +237,84 @@ function applyAppearance() {
   document.documentElement.style.colorScheme = lightSurface ? 'light' : 'dark';
   document.documentElement.lang = prefs.locale;
   $('#meter').dataset.layout = prefs.layout;
+  $('#meter').dataset.theme = prefs.theme;
   $('#meter').dataset.density = prefs.density;
   $('#meter').dataset.rowMetric = prefs.rowMetric;
   $('#meter').dataset.summaryMetric = prefs.summaryMetric;
   $('#meter').classList.toggle('compact-strip', prefs.compactStrip && !drawer);
   $('#meter').dataset.showClass = String(prefs.showClass);
   $('#drag-region').style.cursor = prefs.locked ? 'default' : 'grab';
+  syncOverlayGeometry();
 }
+
+function syncOverlayGeometry() {
+  if (document.body.classList.contains('fullscreen-overlay') !== prefs.fullscreenOverlay) { overlayRegionFingerprint = ''; overlayRegionFailures = 0; }
+  if (!prefs.fullscreenOverlay) overlayRegionFingerprint = '';
+  if (!prefs.fullscreenOverlay && hudGesture) { try { hudGesture.target.releasePointerCapture(hudGesture.pointerId); } catch {} hudGesture = null; }
+  document.body.classList.toggle('fullscreen-overlay', prefs.fullscreenOverlay);
+  if (prefs.fullscreenOverlay) {
+    const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) });
+    for (const [key, value] of Object.entries(rect)) document.documentElement.style.setProperty(`--hud-${key}`, `${value}px`);
+  }
+  scheduleOverlayRegions();
+}
+
+function scheduleOverlayRegions() {
+  if (!native || !prefs.fullscreenOverlay || overlayRegionFrame) return;
+  overlayRegionFrame = requestAnimationFrame(() => {
+    overlayRegionFrame = 0;
+    if (!prefs.fullscreenOverlay) { overlayRegionFingerprint = ''; return; }
+    const rect = $('#meter').getBoundingClientRect();
+    const regions = hudGesture ? [{ x: 0, y: 0, width: innerWidth, height: innerHeight }] : [{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
+    const fingerprint = JSON.stringify(regions);
+    if (fingerprint === overlayRegionFingerprint) return;
+    overlayRegionFingerprint = fingerprint;
+    invoke('set_overlay_hit_regions', { regions }).then(() => { overlayRegionFailures = 0; }).catch(() => {
+      overlayRegionFingerprint = '';
+      if (!prefs.fullscreenOverlay) return;
+      if (++overlayRegionFailures < 3) setTimeout(scheduleOverlayRegions, 100);
+      else { toast(prefs.locale === 'tr' ? 'Panel etkileşimi hazırlanamadı; pencere görünümüne dönülüyor.' : 'HUD input could not initialize; returning to window mode.', true); toggleFullscreenOverlay(false); }
+    });
+  });
+}
+
+async function toggleFullscreenOverlay(enabled = !prefs.fullscreenOverlay) {
+  if (fullscreenPending) return;
+  fullscreenPending = true;
+  try {
+    if (native) await preferenceCommitter.run(async () => {
+      const confirmed = normalizePreferences(await invoke('set_fullscreen_overlay', { enabled }));
+      prefs = normalizePreferences({ ...prefs, fullscreenOverlay: confirmed.fullscreenOverlay });
+      preferenceCommitter.confirm(prefs); storeLocalPreferences(prefs);
+      overlayRegionFailures = 0; overlayRegionFingerprint = ''; applyAppearance(); renderMeter();
+    });
+    else savePreferences({ fullscreenOverlay: enabled });
+  } catch (error) { toast(String(error).slice(0, 200), true); }
+  finally { fullscreenPending = false; if (drawer === 'settings') refreshDrawer('fullscreenOverlay'); }
+}
+
+function startHudGesture(event, resize = false) {
+  if (!prefs.fullscreenOverlay || event.button !== 0 || event.isPrimary === false || prefs.locked && !drawer) return false;
+  event.preventDefault();
+  const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) });
+  hudGesture = { pointerId: event.pointerId, pointerX: event.clientX, pointerY: event.clientY, rect, preferences: { ...prefs }, resize, target: event.currentTarget, patch: {} };
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+  overlayRegionFingerprint = ''; scheduleOverlayRegions(); return true;
+}
+
+document.addEventListener('pointermove', event => {
+  if (!hudGesture || event.pointerId !== hudGesture.pointerId) return;
+  hudGesture.patch = overlayGesture(hudGesture, { x: event.clientX, y: event.clientY }, { width: innerWidth, height: innerHeight }, { resize: hudGesture.resize, panelOpen: Boolean(drawer) });
+  prefs = normalizePreferences({ ...prefs, ...hudGesture.patch }); syncOverlayGeometry();
+});
+const finishHudGesture = event => {
+  if (!hudGesture || event.pointerId !== hudGesture.pointerId) return;
+  const gesture = hudGesture; hudGesture = null;
+  try { gesture.target.releasePointerCapture(event.pointerId); } catch {}
+  overlayRegionFingerprint = ''; savePreferences(gesture.patch); scheduleOverlayRegions();
+};
+document.addEventListener('pointerup', finishHudGesture);
+document.addEventListener('pointercancel', finishHudGesture);
 
 function storeLocalPreferences(value) {
   try { localStorage.setItem('luma-independent-preferences', JSON.stringify(value)); }
@@ -251,11 +324,18 @@ function storeLocalPreferences(value) {
 const protectCubeIntent = value => cubeAutoListenIntent === null ? value : { ...value, cubeAutoListen: cubeAutoListenIntent };
 const preferenceCommitter = native ? createPreferenceCommitter(prefs, {
   write: value => invoke('set_preferences', { preferences: protectCubeIntent(value) }),
-  onConfirmed: value => storeLocalPreferences(protectCubeIntent(value)),
+  onConfirmed: value => {
+    const owned = Object.fromEntries(['fullscreenOverlay', 'locked'].filter(key => typeof value[key] === 'boolean').map(key => [key, value[key]]));
+    if (Object.entries(owned).some(([key, flag]) => prefs[key] !== flag)) {
+      prefs = normalizePreferences({ ...prefs, ...owned }); applyAppearance(); renderMeter();
+      if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(document.activeElement?.name);
+    }
+    storeLocalPreferences(protectCubeIntent({ ...value, fullscreenOverlay: prefs.fullscreenOverlay, locked: prefs.locked }));
+  },
   onRejected: (error, rollback) => {
     if (rollback) {
       const focusName = document.activeElement?.name;
-      prefs = normalizePreferences(protectCubeIntent(rollback)); applyAppearance(); renderMeter();
+      prefs = normalizePreferences(protectCubeIntent({ ...rollback, fullscreenOverlay: prefs.fullscreenOverlay, locked: prefs.locked })); applyAppearance(); renderMeter();
       if (drawer) refreshDrawer(focusName);
     }
     toast(`${t('failed')}: ${String(error).slice(0, 100)}`, true);
@@ -272,6 +352,7 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
+  $('#fullscreen-button').title = prefs.locale === 'tr' ? (prefs.fullscreenOverlay ? 'Pencere görünümüne dön' : 'Saydam tam ekran') : (prefs.fullscreenOverlay ? 'Return to window' : 'Transparent fullscreen'); $('#fullscreen-button').setAttribute('aria-label', $('#fullscreen-button').title); $('#fullscreen-button').setAttribute('aria-pressed', String(prefs.fullscreenOverlay));
   $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
   $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
@@ -379,7 +460,7 @@ function renderPlayers(status, scoped) {
     });
     return;
   }
-  const maxDps = Math.max(...scoped.players.map(player => player.dps), 1);
+  const maxDps = Math.max(...scoped.players.map(player => player.dps), 1), minimumDps = Math.min(...scoped.players.map(player => player.dps));
   const occurrences = new Map();
   const players = sortedPlayers(scoped.players, prefs.sort).map(player => {
     const base = player.id || `${player.name}:${player.class_name}`;
@@ -390,22 +471,27 @@ function renderPlayers(status, scoped) {
     key: item => item.key,
     create: () => {
       const row = document.createElement('button'); row.type = 'button'; row.className = 'player';
-      row.innerHTML = '<span class="player-bar" aria-hidden="true"></span><span class="rank"></span><span class="player-main"><span class="player-name-line"><span class="player-name"></span><span class="own-tag"></span></span><span class="player-class"><i class="class-dot" aria-hidden="true"></i><span class="player-class-name"></span></span><span class="player-cooldown"></span></span><span class="player-stats"><span class="player-numbers"><span class="player-damage"></span><span class="player-dps"></span></span><span class="player-share"></span></span>';
+      row.innerHTML = '<span class="player-bar" aria-hidden="true"></span><span class="rank"></span><span class="player-main"><span class="player-name-line"><span class="player-class-icon" aria-hidden="true"></span><span class="player-name"></span><span class="own-tag"></span></span><span class="player-class"><i class="class-dot" aria-hidden="true"></i><span class="player-class-name"></span></span><span class="player-cooldown"></span></span><span class="player-stats"><span class="player-numbers"><span class="player-damage"></span><span class="player-dps"></span></span><span class="player-share"></span></span>';
       return row;
     },
     update: (row, { player }, index) => {
       const color = classColor(player.class_name), share = String(Math.min(1, player.dps / maxDps));
-      const barColor = playerBarColor(player, maxDps, prefs.rowColorMode, (prefs.theme === 'custom' ? prefs.customColors : THEMES[prefs.theme]).accent);
+      const barColor = playerBarColor(player, maxDps, prefs.rowColorMode, (prefs.theme === 'custom' ? prefs.customColors : THEMES[prefs.theme]).accent, minimumDps);
       if (row.style.getPropertyValue('--bar-color') !== barColor) row.style.setProperty('--bar-color', barColor);
       if (row.style.getPropertyValue('--class-color') !== color) row.style.setProperty('--class-color', color);
       if (row.style.getPropertyValue('--share') !== share) row.style.setProperty('--share', share);
       setAttribute(row, 'data-player', player.id);
       const own = player.is_local || player.id === state.local_player_id;
       row.classList.toggle('is-own', own); row.querySelector('.own-tag').hidden = !own; setText(row.querySelector('.own-tag'), t('me'));
-      const visibleName = prefs.hidePlayerNames && !own ? `${player.class_name} #${index + 1}` : player.name;
+      const classLabel = /^unknown$/i.test(player.class_name) || player.class_name === '—' ? (prefs.locale === 'tr' ? 'Sınıf bekleniyor' : 'Class pending') : player.class_name;
+      const visibleName = prefs.hidePlayerNames && !own ? `${classLabel} #${index + 1}` : player.name;
+      const symbol = ({ gladiator: 'G', templar: 'T', assassin: 'A', ranger: 'R', sorcerer: 'S', spiritmaster: 'SM', cleric: 'C', chanter: 'CH' })[player.class_name.toLowerCase()] || '•';
+      setText(row.querySelector('.player-class-icon'), symbol); row.querySelector('.player-class-icon').title = classLabel;
+      row.classList.toggle('identity-pending', player.identity_pending === true);
+      row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : player.identity_pending ? (prefs.locale === 'tr' ? 'Oyuncu adı paketi bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name packet; updates automatically when received.') : player.name;
       setAttribute(row, 'aria-label', `${visibleName}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
       setText(row.querySelector('.rank'), index + 1); setText(row.querySelector('.player-name'), visibleName);
-      setText(row.querySelector('.player-class-name'), player.class_name);
+      setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
       const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.showTeamCooldowns || !member?.cooldowns.length;
       setText(cooldownNode, cooling ? `CD · ${Math.ceil((cooling.remaining_ms || cooling.recharge_remaining_ms) / 1000)} ${prefs.locale === 'tr' ? 'sn' : 's'}` : member?.cooldowns.some(value => value.ready_confirmed) ? `CD · ${t('readyConfirmed')}` : 'CD · …');
@@ -462,7 +548,7 @@ function appearanceSettingsContent() {
     <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label><label class="check-field"><input name="showTeamCooldowns" type="checkbox" ${prefs.showTeamCooldowns ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Satırda cooldown göster' : 'Show cooldown in rows'}</label></div>
     <h3 class="section-title">${t('theme')}</h3><div class="theme-grid" role="group" aria-label="${t('theme')}">${Object.entries(THEMES).map(([id, theme]) => `<button class="theme-swatch" data-theme="${id}" style="--swatch-bg:${theme.bg};--swatch-text:${theme.text};--swatch-accent:${theme.accent}" aria-pressed="${prefs.theme === id}"><i aria-hidden="true"></i>${theme.name}</button>`).join('')}</div><h3 class="section-title">${t('typography')}</h3>
     <div class="field-grid"><label class="field"><span>${t('font')}</span><select name="font">${fontOptions(prefs.font)}</select></label><label class="field"><span>${t('targetFont')}</span><select name="targetFont">${fontOptions(prefs.targetFont)}</select></label></div>
-    <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0.65" max="1" step="0.05"')}</div>
+    <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0" max="1" step="0.05"')}</div>
     <details class="appearance-details"><summary>${t('appearanceExtras')}</summary><h3 class="section-title">${t('customColors')}</h3><div class="color-grid">${['bg', 'panel', 'text', 'accent'].map(key => field(`color-${key}`, key === 'bg' ? 'background' : key, 'color', prefs.customColors[key])).join('')}</div>
     <label class="field"><span>${t('background')}</span><input name="backgroundFile" type="file" accept="image/png,image/jpeg,image/webp"></label><p class="help">${t('rasterHelp')}</p><div class="button-row">${button('remove-background', 'removeBackground', '', true)}</div>
     <div class="button-row">${button('export-theme', 'exportTheme')}${button('import-theme', 'importTheme', '', true)}</div><input id="theme-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1"><p class="help">${t('themeHelp')}</p></details>`;
@@ -474,8 +560,8 @@ function combatSettingsContent() {
 
 function controlsContent() {
   const tr = prefs.locale === 'tr';
-  const options = [['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Tek satır kompakt görünüm' : 'One-line compact view']];
-  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
+  const options = [['fullscreenOverlay', tr ? 'Saydam tam ekran: yalnızca panel görünür' : 'Transparent fullscreen: only the HUD is visible'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Tek satır kompakt görünüm' : 'One-line compact view']];
+  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Tam ekranda panelin dışı oyuna tıklanır. Başlıktan sürükle; köşeden boyutlandır. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'Clicks outside the fullscreen HUD reach the game. Drag its header and resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
 }
 
 async function readRuntimeState() {
@@ -1264,7 +1350,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && requestedTab === 'worldBosses') readWorldData();
   if (kind === 'settings') { readRuntimeState(); readObsState(); readEventSchedule(); if (settingsTab === 'hiddenCube') readCubeState(); }
   $('#close-drawer').focus();
-  syncNativePanel(true);
+  syncOverlayGeometry(); syncNativePanel(true);
 }
 
 function closeDrawer() {
@@ -1327,6 +1413,7 @@ function tickTimers() {
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
+$('#fullscreen-button').addEventListener('click', () => toggleFullscreenOverlay());
 $('#compact-button').addEventListener('click', () => savePreferences({ compactStrip: !prefs.compactStrip }));
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
@@ -1334,8 +1421,9 @@ $('#team-chip').addEventListener('click', () => openDrawer('analysis', 'team'));
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#damage-scope').addEventListener('change', event => { savePreferences({ rosterScope: event.target.value }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
-$('#drag-region').addEventListener('pointerdown', event => { if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
+$('#drag-region').addEventListener('pointerdown', event => { if (startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
 $('.drawer-header').addEventListener('pointerdown', event => {
+  if (drawer && isDrawerDragStart(event, event.currentTarget) && startHudGesture(event)) return;
   if (native && drawer && isDrawerDragStart(event, event.currentTarget)) {
     event.preventDefault();
     invoke('start_drag').catch(() => toast(t('failed'), true));
@@ -1357,14 +1445,16 @@ $('#target-modes').addEventListener('click', async event => {
 $('#pause-button').addEventListener('click', async () => { try { await action('set_paused', { paused: !state.paused }, () => { state.paused = !state.paused; }); if (native) await refreshState(); else renderMeter(); } catch {} });
 $('#reset-button').addEventListener('click', async () => { try { await action('reset_encounter', undefined, () => { state = normalizeState({ status: 'demo', paused: state.paused }); }); if (native) await refreshState(); else renderMeter(); toast(t('resetDone')); } catch {} });
 $('#lock-button').addEventListener('click', async () => { try { const locked = !prefs.locked; if (native) await action('set_locked', { locked }); savePreferences({ locked }); } catch {} });
-$('#resize-button').addEventListener('pointerdown', event => { if (event.button === 0 && !prefs.locked) { event.preventDefault(); action('start_resize').catch(() => {}); } });
+$('#resize-button').addEventListener('pointerdown', event => { if (startHudGesture(event, true)) return; if (event.button === 0 && !prefs.locked) { event.preventDefault(); action('start_resize').catch(() => {}); } });
 $('#resize-button').addEventListener('keydown', event => {
   const step = resizeStep(event.key, event.shiftKey);
-  if (step && !prefs.locked) { event.preventDefault(); action('resize_by', step).catch(() => {}); }
+  if (step && !prefs.locked) { event.preventDefault(); if (prefs.fullscreenOverlay) { const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }); savePreferences({ overlayWidth: rect.width + step.dx, overlayHeight: rect.height + step.dy }); } else action('resize_by', step).catch(() => {}); }
   else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toast(native ? t('resizeHelp') : t('nativeOnly')); }
 });
 document.addEventListener('pointerdown', enableAudio, { passive: true });
 document.addEventListener('keydown', event => {
+  if (event.key === 'F11' && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); toggleFullscreenOverlay(); return; }
+  if (!drawer && event.key === 'Escape' && prefs.fullscreenOverlay) { event.preventDefault(); toggleFullscreenOverlay(false); return; }
   if (!drawer) return;
   if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); }
   if (event.key === 'Tab') {
@@ -1377,6 +1467,7 @@ $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || eve
 
 $('#drawer-content').addEventListener('change', async event => {
   const element = event.target, name = element.name;
+  if (name === 'fullscreenOverlay') { await toggleFullscreenOverlay(element.checked); return; }
   if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
   if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (name === 'automaticTeamClass') { teamClassFilter = element.value; updateTeamLive(); return; }
@@ -1638,6 +1729,9 @@ function receiveState(value) {
   renderMeter();
 }
 
+window.addEventListener('resize', syncOverlayGeometry);
+window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
+if (typeof ResizeObserver === 'function') new ResizeObserver(scheduleOverlayRegions).observe($('#meter'));
 applyAppearance(); renderMeter();
 if (native) {
   invoke('get_app_info').then(info => { if (typeof info?.version === 'string') appVersion = info.version.slice(0, 40); if (drawer === 'settings' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer(); }).catch(() => {});
@@ -1645,10 +1739,11 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-state', event => receiveState(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-calendar-state', event => applyScheduleSnapshot(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-cube-state', event => applyCubeSnapshot(event.payload)); } catch {}
-  try { await window.__TAURI__.event?.listen('luma-hotkey', async event => { if (event.payload?.action === 'settings') openDrawer('settings', 'controls'); if (event.payload?.action === 'copy-summary') { try { const text = communitySummary(await invoke('get_current_encounter'), { scope: prefs.damageScope, locale: prefs.locale, anonymous: true }); if (text) { await navigator.clipboard.writeText(text); toast(t('copied')); } } catch { toast(t('failed'), true); } } }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-hotkey', async event => { if (event.payload?.error) { toast(String(event.payload.error).slice(0, 200), true); return; } if (event.payload?.action === 'settings') openDrawer('settings', 'controls'); if (event.payload?.action === 'copy-summary') { try { const text = communitySummary(await invoke('get_current_encounter'), { scope: prefs.damageScope, locale: prefs.locale, anonymous: true }); if (text) { await navigator.clipboard.writeText(text); toast(t('copied')); } } catch { toast(t('failed'), true); } } }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-fullscreen-error', event => { if (event.payload) toast(String(event.payload).slice(0, 200), true); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); }); } catch {}
-  try { await window.__TAURI__.event?.listen('luma-preferences', event => { preferenceCommitter.load(async () => normalizePreferences(event.payload)).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(await invoke('get_preferences'))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
   await refreshState();
   readRuntimeState();
   readWorldData();

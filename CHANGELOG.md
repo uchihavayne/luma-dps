@@ -2,6 +2,16 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.17.0 preview · 2026-10-18
+
+- Recover received nearby player names from typed `04 8D` appearance records instead of discarding the acting character's name as an ownership notice. Hold early structural profiles briefly for an exact current party name/home-server match; clear pending bindings after loss, reconnect, despawn, clock reversal or party changes.
+- Keep confirmed local identity separate from nearby announcements. Prevent actor-ID reuse from relabelling an earlier completed encounter or inheriting the previous occupant's class/health. Replace unconfirmed placeholder names with actor IDs while preserving a server-confirmed character literally named `Unknown`.
+- Add the compact Luma Clear layout and dark Graphite/light Pearl palettes, with cleaner spacing and value hierarchy. Relative-DPS bars progress from green through yellow/orange to red against the displayed roster's highest DPS; class and theme colors remain optional.
+- Add a transparent fullscreen canvas with a draggable/resizable HUD and settings/analysis drawers in the same window. Preserve normal window geometry across fullscreen transitions and drawer closure. Background opacity now supports the full 0–100% range without hiding text or values.
+- Add the default global fullscreen recovery shortcut `Ctrl+Alt+Shift+F5`; require a working rescue binding before entering fullscreen. Local `F11` toggles the mode when Luma has keyboard focus. `Escape` closes an open drawer before exiting fullscreen; clicks outside the HUD are routed through to the game.
+
+Replay and interaction tests cover the implemented cases. Live EU name/combat checks and actual fullscreen pointer routing, shortcuts, multi-monitor and display-scaling behavior over AION2 remain pending. Full premium parity, missing protocol data and unsupported catalogs are not claimed; see [feature coverage](docs/feature-parity.md).
+
 ## 0.16.0 preview · 2026-10-16
 
 - Decode supported own character power, equipped wing and species progression; retain actual zone boundaries without guessing dungeon identity or completion. Clear stale character observations after capture discontinuity.

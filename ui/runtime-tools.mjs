@@ -1,13 +1,13 @@
 const esc = value => String(value ?? '').replace(/[&<>"']/gu, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const HOTKEY_ACTIONS = ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary'];
+export const HOTKEY_ACTIONS = ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'];
 const labels = {
-  tr: ['Göster / gizle', 'Kilitle / aç', 'Duraklat / sürdür', 'Karşılaşmayı sıfırla', 'Ayarları aç', 'Özeti kopyala'],
-  en: ['Show / hide', 'Lock / unlock', 'Pause / resume', 'Reset encounter', 'Open settings', 'Copy summary'],
+  tr: ['Göster / gizle', 'Kilitle / aç', 'Duraklat / sürdür', 'Karşılaşmayı sıfırla', 'Ayarları aç', 'Özeti kopyala', 'Tam ekran / pencere'],
+  en: ['Show / hide', 'Lock / unlock', 'Pause / resume', 'Reset encounter', 'Open settings', 'Copy summary', 'Fullscreen / window'],
 };
 export function hotkeyDraft(rows) {
   return HOTKEY_ACTIONS.map((action, index) => {
     const row = (Array.isArray(rows) ? rows : []).find(item => item?.action === action);
-    return { action, shortcut: typeof row?.shortcut === 'string' ? row.shortcut.slice(0, 48) : `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6][index]}`, enabled: row?.enabled !== false };
+    return { action, shortcut: typeof row?.shortcut === 'string' ? row.shortcut.slice(0, 48) : `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`, enabled: row?.enabled !== false };
   });
 }
 export function renderHotkeys(state, { locale = 'tr', native = false, busy = false } = {}) {

@@ -4,14 +4,14 @@ import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportThe
 
 test('preferences clamp controls and reject executable or unrecognized appearance values', () => {
   const prefs = normalizePreferences({ theme: 'unknown', font: 'url(evil)', textScale: 4, opacity: -2, customColors: { text: 'red; background:url(evil)', accent: '#AAFF44' }, background: 'data:image/svg+xml;base64,PHN2Zz4=', bossIds: [42, 42, '57', -2, 1.4] });
-  assert.equal(prefs.theme, 'aurora'); assert.equal(prefs.font, 'system');
-  assert.equal(prefs.textScale, 2); assert.equal(prefs.opacity, 0.65);
+  assert.equal(prefs.theme, 'graphite'); assert.equal(prefs.font, 'system');
+  assert.equal(prefs.textScale, 2); assert.equal(prefs.opacity, 0);
   assert.equal(prefs.customColors.accent, '#aaff44'); assert.equal(prefs.customColors.text, THEMES.custom.text);
   assert.equal(prefs.background, ''); assert.deepEqual(prefs.bossIds, []);
 });
 
-test('all twelve themes exist, including readable light and custom options', () => {
-  assert.equal(Object.keys(THEMES).length, 12);
+test('all fourteen themes exist, including readable light and custom options', () => {
+  assert.equal(Object.keys(THEMES).length, 14);
   assert.equal(THEMES.white.bg, '#f7f7f2'); assert.ok(THEMES.custom.accent);
 });
 

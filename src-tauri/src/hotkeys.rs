@@ -16,6 +16,7 @@ pub enum Action {
     Reset,
     Settings,
     CopySummary,
+    ToggleFullscreen,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub fn default_bindings() -> Vec<Binding> {
         (Action::Reset, "F10"),
         (Action::Settings, "F11"),
         (Action::CopySummary, "F6"),
+        (Action::ToggleFullscreen, "F5"),
     ]
     .into_iter()
     .map(|(action, key)| Binding {
@@ -69,8 +71,8 @@ pub fn normalize_bindings(bindings: Vec<Binding>) -> Result<Vec<Binding>, String
 }
 
 fn parse_bindings(bindings: Vec<Binding>) -> Result<Vec<Parsed>, String> {
-    if bindings.len() > 6 {
-        return Err("At most six global hotkeys are supported".into());
+    if bindings.len() > 7 {
+        return Err("At most seven global hotkeys are supported".into());
     }
     let mut actions = BTreeSet::new();
     let mut keys = BTreeSet::new();
@@ -452,7 +454,7 @@ mod tests {
             binding(Action::Reset, "Ctrl+Alt+F8")
         ])
         .is_err());
-        assert_eq!(normalize_bindings(default_bindings()).unwrap().len(), 6);
+        assert_eq!(normalize_bindings(default_bindings()).unwrap().len(), 7);
     }
     #[derive(Default)]
     struct Fake {
@@ -513,7 +515,7 @@ mod tests {
             parse_bindings(default_bindings()).unwrap(),
         )
         .unwrap();
-        assert_eq!(registrar.active.len(), 6);
+        assert_eq!(registrar.active.len(), 7);
         let disabled = default_bindings()
             .into_iter()
             .map(|mut value| {

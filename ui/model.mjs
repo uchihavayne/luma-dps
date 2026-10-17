@@ -5,6 +5,8 @@ import { characterSnapshot } from './character.mjs';
 import { normalizeLatencyHistory } from './latency-history.mjs';
 
 export const THEMES = Object.freeze({
+  graphite: { name: 'Graphite', bg: '#16181d', panel: '#262930', text: '#f5f5f7', accent: '#a8c7fa' },
+  pearl: { name: 'Pearl', bg: '#f5f5f7', panel: '#ffffff', text: '#1d1d1f', accent: '#0066cc' },
   aurora: { name: 'Aurora', bg: '#101a27', panel: '#192938', text: '#edf8f7', accent: '#7ce9cb' },
   midnight: { name: 'Midnight', bg: '#10121b', panel: '#202433', text: '#edf0fa', accent: '#b2baff' },
   ocean: { name: 'Ocean', bg: '#081d29', panel: '#123344', text: '#e4f7ff', accent: '#6dd6f8' },
@@ -27,21 +29,23 @@ export const FONTS = Object.freeze({
   mono: '"Cascadia Code", Consolas, monospace',
 });
 export const LAYOUTS = Object.freeze({
+  cupertino: { name: 'Luma Clear', description: { tr: 'Sıkı çubuklar, temiz cam yüzeyler', en: 'Compact bars, clean glass surfaces' } },
   studio: { name: 'Studio', description: { tr: 'Dengeli kartlar, net sayılar', en: 'Balanced cards, clear numbers' } },
   minimal: { name: 'Line', description: { tr: 'İnce çizgiler, sade liste', en: 'Fine lines, simple roster' } },
   focus: { name: 'Focus', description: { tr: 'Kişisel ölçüm ön planda', en: 'Personal measurement in focus' } },
   glass: { name: 'Prism', description: { tr: 'Yumuşak ışık, hafif yüzeyler', en: 'Soft light, light surfaces' } },
 });
 export const DEFAULTS = Object.freeze({
-  version: 1, locale: 'tr', theme: 'aurora', font: 'system', targetFont: 'system', targetFontSize: 15,
+  version: 1, appearanceRevision: 2, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
   alerts: { dpsGoal: 0, eventLeadMinutes: 5, sound: false, incomingWarnings: true }, importedHistory: [],
-  damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'studio', density: 'comfortable', showClass: true, showShares: true, showTeamCooldowns: true, rowMetric: 'both',
+  damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'cupertino', density: 'compact', showClass: true, showShares: true, showTeamCooldowns: true, rowMetric: 'both',
   numberPrecision: 2,
   summaryMetric: 'both',
   onlyAboveGame: false, clickThroughWhenLocked: false, fadeWhenIdle: false, hidePlayerNames: false, compactStrip: false, autoCheckUpdates: true, hotkeys: [],
+  fullscreenOverlay: false, overlayX: 24, overlayY: 24, overlayWidth: 420, overlayHeight: 340,
   calendarVersion: 1, calendarRegion: 'EU', builtInReminders: {},
   showCubeLocator: true, cubeAutoListen: true, cubeSource: 'game', cubeThreshold: .82, cubeView: 'dps', cubeNavigatorSize: 'compact',
 });
@@ -69,22 +73,23 @@ export function normalizePreferences(input = {}) {
   const builtInReminders = Object.fromEntries(Object.entries(p.builtInReminders && typeof p.builtInReminders === 'object' ? p.builtInReminders : {}).filter(([id, value]) => /^builtin:[a-z0-9-]{1,48}$/.test(id) && value && typeof value === 'object').slice(0, 32).map(([id, value]) => [id, { enabled: value.enabled === true, leadMinutes: Math.round(bounded(value.leadMinutes, 0, 60, 5)) }]));
   const activeEventId = !p.activeEventId && p.calendarVersion !== 1 ? 'builtin:rift' : p.activeEventId === '' ? '' : events.some(event => event.id === p.activeEventId) || /^boss:\d{1,20}:\d{1,20}$/.test(p.activeEventId || '') || /^builtin:[a-z0-9-]{1,48}$/.test(p.activeEventId || '') ? p.activeEventId : 'builtin:rift';
   return {
-    version: 1, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
-    theme: oneOf(p.theme, Object.keys(THEMES), DEFAULTS.theme),
+    version: 1, appearanceRevision: 2, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
+    theme: p.appearanceRevision !== 2 && p.theme === 'aurora' && (!p.layout || p.layout === 'studio') ? 'graphite' : oneOf(p.theme, Object.keys(THEMES), DEFAULTS.theme),
     font: oneOf(p.font, Object.keys(FONTS), DEFAULTS.font),
     targetFont: oneOf(p.targetFont, Object.keys(FONTS), DEFAULTS.targetFont),
     targetFontSize: bounded(p.targetFontSize, 8, 28, DEFAULTS.targetFontSize),
-    textScale: bounded(p.textScale, 0.85, 2, 1), opacity: bounded(p.opacity, 0.65, 1, 0.96),
+    textScale: bounded(p.textScale, 0.85, 2, 1), opacity: bounded(p.opacity, 0, 1, 0.96),
     sort: oneOf(p.sort, ['dps', 'damage', 'name'], 'dps'), mode: oneOf(p.mode, ['all', 'boss', 'both'], 'all'), locked: Boolean(p.locked),
     damageScope: oneOf(p.damageScope, ['personal', 'party', 'observed'], 'personal'), characterName: str(p.characterName, 64).trim(),
     rosterScope: oneOf(p.rosterScope, ['personal', 'party', 'observed'], 'observed'),
     rowColorMode: oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'performance'),
-    layout: oneOf(p.layout, Object.keys(LAYOUTS), 'studio'), density: oneOf(p.density, ['comfortable', 'compact'], 'comfortable'),
+    layout: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'),
     onlyAboveGame: p.onlyAboveGame === true, clickThroughWhenLocked: p.clickThroughWhenLocked === true, fadeWhenIdle: p.fadeWhenIdle === true, hidePlayerNames: p.hidePlayerNames === true, compactStrip: p.compactStrip === true, autoCheckUpdates: p.autoCheckUpdates !== false,
-    hotkeys: (Array.isArray(p.hotkeys) && p.hotkeys.length ? p.hotkeys : ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary'].map((action, index) => ({ action, shortcut: `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6][index]}`, enabled: true }))).slice(0, 6).filter(row => row && ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary'].includes(row.action)).map(row => ({ action: row.action, shortcut: str(row.shortcut, 80), enabled: row.enabled !== false })),
+    fullscreenOverlay: p.fullscreenOverlay === true, overlayX: bounded(p.overlayX, 0, 20000, 24), overlayY: bounded(p.overlayY, 0, 20000, 24), overlayWidth: bounded(p.overlayWidth, 280, 1200, 420), overlayHeight: bounded(p.overlayHeight, 200, 1200, 340),
+    hotkeys: (Array.isArray(p.hotkeys) && p.hotkeys.length ? p.hotkeys : ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'].map((action, index) => ({ action, shortcut: `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`, enabled: true }))).slice(0, 7).filter(row => row && ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'].includes(row.action)).map(row => ({ action: row.action, shortcut: str(row.shortcut, 80), enabled: row.enabled !== false })),
     calendarVersion: 1, calendarRegion: oneOf(p.calendarRegion, ['EU'], 'EU'), builtInReminders,
     showCubeLocator: p.showCubeLocator !== false, cubeAutoListen: p.cubeAutoListen !== false, cubeSource: oneOf(p.cubeSource, ['game', 'system'], 'game'), cubeThreshold: bounded(p.cubeThreshold, .6, .97, .82),
     cubeView: 'dps', cubeNavigatorSize: oneOf(p.cubeNavigatorSize, ['compact', 'full'], 'compact'),
@@ -123,14 +128,14 @@ export function acceptsStateSnapshot(current, incoming) {
 export function importTheme(text) {
   const parsed = JSON.parse(text);
   if (!parsed || parsed.type !== 'luma-theme' || parsed.version !== 1 || !parsed.theme || typeof parsed.theme !== 'object') throw new Error('Invalid Luma theme');
-  const p = normalizePreferences(parsed.theme);
+  const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 2 });
   if (parsed.theme.background && !p.background) throw new Error('Invalid raster background');
-  return Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
+  return Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
 }
 
 export function exportTheme(prefs) {
   const p = normalizePreferences(prefs);
-  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
+  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
 }
 
 export function recurringEvent(event, now = Date.now()) {
@@ -156,9 +161,15 @@ export function normalizeSkill(skill = {}) {
   return { ...quality, id: identifier(skill.id), name: str(skill.name, 100) || `Skill #${identifier(skill.id) || '?'}`, hits: Math.max(0, finite(skill.hits)), damage: Math.max(0, finite(skill.damage)), crit_hits: Math.max(0, finite(skill.crit_hits)), min: Math.max(0, finite(skill.min)), max: Math.max(0, finite(skill.max)) };
 }
 
+export function observedPlayerName(player = {}) {
+  const name = str(player.name, 80).trim(), id = identifier(player.id) || '?';
+  const placeholder = !name || player.identity_confirmed !== true && /^(?:unknown|undefined|null|bilinmiyor)$/iu.test(name);
+  return placeholder ? `#${id}` : name;
+}
+
 export function normalizePlayer(player = {}) {
   const received = Object.fromEntries(['damage_taken', 'damage_taken_per_second', 'healing', 'hps', 'unclassified_player_target_amount', 'unclassified_player_target_events'].map(key => [key, typeof player[key] === 'number' && Number.isFinite(player[key]) && player[key] >= 0 ? player[key] : null]));
-  return { ...received, identity_confirmed: player.identity_confirmed === true, healing_coverage: str(player.healing_coverage, 40), healing_skills: (Array.isArray(player.healing_skills) ? player.healing_skills : []).slice(0, 500).map(normalizeSkill), damage_taken_complete: typeof player.damage_taken_complete === 'boolean' ? player.damage_taken_complete : null, id: identifier(player.id), name: str(player.name, 80) || `#${identifier(player.id) || '?'}`, class_name: str(player.class_name, 60) || '—', is_local: player.is_local === true, in_party: player.in_party === true, damage: Math.max(0, finite(player.damage)), dps: Math.max(0, finite(player.dps)), share: bounded(player.share, 0, 100), skills: (Array.isArray(player.skills) ? player.skills : []).slice(0, 500).map(normalizeSkill) };
+  return { ...received, identity_confirmed: player.identity_confirmed === true, healing_coverage: str(player.healing_coverage, 40), healing_skills: (Array.isArray(player.healing_skills) ? player.healing_skills : []).slice(0, 500).map(normalizeSkill), damage_taken_complete: typeof player.damage_taken_complete === 'boolean' ? player.damage_taken_complete : null, id: identifier(player.id), name: observedPlayerName(player), identity_pending: player.identity_confirmed !== true && observedPlayerName(player) === `#${identifier(player.id) || '?'}`, class_name: str(player.class_name, 60) || '—', is_local: player.is_local === true, in_party: player.in_party === true, damage: Math.max(0, finite(player.damage)), dps: Math.max(0, finite(player.dps)), share: bounded(player.share, 0, 100), skills: (Array.isArray(player.skills) ? player.skills : []).slice(0, 500).map(normalizeSkill) };
 }
 
 function identityState(value = {}) {
@@ -342,14 +353,15 @@ export function importHistory(text) {
 export const CLASS_COLORS = Object.freeze({ gladiator: '#e7a076', templar: '#dfc680', assassin: '#bd94ef', ranger: '#8bd498', sorcerer: '#8dbdfa', spiritmaster: '#b0a4ef', cleric: '#efdd9f', chanter: '#7fd8d0', unknown: '#a1b8ce' });
 export const classColor = name => CLASS_COLORS[String(name).toLowerCase()] || CLASS_COLORS.unknown;
 
-export function playerBarColor(player, maximumDps, mode = 'performance', accent = THEMES.aurora.accent) {
+export function playerBarColor(player, maximumDps, mode = 'performance', accent = THEMES.aurora.accent, minimumDps = 0) {
   if (mode === 'class') return classColor(player?.class_name);
   if (mode === 'accent') return color(accent, THEMES.aurora.accent);
   const rate = typeof player?.dps === 'number' && Number.isFinite(player.dps) ? Math.max(0, player.dps) : 0;
   const maximum = typeof maximumDps === 'number' && Number.isFinite(maximumDps) ? Math.max(0, maximumDps) : 0;
-  if (!maximum || !rate) return CLASS_COLORS.unknown;
-  const ratio = Math.min(1, rate / maximum);
-  const stops = [[0, [116, 157, 201]], [.4, [118, 177, 218]], [.7, [140, 200, 159]], [1, [236, 194, 105]]];
+  if (!maximum || typeof player?.dps !== 'number' || !Number.isFinite(player.dps) || player.dps < 0) return CLASS_COLORS.unknown;
+  const minimum = typeof minimumDps === 'number' && Number.isFinite(minimumDps) ? Math.max(0, Math.min(maximum, minimumDps)) : 0;
+  const ratio = Math.max(0, Math.min(1, maximum > minimum ? (rate - minimum) / (maximum - minimum) : rate / maximum));
+  const stops = [[0, [52, 199, 89]], [.35, [180, 208, 54]], [.55, [255, 214, 10]], [.78, [255, 159, 10]], [1, [255, 69, 58]]];
   const upper = stops.findIndex(([position]) => position >= ratio);
   const [start, from] = stops[Math.max(0, upper - 1)], [end, to] = stops[upper];
   const blend = end > start ? (ratio - start) / (end - start) : 0;
