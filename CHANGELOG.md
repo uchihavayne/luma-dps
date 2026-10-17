@@ -2,17 +2,18 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
-## 0.17.0 preview Â· 2026-10-18
+## 0.17.0 preview · 2026-10-18
 
 - Recover received nearby player names from typed `04 8D` appearance records instead of discarding the acting character's name as an ownership notice. Hold early structural profiles briefly for an exact current party name/home-server match; clear pending bindings after loss, reconnect, despawn, clock reversal or party changes.
 - Keep confirmed local identity separate from nearby announcements. Prevent actor-ID reuse from relabelling an earlier completed encounter or inheriting the previous occupant's class/health. Replace unconfirmed placeholder names with actor IDs while preserving a server-confirmed character literally named `Unknown`.
 - Add the compact Luma Clear layout and dark Graphite/light Pearl palettes, with cleaner spacing and value hierarchy. Compact rows place names, damage/DPS and shares on one line; new installations start at 420 × 340 while saved geometry is preserved. Relative-DPS bars progress from green through yellow/orange to red against the displayed roster's highest DPS; class and theme colors remain optional.
-- Add a transparent fullscreen canvas with a draggable/resizable HUD and settings/analysis drawers in the same window. Preserve normal window geometry across fullscreen transitions and drawer closure. Background opacity now supports the full 0â€“100% range without hiding text or values.
+- Make the player-list text-size setting apply to player names and values across all layouts, up to 200%; larger text expands rows while controls retain their usable size.
+- Add a transparent fullscreen canvas with a draggable/resizable HUD and settings/analysis drawers in the same window. Preserve normal window geometry across fullscreen transitions and drawer closure. Background opacity now supports the full 0–100% range without hiding text or values.
 - Add the default global fullscreen recovery shortcut `Ctrl+Alt+Shift+F5`; require a working rescue binding before entering fullscreen. Local `F11` toggles the mode when Luma has keyboard focus. `Escape` closes an open drawer before exiting fullscreen; clicks outside the HUD are routed through to the game.
 
 Replay and interaction tests cover the implemented cases. Live EU name/combat checks and actual fullscreen pointer routing, shortcuts, multi-monitor and display-scaling behavior over AION2 remain pending. Full premium parity, missing protocol data and unsupported catalogs are not claimed; see [feature coverage](docs/feature-parity.md).
 
-## 0.16.0 preview Â· 2026-10-16
+## 0.16.0 preview · 2026-10-16
 
 - Decode supported own character power, equipped wing and species progression; retain actual zone boundaries without guessing dungeon identity or completion. Clear stale character observations after capture discontinuity.
 - Keep explicit received periodic healing and per-skill HPS separate from damage, personal DPS and training. Correct trailing periodic skill IDs and exclude the narrowly identified ambiguous NPC recovery proc from DPS with partial-coverage disclosure.
@@ -24,7 +25,7 @@ Replay and interaction tests cover the implemented cases. Live EU name/combat ch
 
 Automated tests cover the specified layouts and failure cases. Live EU content, second-PC OBS and an actual self-update still require final interactive checks. Full catalogs, universal live healing, exact Cube coordinates and official game-verified world rankings are not claimed; see [feature coverage](docs/feature-parity.md).
 
-## 0.15.0 preview Â· 2026-10-16
+## 0.15.0 preview · 2026-10-16
 
 - Read supported actor-bound cast cooldowns directly from game traffic. Confirmed party members do not need Luma, an invitation or a room. Keep actual cooldown duration, observed uses and next-charge recharge separate; never invent available charges or readiness when a timer expires.
 - Decode incremental party additions/removals and uniquely matched player profiles, including non-damaging healers. Invalidate bindings after capture gaps, reconnects and actor reuse. Keep completed encounter membership separate from the current live team.
@@ -34,7 +35,7 @@ Automated tests cover the specified layouts and failure cases. Live EU content, 
 
 Automated replay and integration checks cover the accepted layouts and failure cases. Live EU party cooldown/charge validation remains pending. Unsupported catalogs, game-wide verified rankings, complete live healing and other limits remain listed in [feature coverage](docs/feature-parity.md).
 
-## 0.14.0 preview Â· 2026-10-15
+## 0.14.0 preview · 2026-10-15
 
 - Read EU ContentsTicket snapshots and updates for automatic Odyle. Keep regular energy, bonus and available total separate; derive the regular capacity only from received membership evidence. Login records wait for authoritative self identity; capture gaps and character changes clear old ownership.
 - Correct own cooldown semantics: raw server counters are not milliseconds. Learn a rate from consistent decreases, mark time estimates with `~`, and reserve confirmed readiness for a fresh received zero. Ignore the unvalidated `0x2238` charge layout.
@@ -45,7 +46,7 @@ Automated replay and integration checks cover the accepted layouts and failure c
 
 Replay, native client, SQLite/API and UI checks cover the implemented cases. A synchronized live Odyle and multi-player cooldown check remains pending. Full premium parity, complete catalogs, official rankings and universal protocol coverage are not claimed.
 
-## 0.13.0 preview Â· 2026-10-15
+## 0.13.0 preview · 2026-10-15
 
 - Add Sharing and rankings to the existing analysis drawer: explicit aggregate-only upload, anonymous names by default, separate ranking participation, filtered community results, link copying/opening and revocation. No automatic uploads or account requirement.
 - Add free offline encounter-text sharing alongside the existing scoped HTML, CSV and JSON reports. Keep only the uploader's own name when name hiding is disabled; alias other participants.
@@ -57,23 +58,23 @@ Replay, native client, SQLite/API and UI checks cover the implemented cases. A s
 - Keep received cooldown readiness distinct from an elapsed local countdown, bind timers to the correct character and retain separately observed charge information.
 - Test atomic sharing-key storage, retry/revocation failures, request privacy, scoped ranking gates, actual SQL operations, telemetry freshness and unified responsive UI behavior.
 
-Service update Â· 2026-10-15: the [free Luma Community service](https://luma-dps-community.uchihavayne.chatgpt.site) is publicly available without an account. Public creation, report retrieval, filtered rankings, wrong-key rejection and revocation were verified without authentication. This service activation does not change the published 0.13.0 executable, tag or archive assets.
+Service update · 2026-10-15: the [free Luma Community service](https://luma-dps-community.uchihavayne.chatgpt.site) is publicly available without an account. Public creation, report retrieval, filtered rankings, wrong-key rejection and revocation were verified without authentication. This service activation does not change the published 0.13.0 executable, tag or archive assets.
 
 Live gate: combat, Cube recognition and new protocol telemetry still require matching in-game observations across supported regions. Unsupported live healing/Odyle, ally cooldowns, provider catalogs, spatial replay and official world rankings are not claimed as implemented. See the feature comparison and community sharing documentation.
 
-## 0.12.0 preview Â· 2026-10-15
+## 0.12.0 preview · 2026-10-15
 
 - Keep the DPS roster and Hidden Cube compass in one overlay. Remove the DPS/Cube page switch; a fresh Cube match opens the compass beside the player list and an expired match hides it without replacing the damage view.
 - Start AION2-only Cube listening automatically, wait for the game when absent and migrate older preferences to the automatic default. An explicit stop disables the saved automatic-listening preference. Automatic listening never selects system output or a microphone.
 - Separate roster visibility from the header/report scope. Show received nearby players by default while retaining a personal summary, and show separate personal, party and nearby rates in the footer. Unknown self identity no longer hides other received actors.
 - Filter a known party roster to its members. If membership has not arrived, display nearby rows with an explicit notice and keep the unknown party total unavailable; nearby presence does not create party membership.
 - Add smooth relative-DPS bar colors, with class-color and theme-accent choices. Keep received names, total damage, per-second DPS and configurable shares in the roster.
-- Raise the compact overlay minimum to 320 Ã— 200 so controls and player rows have space together. Migrate shorter saved windows without resetting their themes or other appearance choices.
+- Raise the compact overlay minimum to 320 × 200 so controls and player rows have space together. Migrate shorter saved windows without resetting their themes or other appearance choices.
 - Add transport regressions for nearby actors, late received names, per-player DPS and a split late party roster. All 132 engine tests pass; production engine parsing is unchanged.
 
 Live gate: the final executable still needs synchronized solo/nearby/party combat checks and a real Cube scene with audible stereo output, camera turns and other-game-sound negatives. Automated coverage does not establish full premium-feature parity or detection accuracy in every scene. This remains a preview.
 
-## 0.11.0 preview Â· 2026-10-15
+## 0.11.0 preview · 2026-10-15
 
 - Add a prominent DPS/CUBE header switch and a compass in the meter body, with compact/detailed layouts, a smooth steering needle, relative signal and signal/noise readings. Minimize or Escape returns to DPS; listening remains an explicit choice and starts off on every launch.
 - Preserve stereo front/back ambiguity with a dashed rear candidate. Clear the needle for stale, missing or conflicting directional evidence instead of presenting an unsupported bearing. The display does not calculate GPS coordinates or calibrated distance.
@@ -84,7 +85,7 @@ Live gate: the final executable still needs synchronized solo/nearby/party comba
 
 Live gate: detection beside a real Cube, false positives around other game sounds and camera-relative stereo guidance remain pending. Final native window checks and synchronized combat trials also remain pending; this build remains a preview.
 
-## 0.10.0 preview Â· 2026-10-14
+## 0.10.0 preview · 2026-10-14
 
 - Add an opt-in Hidden Cube sound locator with an included spectral reference, sound similarity, matched stereo left/right balance and relative signal changes. No absolute distance, map position or front/back direction is inferred.
 - Capture only the AION2 process tree with Windows process loopback by default. A separate, explicitly selected system-output mode supports older Windows builds. No microphone or additional capture driver is used.
@@ -95,7 +96,7 @@ Live gate: detection beside a real Cube, false positives around other game sound
 
 Live gate: real-game sound detection, false positives around other game sounds and camera-relative stereo guidance remain pending. The meter's synchronized solo, nearby-player, party and native window checks also remain pending on the final preview.
 
-## 0.9.3 preview Â· 2026-10-14
+## 0.9.3 preview · 2026-10-14
 
 - Organize Settings into six keyboard-accessible sections with retained drafts and scroll positions; open the calendar directly from the timer.
 - Serialize rapid panel open/close requests and combine queued preference writes so the latest choice wins without unnecessary disk writes.
