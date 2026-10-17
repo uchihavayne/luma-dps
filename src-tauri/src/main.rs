@@ -995,7 +995,7 @@ impl Default for Preferences {
             locked: false,
             target_mode: "all".into(),
             width: 420.0,
-            height: 240.0,
+            height: 340.0,
             cube_auto_listen: true,
             extra: Default::default(),
         }

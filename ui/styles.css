@@ -156,7 +156,12 @@ html[data-surface=light] .player-class-icon{color:color-mix(in srgb,var(--class-
 .meter[data-layout=cupertino] .player-share{font-size:7px;font-weight:550;line-height:9px;margin-top:1px;color:var(--muted)}
 .meter[data-layout=cupertino] .player-cooldown{font-size:7px;line-height:9px;margin-top:2px}
 .meter[data-layout=cupertino][data-density=compact] .player{min-height:29px;padding-block:3px;margin-bottom:3px;border-radius:5px}
-.meter[data-layout=cupertino][data-density=compact] .player-name{font-size:10px;line-height:12px}.meter[data-layout=cupertino][data-density=compact] .player-class{font-size:6px;line-height:8px}
+.meter[data-layout=cupertino][data-density=compact] .player-name{font-size:12px;line-height:16px}.meter[data-layout=cupertino][data-density=compact] .player-class{display:none}
+.meter[data-layout=cupertino][data-density=compact] .player-main{display:flex;align-items:center;gap:4px}
+.meter[data-layout=cupertino][data-density=compact] .player-name-line{flex:1 1 auto;min-width:30px}
+.meter[data-layout=cupertino][data-density=compact] .player-cooldown{display:block;flex:0 1 auto;min-width:0;max-width:min(35%,90px);margin:0;font-size:7px;line-height:12px}
+.meter[data-layout=cupertino][data-density=compact] .player-stats{display:flex;align-items:center;justify-content:flex-end;gap:5px}
+.meter[data-layout=cupertino][data-density=compact] .player-share{display:inline;font-size:8px;line-height:12px;margin:0;white-space:nowrap}
 .meter[data-layout=cupertino]>.footer{grid-area:footer;height:var(--frame-footer,29px);padding:0 5px 0 6px;gap:3px;border-top:1px solid color-mix(in srgb,var(--text) 8%,transparent);background:color-mix(in srgb,var(--panel) 22%,transparent)}
 .meter[data-layout=cupertino] .footer-controls{gap:0}.meter[data-layout=cupertino] .footer .icon-button{width:23px;height:24px;font-size:13px;border-radius:5px}.meter[data-layout=cupertino] .footer .icon-button>svg{width:14px;height:14px}
 .meter[data-layout=cupertino] .roster-summary{gap:3px}.meter[data-layout=cupertino] .roster-summary small{font-size:5px;line-height:6px;letter-spacing:.4px}.meter[data-layout=cupertino] .roster-summary strong{font-size:8px;line-height:10px;font-weight:600;color:var(--text)}
