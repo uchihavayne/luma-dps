@@ -35,6 +35,35 @@ export const LAYOUTS = Object.freeze({
   focus: { name: 'Focus', description: { tr: 'Kişisel ölçüm ön planda', en: 'Personal measurement in focus' } },
   glass: { name: 'Prism', description: { tr: 'Yumuşak ışık, hafif yüzeyler', en: 'Soft light, light surfaces' } },
 });
+export const DISPLAY_MODULES = Object.freeze(['dps', 'pets', 'cube', 'events', 'odyle', 'team']);
+
+export function normalizeDisplayModules(input) {
+  const value = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const modules = Object.fromEntries(DISPLAY_MODULES.map(name => [name, value[name] !== false]));
+  if (!Object.values(modules).some(Boolean)) modules.pets = true;
+  return modules;
+}
+
+export function displayModulePreset(preset) {
+  return Object.fromEntries(DISPLAY_MODULES.map(name => [name, preset !== 'pets' || name === 'pets']));
+}
+
+export function petOnlyDisplay(preferences = {}) {
+  const modules = normalizeDisplayModules(preferences.displayModules);
+  return modules.pets && DISPLAY_MODULES.every(name => name === 'pets' || !modules[name]);
+}
+
+export function visibleAnalysisSections(sections, preferences = {}) {
+  const modules = normalizeDisplayModules(preferences.displayModules);
+  return sections.filter(name => name === 'pets' ? modules.pets : name === 'team' ? modules.team
+    : name === 'build' ? modules.dps || modules.odyle : name === 'worldBosses' ? modules.events
+    : name === 'planner' ? modules.events || modules.odyle : name === 'alerts' ? modules.events || modules.dps : modules.dps);
+}
+export function visibleSettingsSections(sections, preferences = {}) {
+  const modules = normalizeDisplayModules(preferences.displayModules);
+  return sections.filter(name => name === 'calendar' ? modules.events : ['combatSettings', 'streaming'].includes(name) ? modules.dps
+    : name === 'hiddenCube' ? modules.cube : name === 'character' ? modules.dps || modules.pets || modules.odyle : true);
+}
 export const DEFAULTS = Object.freeze({
   version: 1, appearanceRevision: 2, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
@@ -44,6 +73,7 @@ export const DEFAULTS = Object.freeze({
   damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'cupertino', density: 'compact', showClass: true, showShares: true, showTeamCooldowns: true, rowMetric: 'both',
   numberPrecision: 2,
   summaryMetric: 'both', autoTargetRoster: true,
+  displayModules: Object.freeze(displayModulePreset('all')),
   petPins: [], petGoal: 'max', petAutoTrack: true, showPetTracker: true, petTrackerCollapsed: false,
   onlyAboveGame: false, clickThroughWhenLocked: false, fadeWhenIdle: false, hidePlayerNames: false, compactStrip: false, autoCheckUpdates: true, hotkeys: [],
   fullscreenOverlay: false, fullscreenLayout: 'dashboard', overlayX: 24, overlayY: 24, overlayWidth: 420, overlayHeight: 340,
@@ -88,6 +118,7 @@ export function normalizePreferences(input = {}) {
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'), autoTargetRoster: p.autoTargetRoster !== false,
+    displayModules: normalizeDisplayModules(p.displayModules),
     petPins: [...new Set((Array.isArray(p.petPins) ? p.petPins : []).slice(0, 100).filter(value => Number.isSafeInteger(value) && value >= 1000 && value <= 99999))].slice(0, 6),
     petGoal: oneOf(p.petGoal, ['next', 'max'], 'max'), petAutoTrack: p.petAutoTrack !== false, showPetTracker: p.showPetTracker !== false, petTrackerCollapsed: p.petTrackerCollapsed === true,
     onlyAboveGame: p.onlyAboveGame === true, clickThroughWhenLocked: p.clickThroughWhenLocked === true, fadeWhenIdle: p.fadeWhenIdle === true, hidePlayerNames: p.hidePlayerNames === true, compactStrip: p.compactStrip === true, autoCheckUpdates: p.autoCheckUpdates !== false,

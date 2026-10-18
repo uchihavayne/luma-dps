@@ -47,6 +47,16 @@ These static owned-effect references are separate from Genus Insight levels, EXP
 
 Aion2.gg's current page reports 209 pets, but its [terms](https://aion2.gg/terms) prohibit building or mirroring a bulk dataset from the site. Its database was not copied. Only the cited, limited aggregate check was used; the bundled factual snapshot remains the 207-record source described above.
 
+## Live continuity
+
+Received values belong to an authoritative self identity. Transient capture loss, an auxiliary connection change or a backwards clock keeps eligible observations as `continuity: last-known` with a reason/time and per-row `progress_stale`. Farming-rate sessions reset. A received delta after a missing interval cannot advance the preserved absolute value. A fresh absolute inventory restores the baseline; missed gains are never estimated. Unknown levels remain unknown.
+
+Routine overlapping game connection changes no longer require restarting the Windows capture session. Microsoft's [active-session constraint API](https://learn.microsoft.com/windows/win32/pktmon/packetmonitor/nf-packetmonitor-packetmonitoraddcaptureconstraint) permits adding exact filters during capture. At most 128 exact filters are retained; a synchronized gate accepts only currently owned AION2 tuples before queueing. Removed tuples cannot deliver through cached filters. A true game connection change, cache limit or API failure retains the filtered restart fallback. This reduces avoidable gaps; it does not claim that real packet loss can be recovered without new received state.
+
+Confirmed character/name/server changes, a true connection generation change or a reset of a flow previously validated by pet messages clear old ownership. A new login list must wait for fresh authoritative self identity. Old per-flow associations are bounded and reset with the generation. The UI also retains same-actor values on a failed snapshot read, marks them last-known and fetches after missed-packet changes. A source timestamp is not rejuvenated by a refresh.
+
+The EU local test confirmed initial counter arrival after character re-entry; the subsequent disappearing-counter report led to these continuity changes. Extended live continuity, exact value comparison and all-pet coverage still need validation.
+
 ## Upstream MIT notice
 
 MIT License

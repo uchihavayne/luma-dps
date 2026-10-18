@@ -22,6 +22,18 @@ const MAX_HISTORY_SAMPLES: usize = 100_000;
 const PROFILE_PENDING_MS: u64 = 30_000;
 const MAX_PENDING_PROFILES: usize = 64;
 
+fn event_contains_pet_observation(event: &Event) -> bool {
+    match event {
+        Event::Character(
+            character::CharacterEvent::PetInventory { .. }
+            | character::CharacterEvent::PetGains { .. }
+            | character::CharacterEvent::PetLevel { .. },
+        ) => true,
+        Event::Updates(events) => events.iter().any(event_contains_pet_observation),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DamageSample {
@@ -350,6 +362,7 @@ pub struct MeterEngine {
     field_boss_revision: u64,
     field_boss_available: bool,
     character: character::CharacterStore,
+    pet_connections: Vec<net::Connection>,
     character_revision: u64,
     encounter_build: Option<character::CharacterBuild>,
     encounter_build_taken: bool,
@@ -412,6 +425,7 @@ impl Default for MeterEngine {
             field_boss_revision: 0,
             field_boss_available: false,
             character: character::CharacterStore::default(),
+            pet_connections: Vec::new(),
             character_revision: 0,
             encounter_build: None,
             encounter_build_taken: false,
@@ -513,6 +527,12 @@ impl MeterEngine {
         if segment.connection.source_port == 443 || segment.connection.destination_port == 443 {
             return;
         }
+        if (segment.syn || segment.reset) && self.pet_connections.contains(&segment.connection) {
+            // A proven collection flow has a new TCP lifetime. Its old actor
+            // binding is invalid too: fresh login rows may precede the next
+            // server self identity and must stay unbound until that arrives.
+            self.connection_changed();
+        }
         self.diagnostics.tcp_packets = self.diagnostics.tcp_packets.saturating_add(1);
         self.last_seen = now;
         let previous_gaps = self.streams.gaps;
@@ -533,7 +553,14 @@ impl MeterEngine {
             self.pending_profiles.clear();
             self.party_snapshot_complete = false;
             self.assistance.clear();
-            self.character.clear();
+            self.character.invalidate_capture(
+                now,
+                if segment.syn || segment.reset {
+                    "auxiliary-flow-change"
+                } else {
+                    "stream-gap"
+                },
+            );
             if let Some((actor, name)) = self.own_id.and_then(|actor| {
                 self.identities
                     .get(&actor)
@@ -603,7 +630,17 @@ impl MeterEngine {
             for payload in expanded {
                 self.diagnostics.frames += 1;
                 match packets::decode(&payload) {
-                    Ok(Some(event)) => self.ingest_event(event, now),
+                    Ok(Some(event)) => {
+                        if event_contains_pet_observation(&event)
+                            && !self.pet_connections.contains(&segment.connection)
+                        {
+                            if self.pet_connections.len() == 64 {
+                                self.pet_connections.remove(0);
+                            }
+                            self.pet_connections.push(segment.connection.clone());
+                        }
+                        self.ingest_event(event, now);
+                    }
                     Ok(None) => {}
                     Err(_) => self.diagnostics.rejected_frames += 1,
                 }
@@ -1537,6 +1574,7 @@ impl MeterEngine {
         self.field_boss_revision = self.field_boss_revision.wrapping_add(1);
         self.cancel_training();
         self.character.clear();
+        self.pet_connections.clear();
         self.character_revision = self.character_revision.wrapping_add(1);
         self.encounter_build = None;
         self.encounter_build_taken = false;
@@ -1571,7 +1609,8 @@ impl MeterEngine {
         self.party_wire_members.clear();
         self.pending_profiles.clear();
         self.party_snapshot_complete = false;
-        self.character.clear();
+        self.character
+            .invalidate_capture(self.last_seen, "capture-loss");
         if let Some(id) = self.own_id {
             if let Some(name) = self
                 .identities

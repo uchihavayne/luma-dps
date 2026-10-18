@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { networkLatency, latencyPresentation, petProgress, cooldownObservation, staggerState, staggerPresentation } from '../telemetry.mjs';
+import { networkLatency, latencyPresentation, petProgress, stalePetProgress, cooldownObservation, staggerState, staggerPresentation } from '../telemetry.mjs';
 import { characterSnapshot } from '../character.mjs';
 
 const latency = () => ({ status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 90, variation_ms: 4, observed_at_ms: 1000, sampled_at_ms: 2000, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 });
@@ -64,6 +64,24 @@ test('received registration level zero survives native and character snapshot no
   assert.equal(first.pets[1].level, null); assert.equal(first.pets[2].level, null);
   assert.deepEqual(petProgress(first, { localPlayerId: '7' }), first);
   assert.deepEqual(petProgress(characterSnapshot({ pet_progress: input }).pet_progress, { localPlayerId: '7' }), first);
+});
+
+test('interrupted pet snapshots retain last received counters with stale ownership and no farming rate', () => {
+  const original = pets();
+  Object.assign(original.pets[0], { session_started_at_ms: 100, session_baseline_gained: 0, session_gain_events: 3, last_gain_at_ms: 1900 });
+  const stale = stalePetProgress(original, { reason: 'capture-gap', now: 3000 });
+  assert.equal(stale.continuity, 'last-known'); assert.equal(stale.stale_at_ms, 3000);
+  assert.equal(stale.stale_reason, 'capture-gap'); assert.equal(stale.pets[0].progress, 32);
+  assert.equal(stale.pets[0].level, 2); assert.equal(stale.pets[0].progress_stale, true);
+  assert.equal(stale.pets[0].session_gained, 0); assert.equal(stale.pets[0].session_started_at_ms, null);
+  assert.equal(stale.pets[0].session_gain_events, 0); assert.equal(stale.pets[0].last_gain_at_ms, null);
+  assert.deepEqual(characterSnapshot({ pet_progress: stale }).pet_progress, stale);
+  assert.equal(stalePetProgress(stale, { now: 5000 }).stale_at_ms, 3000);
+  assert.equal(petProgress(stale, { localPlayerId: 8 }), null);
+  assert.equal(petProgress(stale, { localPlayerId: null }), null);
+  assert.equal(stalePetProgress(null), null);
+  const fresh = petProgress(original);
+  assert.equal(fresh.continuity, 'live'); assert.equal(fresh.pets[0].progress_stale, false);
 });
 
 test('cooldown expiry differs from server-confirmed ready and keeps unknown charges unknown', () => {

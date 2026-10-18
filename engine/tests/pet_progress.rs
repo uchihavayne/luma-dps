@@ -1,5 +1,5 @@
 use luma_engine::{
-    character::{self, CharacterEvent, CharacterStore, ObservedPetProgress},
+    character::{self, CharacterEvent, CharacterStore, ObservedPetProgress, PetContinuity},
     packets::{self, Event},
     MeterEngine,
 };
@@ -230,24 +230,34 @@ fn pending_pet_login_needs_fresh_authoritative_self_and_never_manual_or_nearby_i
 }
 
 #[test]
-fn pet_progress_is_cleared_on_capture_loss_connection_and_clock_reversal() {
+fn capture_loss_and_clock_reversal_keep_last_known_but_connection_change_clears_pets() {
     let frame = inventory(0, &[(1042, 2)], &[(1042, 32)]);
     let mut engine = MeterEngine::default();
     own(&mut engine, 7, 100);
     receive(&mut engine, &frame, 200);
     engine.capture_loss();
-    assert!(engine.character_snapshot().pet_progress.is_none());
+    let stale = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(stale.continuity, PetContinuity::LastKnown);
+    assert_eq!(stale.stale_reason.as_deref(), Some("capture-loss"));
+    assert_eq!(stale.pets[0].level, Some(2));
+    assert_eq!(stale.pets[0].progress, Some(32));
+    assert!(stale.pets[0].progress_stale);
     receive(&mut engine, &gains(&[(1042, 1)]), 300);
     assert_eq!(
         engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
-        None
+        Some(32)
     );
     engine.connection_changed();
     assert!(engine.character_snapshot().pet_progress.is_none());
     own(&mut engine, 8, 500);
     receive(&mut engine, &frame, 600);
     receive(&mut engine, &gains(&[(1042, 1)]), 550);
-    assert!(engine.character_snapshot().pet_progress.is_none());
+    let stale = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(stale.actor_id, Some(8));
+    assert_eq!(stale.continuity, PetContinuity::LastKnown);
+    assert_eq!(stale.stale_reason.as_deref(), Some("clock-reversal"));
+    assert_eq!(stale.pets[0].progress, Some(32));
+    assert!(stale.pets[0].progress_stale);
 }
 
 #[test]
@@ -378,11 +388,15 @@ fn a_new_tcp_stream_or_capture_gap_never_keeps_absolute_pet_progress_current() {
     engine.ingest_tcp(&tcp(next, 0x18, &delta), true, 10_000);
     assert_eq!(engine.live_state(10_001).diagnostics.stream_gaps, 1);
     let after_gap = engine.character_snapshot().pet_progress.unwrap();
-    assert_eq!(after_gap.pets[0].progress, None);
+    assert_eq!(after_gap.pets[0].progress, Some(32));
+    assert_eq!(after_gap.continuity, PetContinuity::LastKnown);
+    assert!(after_gap.pets[0].progress_stale);
     assert_eq!(after_gap.pets[0].session_gained, 2);
     engine.ingest_tcp(&tcp(next + delta.len() as u32, 0x18, &list), true, 10_100);
     let state = engine.character_snapshot().pet_progress.unwrap();
     assert_eq!(state.pets[0].progress, Some(32));
+    assert_eq!(state.continuity, PetContinuity::Live);
+    assert!(!state.pets[0].progress_stale);
     engine.ingest_tcp(&tcp(50_000, 0x12, &[]), true, 11_000);
     assert!(engine.character_snapshot().pet_progress.is_none());
 }
@@ -510,7 +524,8 @@ fn capture_loss_starts_a_new_gain_baseline_instead_of_reusing_an_old_rate() {
     receive(&mut engine, &gains(&[(1042, 3)]), 10_000);
     let snapshot = engine.character_snapshot().pet_progress.unwrap();
     let pet = &snapshot.pets[0];
-    assert_eq!(pet.progress, None);
+    assert_eq!(pet.progress, Some(34));
+    assert!(pet.progress_stale);
     assert_eq!(pet.session_started_at_ms, Some(10_000));
     assert_eq!(pet.session_gained, 3);
     assert_eq!(pet.session_baseline_gained, 3);
@@ -530,6 +545,186 @@ fn capture_loss_starts_a_new_gain_baseline_instead_of_reusing_an_old_rate() {
     assert_eq!(snapshot.pets[0].session_started_at_ms, Some(20_100));
     assert_eq!(snapshot.pets[0].session_gained, 0);
     assert_eq!(snapshot.pets[0].last_gain_at_ms, None);
+}
+
+#[test]
+fn capture_gap_keeps_all_last_values_and_never_adds_to_a_broken_absolute_baseline() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(
+        &mut engine,
+        &inventory(
+            1124,
+            &[(1042, 2), (1124, 3), (1204, 0)],
+            &[(1042, 32), (1124, 0), (1204, 3)],
+        ),
+        200,
+    );
+    receive(&mut engine, &gains(&[(1042, 2)]), 1_000);
+    engine.capture_loss();
+    let stale = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(stale.continuity, PetContinuity::LastKnown);
+    assert_eq!(stale.stale_at_ms, Some(1_000));
+    assert_eq!(
+        stale
+            .pets
+            .iter()
+            .map(|pet| pet.progress)
+            .collect::<Vec<_>>(),
+        vec![Some(34), Some(0), Some(3)]
+    );
+    assert!(stale
+        .pets
+        .iter()
+        .all(|pet| pet.progress_stale && pet.session_started_at_ms.is_none()));
+    receive(
+        &mut engine,
+        &gains(&[(1042, 2), (1124, 1), (1204, 1)]),
+        10_000,
+    );
+    let after_delta = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(after_delta.continuity, PetContinuity::LastKnown);
+    assert_eq!(
+        after_delta
+            .pets
+            .iter()
+            .map(|pet| pet.progress)
+            .collect::<Vec<_>>(),
+        vec![Some(34), Some(0), Some(3)]
+    );
+    assert_eq!(after_delta.pets[0].session_gained, 2);
+    assert_eq!(after_delta.pets[0].session_baseline_gained, 2);
+    assert_eq!(after_delta.pets[0].session_started_at_ms, Some(10_000));
+    assert_eq!(after_delta.pets[0].observed_at_ms, 1_000);
+    assert_eq!(after_delta.pets[1].observed_at_ms, 200);
+    assert_eq!(after_delta.pets[2].observed_at_ms, 200);
+    receive(&mut engine, &level(1042, 2), 10_001);
+    assert_eq!(
+        engine.character_snapshot().pet_progress.unwrap().pets[0].observed_at_ms,
+        1_000
+    );
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 2)], &[(1042, 40)]),
+        11_000,
+    );
+    receive(&mut engine, &gains(&[(1042, 1)]), 12_000);
+    let refreshed = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(refreshed.continuity, PetContinuity::Live);
+    assert_eq!(refreshed.stale_reason, None);
+    assert_eq!(refreshed.stale_at_ms, None);
+    assert_eq!(refreshed.pets[0].progress, Some(41));
+    assert!(!refreshed.pets[0].progress_stale);
+    assert_eq!(refreshed.pets[0].session_gained, 3);
+}
+
+#[test]
+fn auxiliary_flow_syn_keeps_history_but_a_known_pet_flow_reset_and_new_generation_clear_it() {
+    let mut engine = MeterEngine::default();
+    let list = wire(&inventory(0, &[(1042, 2)], &[(1042, 32)]));
+    engine.ingest_tcp(&tcp(99, 0x12, &[]), true, 100);
+    own(&mut engine, 7, 101);
+    engine.ingest_tcp(&tcp(100, 0x18, &list), true, 200);
+    let mut auxiliary = tcp(999, 0x12, &[]);
+    auxiliary[20..22].copy_from_slice(&8888u16.to_be_bytes());
+    auxiliary[22..24].copy_from_slice(&50001u16.to_be_bytes());
+    engine.ingest_tcp(&auxiliary, true, 300);
+    let retained = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(retained.actor_id, Some(7));
+    assert_eq!(retained.continuity, PetContinuity::LastKnown);
+    assert_eq!(
+        retained.stale_reason.as_deref(),
+        Some("auxiliary-flow-change")
+    );
+    assert_eq!(retained.pets[0].progress, Some(32));
+    engine.ingest_tcp(&tcp(100 + list.len() as u32, 0x04, &[]), true, 400);
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 40)]), 500);
+    engine.capture_loss();
+    engine.connection_changed();
+    own(&mut engine, 8, 600);
+    assert!(engine.character_snapshot().pet_progress.is_none());
+}
+
+#[test]
+fn proven_pet_flow_new_lifetime_requires_fresh_server_self_before_attaching_login_rows() {
+    let mut engine = MeterEngine::default();
+    let old_list = wire(&inventory(0, &[(1042, 2)], &[(1042, 32)]));
+    engine.ingest_tcp(&tcp(99, 0x12, &[]), true, 100);
+    own(&mut engine, 7, 101);
+    engine.ingest_tcp(&tcp(100, 0x18, &old_list), true, 200);
+    engine.ingest_tcp(&tcp(4_999, 0x12, &[]), true, 300);
+    let new_list = wire(&inventory(0, &[(1204, 1)], &[(1204, 3)]));
+    engine.ingest_tcp(&tcp(5_000, 0x18, &new_list), true, 400);
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    assert_eq!(engine.live_state(400).local_player_id, None);
+    own(&mut engine, 8, 500);
+    let refreshed = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(refreshed.actor_id, Some(8));
+    assert_eq!(refreshed.continuity, PetContinuity::Live);
+    assert_eq!(refreshed.pets.len(), 1);
+    assert_eq!(refreshed.pets[0].pet_id, 1204);
+    assert_eq!(refreshed.pets[0].progress, Some(3));
+}
+
+#[test]
+fn stale_collection_never_crosses_character_server_or_actor_identity_changes() {
+    for (actor, name, server) in [
+        (8, "Player7", Some(1)),
+        (7, "Other", Some(1)),
+        (7, "Player7", Some(2)),
+    ] {
+        let mut store = CharacterStore::default();
+        store.bind_self(7, "Player7", Some(1), 100);
+        store.ingest(
+            character::decode(&inventory(0, &[(1042, 2)], &[(1042, 32)]))
+                .unwrap()
+                .unwrap(),
+            200,
+        );
+        store.invalidate_capture(300, "capture-loss");
+        store.bind_self(7, "Player7", None, 350);
+        assert_eq!(store.snapshot().own.unwrap().server_id, Some(1));
+        store.bind_self(actor, name, server, 400);
+        assert!(store.snapshot().pet_progress.is_none());
+    }
+    let mut engine = MeterEngine::default();
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 100);
+    engine.capture_loss();
+    own(&mut engine, 7, 200);
+    assert!(engine.character_snapshot().pet_progress.is_none());
+}
+
+#[test]
+fn stale_snapshot_serialization_is_explicit_and_absolute_refresh_ignores_forged_flags() {
+    let mut store = CharacterStore::default();
+    store.bind_self(7, "Player", None, 100);
+    let mut rows = received_pets(&inventory(0, &[(1042, 2)], &[(1042, 32)]));
+    store.ingest(
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            active_pet_known: true,
+            pets: rows.clone(),
+        },
+        200,
+    );
+    store.invalidate_capture(300, "capture-loss");
+    let value = serde_json::to_value(store.snapshot()).unwrap();
+    assert_eq!(value["pet_progress"]["continuity"], "last-known");
+    assert_eq!(value["pet_progress"]["stale_reason"], "capture-loss");
+    assert_eq!(value["pet_progress"]["pets"][0]["progress_stale"], true);
+    rows[0].progress_stale = true;
+    store.ingest(
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            active_pet_known: true,
+            pets: rows,
+        },
+        400,
+    );
+    let refreshed = store.snapshot().pet_progress.unwrap();
+    assert_eq!(refreshed.continuity, PetContinuity::Live);
+    assert!(!refreshed.pets[0].progress_stale);
 }
 
 fn received_pets(frame: &[u8]) -> Vec<ObservedPetProgress> {

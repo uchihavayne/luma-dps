@@ -260,6 +260,7 @@ mod windows {
         sync::{
             atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
             mpsc::{sync_channel, Receiver, SyncSender},
+            RwLock,
         },
         time::{Duration, Instant},
     };
@@ -457,7 +458,7 @@ mod windows {
         previous_read_misses: AtomicU32,
         loss_epoch: AtomicU64,
         stopped: AtomicBool,
-        endpoints: HashSet<Connection>,
+        endpoints: RwLock<HashSet<Connection>>,
     }
 
     impl CallbackContext {
@@ -472,7 +473,7 @@ mod windows {
                 previous_read_misses: AtomicU32::new(0),
                 loss_epoch: AtomicU64::new(0),
                 stopped: AtomicBool::new(false),
-                endpoints,
+                endpoints: RwLock::new(endpoints),
             }
         }
 
@@ -558,7 +559,13 @@ mod windows {
         let Some(ip) = ipv4_packet(bytes, metadata.packet_type) else {
             return;
         };
-        if direction(ip, &context.endpoints) != Some(true) {
+        // Keep the read guard through enqueueing. Once a removal is published,
+        // no callback can enqueue later traffic from the now-unowned tuple.
+        // A poisoned ownership gate fails closed.
+        let Ok(endpoints) = context.endpoints.read() else {
+            return;
+        };
+        if direction(ip, &endpoints) != Some(true) {
             return;
         }
         let timestamp_ms = packet_timestamp_ms(metadata.timestamp, crate::now_ms());
@@ -746,16 +753,46 @@ mod windows {
         session: Handle,
         stream: Handle,
         context: Box<CallbackContext>,
+        kernel_endpoints: HashSet<Connection>,
     }
 
     impl Session<'_> {
+        fn refresh_endpoints(
+            &mut self,
+            endpoints: &HashSet<Connection>,
+        ) -> Result<bool, CaptureFailure> {
+            // Microsoft permits additions before or after session activation.
+            // Retired exact kernel filters remain bounded; the synchronized
+            // current-ownership gate removes their traffic immediately.
+            // https://learn.microsoft.com/windows/win32/pktmon/packetmonitor/nf-packetmonitor-packetmonitoraddcaptureconstraint
+            refresh_constraints(
+                &self.context.endpoints,
+                &mut self.kernel_endpoints,
+                endpoints,
+                |connection, index| unsafe {
+                    check(
+                        (self.api.add_constraint)(
+                            self.session,
+                            &incoming_constraint(connection, index),
+                        ),
+                        "PacketMonitorAddCaptureConstraint",
+                    )
+                },
+            )
+        }
+
         fn stop(&mut self) {
+            // Stop accepting new callbacks before deactivation/closure. Packets
+            // accepted under the previous ownership snapshot are still drained.
+            if let Ok(mut endpoints) = self.context.endpoints.write() {
+                endpoints.clear();
+            }
             unsafe {
                 if !self.session.is_null() {
                     (self.api.set_active)(self.session, 0);
                 }
                 // Close callbacks before reading final counters or draining
-                // queued packets from this session's immutable endpoint set.
+                // queued packets accepted while their tuples were owned.
                 if !self.stream.is_null() {
                     (self.api.close_stream)(self.stream);
                     self.stream = ptr::null_mut();
@@ -783,7 +820,7 @@ mod windows {
         sender: SyncSender<Packet>,
         endpoints: HashSet<Connection>,
     ) -> Result<Session<'a>, CaptureFailure> {
-        if endpoints.is_empty() || endpoints.len() > 128 {
+        if endpoints.is_empty() || endpoints.len() > MAX_CAPTURE_CONSTRAINTS {
             return Err("Native capture requires 1 to 128 owned game TCP connections".into());
         }
         let mut session = Session {
@@ -791,6 +828,7 @@ mod windows {
             handle: ptr::null_mut(),
             session: ptr::null_mut(),
             stream: ptr::null_mut(),
+            kernel_endpoints: endpoints.clone(),
             context: Box::new(CallbackContext::new(sender, endpoints)),
         };
         check(
@@ -805,7 +843,7 @@ mod windows {
             (api.create_session)(session.handle, name.as_ptr(), &mut session.session),
             "PacketMonitorCreateLiveSession",
         )?;
-        for (index, connection) in session.context.endpoints.iter().enumerate() {
+        for (index, connection) in session.kernel_endpoints.iter().enumerate() {
             let constraint = incoming_constraint(connection, index);
             check(
                 (api.add_constraint)(session.session, &constraint),
@@ -883,6 +921,36 @@ mod windows {
         local_port: u16,
         remote: [u8; 4],
         remote_port: u16,
+    }
+
+    const MAX_CAPTURE_CONSTRAINTS: usize = 128;
+
+    fn refresh_constraints(
+        current: &RwLock<HashSet<Connection>>,
+        installed: &mut HashSet<Connection>,
+        requested: &HashSet<Connection>,
+        mut add: impl FnMut(&Connection, usize) -> Result<(), CaptureFailure>,
+    ) -> Result<bool, CaptureFailure> {
+        {
+            let mut owned = current
+                .write()
+                .map_err(|_| CaptureFailure::from("Native capture ownership gate unavailable"))?;
+            *owned = requested.clone();
+        }
+        let additions: Vec<_> = requested.difference(installed).cloned().collect();
+        if requested.is_empty()
+            || installed.is_empty()
+            || installed.len().saturating_add(additions.len()) > MAX_CAPTURE_CONSTRAINTS
+        {
+            return Ok(false);
+        }
+        // Do not hold the ownership write lock across a Windows API call: an
+        // immediate callback must be able to check the newly published set.
+        for connection in additions {
+            add(&connection, installed.len())?;
+            installed.insert(connection);
+        }
+        Ok(true)
     }
 
     struct GameConnections {
@@ -1308,40 +1376,52 @@ mod windows {
                         !endpoints.is_empty() && endpoints.is_disjoint(&refreshed.endpoints);
                     if endpoints != refreshed.endpoints {
                         let had_capture = active.is_some();
-                        if let Some(previous) = active.take() {
-                            let previous = close_active(previous, shared);
-                            totals.missed = totals.missed.saturating_add(previous.missed);
-                            totals.warnings = totals.warnings.saturating_add(previous.warnings);
-                            totals.largest_packet =
-                                totals.largest_packet.max(previous.largest_packet);
-                            if previous.warning != 0 {
-                                totals.warning = previous.warning;
+                        let kept_session = !session_changed
+                            && !refreshed.endpoints.is_empty()
+                            && active.as_mut().is_some_and(|stream| {
+                                stream
+                                    .session
+                                    .refresh_endpoints(&refreshed.endpoints)
+                                    .unwrap_or(false)
+                            });
+                        if !kept_session {
+                            // A new game generation, exhausted bounded filter
+                            // cache or failed live API update falls back to a
+                            // freshly filtered session. Preserve accepted queued
+                            // packets and mark the actual interruption as loss.
+                            if let Some(previous) = active.take() {
+                                let previous = close_active(previous, shared);
+                                totals.missed = totals.missed.saturating_add(previous.missed);
+                                totals.warnings = totals.warnings.saturating_add(previous.warnings);
+                                totals.largest_packet =
+                                    totals.largest_packet.max(previous.largest_packet);
+                                if previous.warning != 0 {
+                                    totals.warning = previous.warning;
+                                }
                             }
-                        }
-                        if session_changed {
-                            if let Ok(mut engine) = shared.engine.lock() {
-                                engine.connection_changed();
+                            if session_changed {
+                                if let Ok(mut engine) = shared.engine.lock() {
+                                    engine.connection_changed();
+                                }
+                            }
+                            // No filters means the Windows API captures the
+                            // entire host. Never activate an unfiltered session.
+                            if !refreshed.endpoints.is_empty() {
+                                let (sender, receiver) = sync_channel(2048);
+                                let session =
+                                    unsafe { create(&api, sender, refreshed.endpoints.clone())? };
+                                active = Some(ActiveCapture {
+                                    session,
+                                    receiver,
+                                    applied_epoch: if had_capture && !session_changed {
+                                        u64::MAX
+                                    } else {
+                                        0
+                                    },
+                                });
                             }
                         }
                         endpoints = refreshed.endpoints;
-                        // No filters means the Windows API captures the entire
-                        // host. Keep our session absent until an owned tuple exists.
-                        if !endpoints.is_empty() {
-                            let (sender, receiver) = sync_channel(2048);
-                            let session = unsafe { create(&api, sender, endpoints.clone())? };
-                            active = Some(ActiveCapture {
-                                session,
-                                receiver,
-                                // Changing filters requires recreating only our
-                                // session. Clear partial frames before its first
-                                // packet when capture continuity was interrupted.
-                                applied_epoch: if had_capture && !session_changed {
-                                    u64::MAX
-                                } else {
-                                    0
-                                },
-                            });
-                        }
                     }
                     refresh = Instant::now();
                     let current = active
@@ -1572,6 +1652,214 @@ mod windows {
                 TEST_CLOCK_MS,
             );
             engine
+        }
+
+        fn test_shared(engine: luma_engine::MeterEngine) -> crate::Shared {
+            crate::Shared {
+                engine: std::sync::Mutex::new(engine),
+                preferences: std::sync::Mutex::new(crate::Preferences::default()),
+                capture: std::sync::Mutex::new(super::super::CaptureStatus::default()),
+                data_dir: std::path::PathBuf::new(),
+                stopping: AtomicBool::new(false),
+                panel_open: AtomicBool::new(false),
+                panel_restore: std::sync::Mutex::new(None),
+                size_transition_until: AtomicU64::new(0),
+                settings_write: std::sync::Mutex::new(()),
+                history_write: std::sync::Mutex::new(()),
+                history_saved_revision: AtomicU64::new(0),
+                history_storage_error: std::sync::Mutex::new(String::new()),
+                preference_change: std::sync::Mutex::new(()),
+                geometry_save_due: AtomicU64::new(0),
+                capture_worker: std::sync::Mutex::new(None),
+                obs: std::sync::Mutex::new(None),
+                calendar: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn callback_ip(context: &mut CallbackContext, ip: &[u8]) {
+            let offset = size_of::<Metadata>();
+            let mut memory = vec![0u8; offset + ip.len()];
+            let metadata = Metadata {
+                packet_type: 3,
+                ..unsafe { std::mem::zeroed() }
+            };
+            unsafe {
+                ptr::write_unaligned(memory.as_mut_ptr().cast::<Metadata>(), metadata);
+            }
+            memory[offset..].copy_from_slice(ip);
+            let descriptor = DataDescriptor {
+                data: memory.as_ptr().cast(),
+                data_size: memory.len() as u32,
+                metadata_offset: 0,
+                packet_offset: offset as u32,
+                packet_length: ip.len() as u32,
+                missed_write: 0,
+                missed_read: 0,
+            };
+            unsafe {
+                on_data((context as *mut CallbackContext).cast(), &descriptor);
+            }
+        }
+
+        fn pet_packet(sequence: u32, record: &[u8]) -> Vec<u8> {
+            let mut packet = observed_hit_packet(sequence);
+            packet.truncate(40);
+            packet.push((record.len() + 4) as u8);
+            packet.extend(record);
+            let length = packet.len() as u16;
+            packet[2..4].copy_from_slice(&length.to_be_bytes());
+            packet
+        }
+
+        #[test]
+        fn live_constraint_addition_and_removal_preserve_real_pet_baseline_without_false_gap() {
+            let primary = test_connection(50_000);
+            let auxiliary = test_connection(50_001);
+            let (sender, receiver) = sync_channel(8);
+            let mut context = CallbackContext::new(sender, HashSet::from([primary.clone()]));
+            let mut installed = HashSet::from([primary.clone()]);
+            let shared = test_shared(own_engine());
+            let inventory = [
+                0, 0x90, 0, 0, 0, 0, 1, 0x12, 4, 0, 0, 0x12, 4, 0, 0, 2, 0, 0, 0, 1, 0x12, 4, 0, 0,
+                32, 0, 0, 0,
+            ];
+            let gain = [0x0d, 0x90, 1, 0x12, 4, 0, 0, 1, 0, 0, 0];
+            let first = pet_packet(100, &inventory);
+            callback_ip(&mut context, &first);
+            let mut epoch = 0;
+            deliver_packet(&shared, receiver.try_recv().unwrap(), &mut epoch);
+            let requested = HashSet::from([primary.clone(), auxiliary.clone()]);
+            let mut additions = 0;
+            assert!(refresh_constraints(
+                &context.endpoints,
+                &mut installed,
+                &requested,
+                |row, index| {
+                    // The OS may invoke its callback immediately; the ownership
+                    // lock must already be released and the new owner published.
+                    let owned = context.endpoints.try_read().unwrap();
+                    assert!(owned.contains(row));
+                    assert_eq!(index, 1);
+                    additions += 1;
+                    Ok(())
+                }
+            )
+            .ok()
+            .unwrap());
+            assert_eq!(additions, 1);
+            let next = 100 + first.len() as u32 - 40;
+            let second = pet_packet(next, &gain);
+            callback_ip(&mut context, &second);
+            deliver_packet(&shared, receiver.try_recv().unwrap(), &mut epoch);
+            assert!(refresh_constraints(
+                &context.endpoints,
+                &mut installed,
+                &HashSet::from([primary]),
+                |_, _| panic!("removals do not add filters")
+            )
+            .ok()
+            .unwrap());
+            callback_ip(
+                &mut context,
+                &pet_packet(next + second.len() as u32 - 40, &gain),
+            );
+            deliver_packet(&shared, receiver.try_recv().unwrap(), &mut epoch);
+            let mut engine = shared.engine.lock().unwrap();
+            let pets = engine.character_snapshot().pet_progress.unwrap();
+            assert_eq!(pets.continuity, luma_engine::character::PetContinuity::Live);
+            assert_eq!(pets.pets[0].progress, Some(34));
+            assert!(!pets.pets[0].progress_stale);
+            assert_eq!(
+                engine.live_state(crate::now_ms()).diagnostics.stream_gaps,
+                0
+            );
+            assert_eq!(
+                engine.live_state(crate::now_ms()).diagnostics.tcp_packets,
+                3
+            );
+            assert_eq!(shared.capture.lock().unwrap().packets, 3);
+            assert_eq!(context.loss_epoch.load(Ordering::Acquire), 0);
+        }
+
+        #[test]
+        fn retired_kernel_tuple_is_blocked_until_current_game_ownership_returns() {
+            let primary = test_connection(50_000);
+            let other = test_connection(50_001);
+            let (sender, receiver) = sync_channel(8);
+            let mut context =
+                CallbackContext::new(sender, HashSet::from([primary.clone(), other.clone()]));
+            let mut installed = HashSet::from([primary.clone(), other.clone()]);
+            let bytes = observed_hit_packet(100);
+            callback_ip(&mut context, &bytes);
+            assert!(receiver.try_recv().is_ok());
+            assert!(refresh_constraints(
+                &context.endpoints,
+                &mut installed,
+                &HashSet::from([other.clone()]),
+                |_, _| panic!("cached filters are retained")
+            )
+            .ok()
+            .unwrap());
+            // The old exact filter can match a tuple reused by another process.
+            // The current AION2 ownership gate must reject it before queueing.
+            callback_ip(&mut context, &bytes);
+            assert!(receiver.try_recv().is_err());
+            assert!(installed.contains(&primary));
+            assert!(refresh_constraints(
+                &context.endpoints,
+                &mut installed,
+                &HashSet::from([primary, other]),
+                |_, _| panic!("re-owned exact tuple needs no duplicate filter")
+            )
+            .ok()
+            .unwrap());
+            callback_ip(&mut context, &bytes);
+            assert!(receiver.try_recv().is_ok());
+            assert_eq!(installed.len(), 2);
+        }
+
+        #[test]
+        fn full_filter_cache_requests_filtered_recreation_without_more_kernel_additions() {
+            let mut installed: HashSet<_> = (0..MAX_CAPTURE_CONSTRAINTS)
+                .map(|index| test_connection(40_000 + index as u16))
+                .collect();
+            let current = RwLock::new(installed.clone());
+            let requested = HashSet::from([test_connection(50_000)]);
+            assert!(
+                !refresh_constraints(&current, &mut installed, &requested, |_, _| panic!(
+                    "cache cap must be checked before the OS call"
+                ))
+                .ok()
+                .unwrap()
+            );
+            assert_eq!(installed.len(), MAX_CAPTURE_CONSTRAINTS);
+            assert!(*current.read().unwrap() == requested);
+            let empty = HashSet::new();
+            assert!(
+                !refresh_constraints(&current, &mut installed, &empty, |_, _| panic!(
+                    "never add an unfiltered session"
+                ))
+                .ok()
+                .unwrap()
+            );
+            assert!(current.read().unwrap().is_empty());
+        }
+
+        #[test]
+        fn failed_live_addition_requests_recreation_and_never_installs_the_failed_filter() {
+            let first = test_connection(50_000);
+            let second = test_connection(50_001);
+            let current = RwLock::new(HashSet::from([first.clone()]));
+            let mut installed = HashSet::from([first.clone()]);
+            let requested = HashSet::from([first.clone(), second.clone()]);
+            let result = refresh_constraints(&current, &mut installed, &requested, |row, _| {
+                assert!(*row == second);
+                assert!(current.try_read().unwrap().contains(row));
+                Err(CaptureFailure::from("simulated live constraint failure"))
+            });
+            assert!(!result.unwrap_or(false)); // the run loop's filtered-recreate fallback
+            assert!(installed == HashSet::from([first]));
+            assert!(*current.read().unwrap() == requested);
         }
 
         #[test]

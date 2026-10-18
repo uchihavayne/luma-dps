@@ -192,6 +192,10 @@ pub struct ObservedPetProgress {
     pub session_gain_events: u64,
     #[serde(default)]
     pub last_gain_at_ms: Option<u64>,
+    /// A discontinuity broke the absolute counter's baseline. The received
+    /// value remains useful history, but subsequent deltas cannot advance it.
+    #[serde(default)]
+    pub progress_stale: bool,
 }
 
 impl ObservedPetProgress {
@@ -213,6 +217,7 @@ impl ObservedPetProgress {
             session_baseline_gained: 0,
             session_gain_events: 0,
             last_gain_at_ms: None,
+            progress_stale: false,
         }
     }
 
@@ -231,6 +236,14 @@ impl ObservedPetProgress {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PetContinuity {
+    #[default]
+    Live,
+    LastKnown,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PetProgressSnapshot {
     pub actor_id: Option<u64>,
     pub source: String,
@@ -239,6 +252,12 @@ pub struct PetProgressSnapshot {
     pub active_pet_known: bool,
     pub inventory_complete: bool,
     pub pets: Vec<ObservedPetProgress>,
+    #[serde(default)]
+    pub continuity: PetContinuity,
+    #[serde(default)]
+    pub stale_reason: Option<String>,
+    #[serde(default)]
+    pub stale_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1033,9 +1052,48 @@ impl CharacterStore {
         self.pets = None;
         self.unbound_pets = None;
     }
+    /// Preserve last received collection values only while the same verified
+    /// self identity survives a transport discontinuity. All other character
+    /// observations and unbound lists are discarded as before.
+    pub fn invalidate_capture(&mut self, now: u64, reason: &str) {
+        let verified_own = self.own.as_ref().filter(|own| {
+            own.source == "server-self" && own.actor_id.is_some() && !own.name.is_empty()
+        });
+        let mut pets = self.pets.take().filter(|pets| {
+            verified_own.is_some_and(|own| pets.actor_id == own.actor_id)
+                && pets.source == "server-self"
+        });
+        let own = verified_own.map(|own| CharacterBuild {
+            actor_id: own.actor_id,
+            name: own.name.clone(),
+            server_id: own.server_id,
+            source: own.source.clone(),
+            ..Default::default()
+        });
+        let at = self.last_ms.unwrap_or(now).max(now);
+        if let Some(snapshot) = &mut pets {
+            snapshot.continuity = PetContinuity::LastKnown;
+            snapshot.stale_reason = Some(reason.into());
+            snapshot.stale_at_ms.get_or_insert(at);
+            for pet in &mut snapshot.pets {
+                pet.progress_stale = true;
+                pet.session_gained = 0;
+                pet.session_started_at_ms = None;
+                pet.session_baseline_gained = 0;
+                pet.session_gain_events = 0;
+                pet.last_gain_at_ms = None;
+            }
+        }
+        *self = Self {
+            own,
+            pets,
+            last_ms: Some(now),
+            ..Default::default()
+        };
+    }
     fn clock(&mut self, now: u64) {
         if self.last_ms.is_some_and(|old| now < old) {
-            self.clear()
+            self.invalidate_capture(now, "clock-reversal")
         }
         self.last_ms = Some(now)
     }
@@ -1050,7 +1108,8 @@ impl CharacterStore {
             .take(80)
             .collect();
         let same_character = self.own.as_ref().is_some_and(|old| {
-            !name.is_empty()
+            old.actor_id == Some(actor_id)
+                && !name.is_empty()
                 && old.name == name
                 && !old.server_id.zip(server_id).is_some_and(|(a, b)| a != b)
         });
@@ -1085,7 +1144,9 @@ impl CharacterStore {
         };
         build.actor_id = Some(actor_id);
         build.name = name;
-        build.server_id = server_id;
+        // Rebinding after a transport gap does not carry a new server field.
+        // Its omission must not erase the server used to isolate this profile.
+        build.server_id = server_id.or(build.server_id);
         build.source = "server-self".into();
         if !same_character {
             build.combat_power = build.combat_power.filter(|value| {
@@ -1238,6 +1299,9 @@ impl CharacterStore {
                 state.active_pet_id = active_pet_id;
                 state.active_pet_known = active_pet_known;
                 state.inventory_complete = true;
+                state.continuity = PetContinuity::Live;
+                state.stale_reason = None;
+                state.stale_at_ms = None;
                 state.pets = pets;
             }
             CharacterEvent::PetGains { gains } => {
@@ -1260,27 +1324,33 @@ impl CharacterStore {
                             }
                         };
                     let pet = &mut state.pets[index];
+                    let first_timed_gain = first_observation || pet.session_started_at_ms.is_none();
                     pet.session_gained = pet.session_gained.saturating_add(u64::from(gained));
-                    if first_observation {
+                    if first_timed_gain {
+                        pet.session_started_at_ms = Some(now);
                         pet.session_baseline_gained = pet.session_gained;
                     }
                     pet.session_gain_events = pet.session_gain_events.saturating_add(1);
                     pet.last_gain_at_ms = Some(now);
-                    if pet.level == Some(3) {
+                    if pet.level == Some(3) && !pet.progress_stale {
                         pet.progress = None;
                         pet.progress_source = "unknown".into();
-                    } else if let Some(progress) = pet.progress {
-                        pet.progress = progress
-                            .checked_add(u64::from(gained))
-                            .filter(|value| *value <= u64::from(u32::MAX));
-                        pet.progress_source = if pet.progress.is_some() {
-                            "server-delta"
-                        } else {
-                            "unknown"
+                    } else if !pet.progress_stale {
+                        if let Some(progress) = pet.progress {
+                            pet.progress = progress
+                                .checked_add(u64::from(gained))
+                                .filter(|value| *value <= u64::from(u32::MAX));
+                            pet.progress_source = if pet.progress.is_some() {
+                                "server-delta"
+                            } else {
+                                "unknown"
+                            }
+                            .into();
                         }
-                        .into();
                     }
-                    pet.observed_at_ms = now;
+                    if !pet.progress_stale {
+                        pet.observed_at_ms = now;
+                    }
                 }
             }
             CharacterEvent::PetLevel { pet_id, level } => {
@@ -1301,14 +1371,17 @@ impl CharacterStore {
                     }
                 };
                 let pet = &mut state.pets[index];
-                if pet.level != Some(level) {
+                let level_changed = pet.level != Some(level);
+                if level_changed {
                     // The level event has no remaining/overflow progress. The
                     // next absolute list can supply that; do not assume zero.
                     pet.progress = None;
                     pet.progress_source = "unknown".into();
                 }
                 pet.level = Some(level);
-                pet.observed_at_ms = now;
+                if level_changed || !pet.progress_stale {
+                    pet.observed_at_ms = now;
+                }
             }
             _ => {}
         }

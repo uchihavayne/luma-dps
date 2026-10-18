@@ -42,14 +42,22 @@ export function petProgress(value, { localPlayerId } = {}) {
       required_progress: null, session_gained: integer(row.session_gained) ?? 0,
       session_started_at_ms: integer(row.session_started_at_ms), session_baseline_gained: integer(row.session_baseline_gained) ?? 0,
       session_gain_events: integer(row.session_gain_events) ?? 0, last_gain_at_ms: integer(row.last_gain_at_ms),
+      progress_stale: row.progress_stale === true,
       observed_at_ms: integer(row.observed_at_ms) });
   }
   const active = integer(value.active_pet_id, 1000, 99999);
   return { actor_id: actor, source: 'server-self', observed_at_ms: integer(value.observed_at_ms),
+    continuity: value.continuity === 'last-known' ? 'last-known' : 'live', stale_reason: value.continuity === 'last-known' ? text(value.stale_reason) : '', stale_at_ms: value.continuity === 'last-known' ? integer(value.stale_at_ms) : null,
     active_pet_id: value.active_pet_known === true && pets.some(pet => pet.pet_id === active) ? active : null,
     active_pet_known: value.active_pet_known === true,
     inventory_complete: value.inventory_complete === true && seen.size === value.pets?.length,
     pets: pets.sort((a, b) => a.pet_id - b.pet_id) };
+}
+
+export function stalePetProgress(value, { reason = 'snapshot-unavailable', now = Date.now() } = {}) {
+  const received = petProgress(value);
+  return received ? petProgress({ ...received, continuity: 'last-known', stale_reason: reason, stale_at_ms: received.stale_at_ms ?? now,
+    pets: received.pets.map(row => ({ ...row, progress_stale: true, session_gained: 0, session_started_at_ms: null, session_baseline_gained: 0, session_gain_events: 0, last_gain_at_ms: null })) }) : null;
 }
 
 export function cooldownObservation(value, { localPlayerId, now = Date.now() } = {}) {

@@ -54,7 +54,7 @@ The app embeds a Luma RSA-3072 public trust anchor. The publisher private key is
 After CI passes, download and audit the exact commit's artifacts. Extract the matching EXE, then sign its update manifest on the publisher machine:
 
 ```powershell
-python tools/sign_update.py --version 0.19.1 --exe release/Luma-DPS-0.19.1.exe --commit <exact-40-character-commit> --notes-file <release-notes-file> --out-dir release
+python tools/sign_update.py --version 0.20.0 --exe release/Luma-DPS-0.20.0.exe --commit <exact-40-character-commit> --notes-file <release-notes-file> --out-dir release
 ```
 
 Publisher tooling additionally requires `cryptography`; the built app verifies signatures through Windows CNG. Publish the standalone versioned EXE, `luma-update.json` and `luma-update.sig` alongside the portable/source ZIPs and checksum file in the same GitHub release. The manifest signs the exact version, commit, asset name, byte length, SHA-256 and release notes. Regenerate the public checksum file after signing to include every published artifact except the checksum file itself. Do not sign an unreviewed binary or mutate an asset after signing.

@@ -1,6 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
+import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from '../model.mjs';
+import { ANALYSIS_SECTIONS, SETTINGS_SECTIONS } from '../navigation.mjs';
+
+test('display modules persist a recoverable pet-only view independently of capture and listening settings', () => {
+  const before = normalizePreferences({ cubeAutoListen: true, showCubeLocator: true, petPins: [1002], damageScope: 'party', compactStrip: true });
+  const pets = normalizePreferences({ ...before, displayModules: displayModulePreset('pets') });
+  assert.equal(petOnlyDisplay(pets), true);
+  assert.deepEqual(visibleAnalysisSections(ANALYSIS_SECTIONS, pets), ['pets']);
+  assert.deepEqual(visibleSettingsSections(SETTINGS_SECTIONS, pets), ['appearance', 'character', 'controls', 'about']);
+  for (const key of ['cubeAutoListen', 'showCubeLocator', 'petPins', 'damageScope', 'compactStrip']) assert.deepEqual(pets[key], before[key]);
+  assert.deepEqual(normalizePreferences(JSON.parse(JSON.stringify(pets))), pets);
+  const restored = normalizePreferences({ ...pets, displayModules: displayModulePreset('all') });
+  assert.equal(petOnlyDisplay(restored), false);
+  assert.deepEqual(visibleAnalysisSections(ANALYSIS_SECTIONS, restored), ANALYSIS_SECTIONS);
+  assert.deepEqual(visibleSettingsSections(SETTINGS_SECTIONS, restored), SETTINGS_SECTIONS);
+});
+
+test('module choices reject unknown keys and keep at least one useful panel with permanent settings recovery', () => {
+  const empty = normalizePreferences({ displayModules: Object.fromEntries(DISPLAY_MODULES.map(name => [name, false])) });
+  assert.equal(petOnlyDisplay(empty), true);
+  assert.deepEqual(Object.keys(empty.displayModules), DISPLAY_MODULES);
+  assert.deepEqual(normalizePreferences({ displayModules: { dps: false, injected: true } }).displayModules, { dps: false, pets: true, cube: true, events: true, odyle: true, team: true });
+  const cube = normalizePreferences({ displayModules: { ...displayModulePreset('pets'), pets: false, cube: true } });
+  assert.deepEqual(visibleAnalysisSections(ANALYSIS_SECTIONS, cube), []);
+  assert.deepEqual(visibleSettingsSections(SETTINGS_SECTIONS, cube), ['appearance', 'controls', 'hiddenCube', 'about']);
+  assert.deepEqual(normalizePreferences({ displayModules: [] }).displayModules, displayModulePreset('all'));
+});
 
 test('preferences clamp controls and reject executable or unrecognized appearance values', () => {
   const prefs = normalizePreferences({ theme: 'unknown', font: 'url(evil)', textScale: 4, opacity: -2, customColors: { text: 'red; background:url(evil)', accent: '#AAFF44' }, background: 'data:image/svg+xml;base64,PHN2Zz4=', bossIds: [42, 42, '57', -2, 1.4] });

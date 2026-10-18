@@ -77,13 +77,82 @@ test('only current authoritative self inventory binds; special and unmapped pets
   assert.equal(plan([pet({ pet_id: 1001 })]).rows.find(row => row.id === 1001).remaining, null);
 });
 
-test('pet-only revision changes refresh even when build availability remains false, while loss invalidates immediately', () => {
+test('pet-only revisions and transient losses request a fresh snapshot while only identity changes clear pet data', () => {
   const previous = { local_player_id: '7', character_revision: 1, character_available: false, diagnostics: { stream_gaps: 0 } };
   assert.deepEqual(petMetadataTransition(previous, { ...previous, character_revision: 2 }), { fetch: true, clear: false });
-  assert.deepEqual(petMetadataTransition(previous, { ...previous, character_revision: 2, diagnostics: { stream_gaps: 1 } }), { fetch: true, clear: true });
+  assert.deepEqual(petMetadataTransition(previous, { ...previous, character_revision: 2, diagnostics: { stream_gaps: 1 } }), { fetch: true, clear: false });
+  assert.deepEqual(petMetadataTransition(previous, { ...previous, diagnostics: { stream_gaps: 1 } }), { fetch: true, clear: false });
+  assert.deepEqual(petMetadataTransition({ ...previous, character_available: true }, previous), { fetch: true, clear: false });
   const archived = { ...previous, local_identity_source: 'server', live_team_identity: { local: { actor_id: null, identity_source: 'unknown' } } };
   assert.equal(liveServerActorId(archived), null);
   assert.deepEqual(petMetadataTransition(previous, archived, { previousActorId: '7', currentActorId: liveServerActorId(archived) }), { fetch: true, clear: true });
+});
+
+test('last-known verified pet counters keep their bar and remaining souls but cannot produce an ETA', () => {
+  const value = petPlan(inventory([pet({ progress_stale: true })], { continuity: 'last-known', stale_reason: 'stream-gap', stale_at_ms: now }), catalog, { localPlayerId: '7', now });
+  const row = value.rows.find(row => row.id === 1002);
+  assert.equal(value.observedCount, 1);
+  assert.equal(value.observed.continuity, 'last-known');
+  assert.equal(row.stale, true); assert.equal(row.percent, 48); assert.equal(row.progress, 12);
+  assert.equal(row.remaining, 88); assert.equal(row.observedAtMs, now);
+  assert.equal(row.soulsPerMinute, null); assert.equal(row.etaMs, null);
+  const guide = renderPetGuide(value, catalog, { filters: { query: 'Krall Laborer' } });
+  assert.ok(guide.includes('Kesintiden önce alınan pet sayaçları korunuyor.'));
+  assert.ok(guide.includes('Son alınan'));
+  assert.ok(!guide.includes('Sayaç alınmadı'));
+  const tracker = renderPetTracker([{ ...row, etaMs: 5000, automatic: false }]);
+  assert.ok(tracker.includes('Son alınan'));
+  assert.ok(tracker.includes('aria-valuenow="48.0"'));
+  assert.ok(tracker.includes('12 / 25'));
+  assert.ok(!tracker.includes('Tahmini'));
+  const fresh = plan([pet()]).rows.find(row => row.id === 1002);
+  assert.equal(fresh.stale, false); assert.equal(fresh.etaMs, 440000);
+  assert.equal(petPlan(value.observed, catalog, { localPlayerId: '8', now }).observedCount, 0);
+  const clockReset = petCompletion(pet({ progress_stale: true, observed_at_ms: now + 10000 }), catalog.requirements, { now });
+  assert.equal(clockReset.percent, 48); assert.equal(clockReset.remaining, 88); assert.equal(clockReset.etaMs, null);
+  assert.equal(petCompletion(pet({ observed_at_ms: now + 10000 }), catalog.requirements, { now }).percent, null);
+});
+
+test('tracker shows level, numerator, percentage and color progress in both regular and compact views', () => {
+  const value = plan([pet(), pet({ pet_id: 1003, progress: 15 }), pet({ pet_id: 1004, progress: 22 })]);
+  const rows = value.rows.filter(row => [1002, 1003, 1004].includes(row.id));
+  const regular = renderPetTracker(rows);
+  assert.ok(regular.includes('Lv.1'));
+  assert.ok(regular.includes('Sonraki seviye · 12 / 25'));
+  assert.ok(regular.includes('Seviye 3 · 88 ruh kaldı'));
+  assert.ok(regular.includes('48%'));
+  for (const tone of ['low', 'medium', 'high']) assert.ok(regular.includes(`pet-progress-track is-${tone}`));
+  assert.ok(regular.includes('aria-label="Krall Laborer · Seviye ilerlemesi"'));
+  const compact = renderPetTracker(rows, { compact: true });
+  assert.ok(compact.includes('12 / 25'));
+  assert.ok(compact.includes('48%'));
+  assert.ok(compact.includes('style="width:48%"'));
+  assert.equal((compact.match(/class="pet-tracker-row/g) || []).length, 2); // container and the first visible pet
+  const unknown = renderPetTracker([plan([]).rows.find(row => row.id === 1002)]);
+  assert.ok(unknown.includes('is-unknown'));
+  assert.ok(!unknown.includes('role="progressbar"'));
+  assert.ok(!unknown.includes('class="pet-tracker-percent">0%'));
+  assert.ok(unknown.includes('class="pet-tracker-percent">—'));
+});
+
+test('six pinned pets retain independent counters and only the interrupted row loses its ETA', () => {
+  const ids = [1002, 1003, 1004, 1005, 1006, 1007];
+  const value = plan(ids.map((pet_id, index) => pet({ pet_id, level: index === 5 ? 2 : 1, progress: index + 1, progress_stale: index === 2 })), { pins: ids });
+  const rows = trackedPets(value, ids, { now });
+  assert.equal(rows.length, 6);
+  for (const [index, row] of rows.entries()) {
+    assert.equal(row.id, ids[index]); assert.equal(row.progress, index + 1);
+    assert.equal(row.required, index === 5 ? 75 : 25);
+    assert.equal(row.remaining, index === 5 ? 69 : 100 - (index + 1));
+    assert.equal(row.stale, index === 2);
+    assert.equal(row.etaMs === null, index === 2);
+  }
+  const tracker = renderPetTracker(rows);
+  assert.equal((tracker.match(/<article class="pet-tracker-row/g) || []).length, 6);
+  assert.equal((tracker.match(/pet-tracker-row is-stale/g) || []).length, 1);
+  assert.ok(tracker.includes('Sonraki seviye · 6 / 75'));
+  assert.ok(tracker.includes('Sonraki seviye · 3 / 25'));
+  assert.ok(tracker.includes('Pet takibi · 6'));
 });
 
 test('filtering and pagination preserve live unknowns without treating unobserved pets as completed or zero', () => {

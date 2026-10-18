@@ -2,7 +2,16 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
-## 0.19.1 preview · 2026-10-18
+## 0.20.0 preview · 2026-10-18
+
+- Add saved module visibility controls and a pet-only preset. Users can hide DPS, Cube, event, Odyle and team sections independently and restore them from the persistent header control. Visibility choices do not silently change capture or listening settings.
+- Keep verified self-bound pet observations as explicitly last-known values across transient capture loss. Invalidate their live counter baseline and farming rate; missed increments are not guessed. A fresh received absolute counter restores its baseline. Confirmed identity or connection-generation changes still clear ownership.
+- Update bounded exact Windows capture constraints while a session is active when the owned game connection set overlaps. Current process ownership is checked before queueing; removed tuples cannot deliver through cached filters. A full filter cache, failed API update or a real game connection change uses the filtered restart path.
+- Give pinned pet trackers a more visible counter, percentage and colored progress bar, with separate unknown and last-known states. Keep the guide, tracking and module controls in the same window.
+
+The initial pet-counter and filter fixes from the 0.19.1 local test are included. Live checks confirmed initial counter arrival; extended continuity and value comparison remain separate validation steps.
+
+## 0.19.1 local test · 2026-10-18
 
 - Preserve explicitly received level-zero pets and independently counted soul rows. A soul row without a level remains an observation with an unknown level, rather than rejecting the full pet list or inventing registration progress. An unrecognized header word no longer discards the collection or claims a summoned pet.
 - Carry explicit level zero through the UI and calculate ordinary-pet registration progress only from a valid received counter. Keep malformed, duplicate and truncated collections atomic.

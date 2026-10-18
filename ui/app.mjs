@@ -1,6 +1,7 @@
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
+import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
@@ -15,7 +16,7 @@ import { createHistoryNotebook, historyRecordKey, queryHistory, historyTrend, pa
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
 import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES } from './cube.mjs';
 import { communityLabels, communityUrl, communityShareLink, communityFilters, communityShareOptions, communitySummary, createCommunityController, renderCommunity } from './community.mjs';
-import { latencyPresentation, petProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
+import { latencyPresentation, petProgress, stalePetProgress, cooldownObservation, staggerPresentation } from './telemetry.mjs';
 import { resourceStatus } from './resources.mjs';
 import { teamSnapshot, renderTeam, automaticTeamState, renderAutomaticTeam } from './team.mjs';
 import { renderCombatInsights, renderEffectAttribution, renderBossProjection } from './combat-insights.mjs';
@@ -95,6 +96,7 @@ if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1'
   characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1002, active_pet_known: true, inventory_complete: true,
     pets: [{ pet_id: 1002, level: 1, progress: 12, progress_source: 'server-delta', session_gained: 12, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 6, last_gain_at_ms: at - 1000, observed_at_ms: at }, { pet_id: 1003, level: 2, progress: 40, progress_source: 'server-absolute', session_gained: 4, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 4, last_gain_at_ms: at - 2000, observed_at_ms: at }, { pet_id: 1004, level: 3, progress: null, session_gained: 0, observed_at_ms: at }] } });
   prefs = normalizePreferences({ ...prefs, petPins: [1002, 1003] });
+  if (new URLSearchParams(location.search).get('petStaleDemo') === '1') characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(characterData.pet_progress, { localPlayerId: liveServerActorId(state), now: at, reason: 'demo-capture-gap' }) });
 }
 if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '1') {
   const at = Date.now();
@@ -256,8 +258,11 @@ function applyAppearance() {
   $('#meter').dataset.density = prefs.density;
   $('#meter').dataset.rowMetric = prefs.rowMetric;
   $('#meter').dataset.summaryMetric = prefs.summaryMetric;
-  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && !drawer && !isFullscreenDashboard(prefs));
-  $('#compact-button').disabled = isFullscreenDashboard(prefs);
+  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && prefs.displayModules.dps && !drawer && !isFullscreenDashboard(prefs));
+  $('#compact-button').disabled = isFullscreenDashboard(prefs) || !prefs.displayModules.dps;
+  $('#meter').classList.toggle('pet-only', petOnlyDisplay(prefs));
+  $('#meter').classList.toggle('no-dps', !prefs.displayModules.dps);
+  for (const name of DISPLAY_MODULES) $('#meter').dataset[`module${name[0].toUpperCase()}${name.slice(1)}`] = String(prefs.displayModules[name]);
   $('#meter').dataset.showClass = String(prefs.showClass);
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
@@ -371,6 +376,9 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
+  $('#modules-button').title = prefs.locale === 'tr' ? 'Görünür modülleri seç · Tüm görünüme dön' : 'Choose visible modules · Restore full view';
+  $('#modules-button').setAttribute('aria-label', $('#modules-button').title);
+  $('#modules-button').setAttribute('aria-pressed', String(!Object.values(prefs.displayModules).every(Boolean)));
   $('#fullscreen-button').title = prefs.locale === 'tr' ? (prefs.fullscreenOverlay ? 'Pencere görünümüne dön' : 'Tam ekran paneli') : (prefs.fullscreenOverlay ? 'Return to window' : 'Fullscreen dashboard'); $('#fullscreen-button').setAttribute('aria-label', $('#fullscreen-button').title); $('#fullscreen-button').setAttribute('aria-pressed', String(prefs.fullscreenOverlay));
   $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
@@ -386,7 +394,8 @@ function localizeControls() {
   for (const [id, key] of [['settings-button', 'settings'], ['close-drawer', 'close'], ['reset-button', 'reset'], ['resize-button', 'resize'], ['close-window', 'windowClose']]) { $( `#${id}`).setAttribute('aria-label', t(key)); $( `#${id}`).title = t(key); }
   $('#close-window').disabled = !native;
   $('#sort-label').textContent = t('sort'); $('#sort option[value=damage]').textContent = `${t('damage')} ↓`;
-  $('#analysis-button').textContent = `${t('analysis')} ↗`;
+  $('#analysis-button').textContent = `${!prefs.displayModules.dps && prefs.displayModules.pets ? t('pets') : t('analysis')} ↗`;
+  $('#analysis-button').hidden = !visibleAnalysisSections(ANALYSIS_SECTIONS, prefs).length;
   for (const button of $$('#target-modes button')) { button.textContent = t(button.dataset.mode); button.setAttribute('aria-pressed', String(button.dataset.mode === prefs.mode)); }
   $('#sort').value = prefs.sort;
   const pauseLabel = t(state.paused ? 'resume' : 'pause');
@@ -475,13 +484,13 @@ function renderMeter() {
   $('#boss-summary').hidden = Boolean(board) || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
   const notice = $('#notice'); notice.hidden = false;
   for (const tone of ['demo', 'error', 'warning']) notice.classList.toggle(tone, status.tone === tone);
-  const scopeMessage = board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
+  const scopeMessage = !prefs.displayModules.dps || board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
   setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo'].includes(status.kind) ? scopeMessage : status.message);
   notice.title = `${scopeMessage ? `${scopeMessage}\n` : ''}${status.message}\n${status.detail}`;
   $('#damage-scope').title = board ? $('#target-roster-strip').title : scopes.fallback ? t('partyFallback') : t('rosterScope');
   $('#players').setAttribute('aria-label', board ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
-  if (state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
+  if (prefs.displayModules.dps && state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
@@ -545,7 +554,7 @@ function renderPlayers(status, scoped) {
       setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
-      const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.showTeamCooldowns || !member?.cooldowns.length;
+      const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.displayModules.team || !prefs.showTeamCooldowns || !member?.cooldowns.length;
       setText(cooldownNode, cooling ? `CD · ${Math.ceil((cooling.remaining_ms || cooling.recharge_remaining_ms) / 1000)} ${prefs.locale === 'tr' ? 'sn' : 's'}` : member?.cooldowns.some(value => value.ready_confirmed) ? `CD · ${t('readyConfirmed')}` : 'CD · …');
       cooldownNode.title = member?.cooldowns.map(value => `Skill #${value.skill_id} · ${value.remaining_ms === null ? '—' : `${Math.ceil(value.remaining_ms / 1000)} s`}`).join('\n') || '';
       setText(row.querySelector('.player-dps'), prefs.rowMetric === 'both' ? ` (${rate(player.dps)})` : rate(player.dps)); row.querySelector('.player-dps').title = `${t('rateCaption')}: ${fullNumber(player.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}`;
@@ -594,7 +603,7 @@ async function exportReport(records) {
 }
 
 function appearanceSettingsContent() {
-  return `<p class="settings-hint">${t('autoSaveHelp')}</p><label class="field"><span>${t('language')}</span><select name="locale"><option value="tr" ${prefs.locale === 'tr' ? 'selected' : ''}>Türkçe</option><option value="en" ${prefs.locale === 'en' ? 'selected' : ''}>English</option></select></label>
+  return `<p class="settings-hint">${t('autoSaveHelp')}</p>${moduleSettingsContent()}<label class="field"><span>${t('language')}</span><select name="locale"><option value="tr" ${prefs.locale === 'tr' ? 'selected' : ''}>Türkçe</option><option value="en" ${prefs.locale === 'en' ? 'selected' : ''}>English</option></select></label>
     <div class="field-grid"><label class="field"><span>${t('summaryScope')}</span><select name="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}" ${prefs.damageScope === value ? 'selected' : ''}>${t(value)}</option>`).join('')}</select></label><label class="field"><span>${t('rowColorMode')}</span><select name="rowColorMode">${['performance', 'class', 'accent'].map(value => `<option value="${value}" ${prefs.rowColorMode === value ? 'selected' : ''}>${t({performance:'colorPerformance', class:'colorClass', accent:'colorAccent'}[value])}</option>`).join('')}</select></label></div>
     <h3 class="section-title">${t('layout')}</h3><div class="layout-grid">${Object.entries(LAYOUTS).map(([id, layout]) => `<button class="layout-card" data-layout="${id}" aria-pressed="${prefs.layout === id}"><span class="layout-preview preview-${id}" aria-hidden="true"><i></i><b></b><em></em><em></em><em></em></span><strong>${layout.name}</strong><span>${esc(layout.description[prefs.locale])}</span></button>`).join('')}</div><p class="help">${t('layoutHelp')}</p>
     <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label><label class="check-field"><input name="showTeamCooldowns" type="checkbox" ${prefs.showTeamCooldowns ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Satırda cooldown göster' : 'Show cooldown in rows'}</label></div>
@@ -604,6 +613,12 @@ function appearanceSettingsContent() {
     <details class="appearance-details"><summary>${t('appearanceExtras')}</summary><h3 class="section-title">${t('customColors')}</h3><div class="color-grid">${['bg', 'panel', 'text', 'accent'].map(key => field(`color-${key}`, key === 'bg' ? 'background' : key, 'color', prefs.customColors[key])).join('')}</div>
     <label class="field"><span>${t('background')}</span><input name="backgroundFile" type="file" accept="image/png,image/jpeg,image/webp"></label><p class="help">${t('rasterHelp')}</p><div class="button-row">${button('remove-background', 'removeBackground', '', true)}</div>
     <div class="button-row">${button('export-theme', 'exportTheme')}${button('import-theme', 'importTheme', '', true)}</div><input id="theme-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1"><p class="help">${t('themeHelp')}</p></details>`;
+}
+
+function moduleSettingsContent() {
+  const tr = prefs.locale === 'tr';
+  const labels = tr ? { dps: 'DPS ve savaş analizi', pets: 'Pet rehberi ve takibi', cube: 'Hidden Cube pusulası', events: 'Etkinlik ve boss saatleri', odyle: 'Odyle', team: 'Takım cooldown’ları' } : { dps: 'DPS & combat analysis', pets: 'Pet guide & tracking', cube: 'Hidden Cube compass', events: 'Event & boss timers', odyle: 'Odyle', team: 'Team cooldowns' };
+  return `<section class="module-settings" aria-labelledby="module-settings-title"><div class="record-top"><h3 id="module-settings-title" class="section-title">${tr ? 'Görünür modüller' : 'Visible modules'}</h3><span class="tag">${tr ? 'Kişisel görünüm' : 'Your view'}</span></div><p class="help">${tr ? 'Yalnız ilgilendiğin araçları göster. Başlıktaki modüller düğmesiyle her zaman geri dönebilirsin. Bu seçimler kayıt ve ses dinleme ayarlarını değiştirmez.' : 'Show the tools you use. The modules button in the header always lets you restore them. Display choices do not change capture or audio listening settings.'}</p><div class="button-row"><button type="button" class="action-button" data-action="modules-pets" aria-pressed="${petOnlyDisplay(prefs)}">${tr ? 'Yalnız pet' : 'Pets only'}</button><button type="button" class="action-button secondary" data-action="modules-all" aria-pressed="${Object.values(prefs.displayModules).every(Boolean)}">${tr ? 'Tüm modüller' : 'All modules'}</button></div><div class="module-options">${DISPLAY_MODULES.map(name => `<label class="check-field"><input type="checkbox" name="displayModule" value="${name}" ${prefs.displayModules[name] ? 'checked' : ''}>${labels[name]}</label>`).join('')}</div></section>`;
 }
 
 function combatSettingsContent() {
@@ -683,7 +698,7 @@ function cubeContent() {
 
 function renderCubeLive() {
   const view = cubePresentation(cubeState, { now: cubeDemo ? cubeState.last_detection_ms : Date.now(), locale: prefs.locale, live: native, readError: cubeReadError });
-  const navigatorVisible = cubeDockVisible(view, prefs);
+  const navigatorVisible = prefs.displayModules.cube && cubeDockVisible(view, prefs);
   $('#meter').dataset.cubeDock = String(navigatorVisible);
   $('#meter').dataset.cubeSize = prefs.cubeNavigatorSize;
   $('#cube-navigator').hidden = !navigatorVisible;
@@ -1018,13 +1033,18 @@ async function readCharacterData() {
   const epoch = metadataEpoch(state, 'character');
   characterPending = true;
   try { const result = characterSnapshot(await invoke('get_character_state')); if (epoch === metadataEpoch(state, 'character')) characterData = result; }
-  catch { if (epoch === metadataEpoch(state, 'character')) characterData = characterSnapshot({ ...characterData, pet_progress: null }); }
+  catch { if (epoch === metadataEpoch(state, 'character')) markPetSnapshotStale('snapshot-unavailable'); }
   finally {
     characterPending = false; renderPetTracking();
     if (drawer === 'analysis' && tab === 'pets') refreshPetsDrawer();
     else if (drawer === 'analysis' && tab === 'build') refreshDrawer();
     if (epoch !== metadataEpoch(state, 'character')) readCharacterData();
   }
+}
+
+function markPetSnapshotStale(reason) {
+  const owned = petProgress(characterData.pet_progress, { localPlayerId: liveServerActorId(state) });
+  characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(owned, { reason }) });
 }
 
 function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal, pins: prefs.petPins }); }
@@ -1047,14 +1067,25 @@ function refreshPetsDrawer() {
 function renderPetTracking() {
   const plan = currentPetPlan(), rows = trackedPets(plan, prefs.petPins, { automatic: prefs.petAutoTrack });
   const host = $('#pet-tracker');
-  host.hidden = !prefs.showPetTracker || !rows.length;
+  host.hidden = !prefs.displayModules.pets || !prefs.showPetTracker || !rows.length;
   if (!host.hidden) {
-    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
+    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: !petOnlyDisplay(prefs) && $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
     if (host._content !== html) { const scroll = host.querySelector('.pet-tracker-rows')?.scrollTop || 0; host.innerHTML = html; host._content = html; const list = host.querySelector('.pet-tracker-rows'); if (list) list.scrollTop = scroll; }
   }
-  const chip = $('#pet-chip'); chip.hidden = false;
+  const chip = $('#pet-chip'); chip.hidden = !prefs.displayModules.pets;
   setText(chip, `${t('pets')}${prefs.petPins.length ? ` · ${prefs.petPins.length}` : ''}`);
   chip.title = petLabels(prefs.locale).title;
+  renderModuleHome(plan, rows);
+}
+
+function renderModuleHome(plan, tracked) {
+  const host = $('#module-home'), tr = prefs.locale === 'tr', modules = prefs.displayModules;
+  host.hidden = modules.dps;
+  if (host.hidden) return;
+  const title = modules.pets ? tr ? 'Pet takibi' : 'Pet tracking' : tr ? 'Araçların' : 'Your tools';
+  const description = modules.pets ? tracked.length ? `${tracked.length} ${tr ? 'pet takipte' : 'pets tracked'} · ${plan.observedCount} ${tr ? 'pet verisi alındı' : 'received pets'}` : tr ? 'Rehberden pet sabitle. Alınan ruh ve seviye ilerlemesi burada görünür.' : 'Pin pets from the guide. Received souls and level progress appear here.' : tr ? 'Seçtiğin modüller burada görünür. Başlıktaki modüller düğmesinden değiştirebilirsin.' : 'Your selected modules appear here. Change them with the modules button in the header.';
+  const html = `<div class="module-home-top"><strong>${title}</strong><button type="button" data-module-action="all" class="text-button">${tr ? 'Tümünü göster' : 'Show all'}</button></div><p>${description}</p>${modules.pets ? `<button type="button" data-module-action="pets" class="action-button">${tr ? 'Pet rehberini aç' : 'Open pet guide'} ↗</button>` : ''}`;
+  if (host._content !== html) { host.innerHTML = html; host._content = html; }
 }
 
 function openPetGuide(id = null) {
@@ -1275,16 +1306,17 @@ function odyleContent() {
 function renderLiveTools() {
   const value = automaticOdyle(), team = automaticTeamState(state), strip = $('#live-tools');
   strip.hidden = false;
-  $('#odyle-chip').hidden = !value.available;
+  $('#odyle-chip').hidden = !prefs.displayModules.odyle || !value.available;
   setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : '—'}`);
   $('#odyle-chip').title = `${t('odyleRegular')}: ${value.base ?? '—'} / ${value.base_capacity ?? '—'} · ${t('odyleBonus')}: ${value.bonus ?? '—'}`;
-  $('#team-chip').hidden = !team.total_members && !roomIntent;
+  $('#team-chip').hidden = !prefs.displayModules.team || !team.total_members && !roomIntent;
   setText($('#team-chip'), roomIntent ? `${prefs.locale === 'tr' ? 'Paylaşım açık' : 'Sharing active'}${team.total_cooldowns ? ` · ${team.total_cooldowns} CD` : ''}` : team.total_cooldowns ? `${t('team')} · ${team.total_cooldowns} CD` : `${t('team')} · ${team.total_members}`);
   $('#team-chip').title = `${prefs.locale === 'tr' ? 'Oyundan otomatik takım cooldown takibi' : 'Automatic team cooldowns from game data'}${roomIntent ? prefs.locale === 'tr' ? ' · Cihazlar arası paylaşım açık' : ' · Cross-device sharing active' : ''}`;
   const liveOdyle = $('#automatic-odyle');
   const fingerprint = JSON.stringify([prefs.locale, value.available, value.actor_id, value.base, value.bonus, value.base_capacity, value.observed_at_ms]);
   if (liveOdyle && liveOdyle.dataset.fingerprint !== fingerprint) { liveOdyle.innerHTML = odyleContent(); liveOdyle.dataset.fingerprint = fingerprint; }
   renderPetTracking();
+  strip.hidden = ![...strip.querySelectorAll('button')].some(button => !button.hidden);
 }
 
 function teamContent() {
@@ -1357,13 +1389,16 @@ async function teamAction(command) {
 
 function renderDrawerContent() {
   if (!drawer) return;
+  const analysisSections = visibleAnalysisSections(ANALYSIS_SECTIONS, prefs), settingsSections = visibleSettingsSections(SETTINGS_SECTIONS, prefs);
+  if (drawer === 'analysis' && !analysisSections.includes(tab)) tab = analysisSections[0] || 'pets';
+  if (drawer === 'settings' && !settingsSections.includes(settingsTab)) settingsTab = 'appearance';
   $('#drawer-title').textContent = t(drawer === 'settings' ? 'settings' : drawer === 'character' ? 'character' : 'analysis');
   $('.drawer-header').title = native ? t('dragPanel') : '';
   $('#drawer-tabs').hidden = drawer === 'character';
   $('#drawer-tabs').setAttribute('aria-label', t(drawer === 'settings' ? 'settingsSections' : 'analysisSections'));
   if (drawer !== 'character') {
     const active = drawer === 'settings' ? settingsTab : tab;
-    const tabs = (drawer === 'settings' ? SETTINGS_SECTIONS : ANALYSIS_SECTIONS).map(name => `<button type="button" id="drawer-tab-${drawer}-${name}" role="tab" data-tab="${name}" aria-controls="${drawer === 'settings' ? `drawer-panel-settings-${name}` : 'drawer-content'}" aria-selected="${active === name}" tabindex="${active === name ? 0 : -1}">${t(name)}</button>`).join('');
+    const tabs = (drawer === 'settings' ? settingsSections : analysisSections).map(name => `<button type="button" id="drawer-tab-${drawer}-${name}" role="tab" data-tab="${name}" aria-controls="${drawer === 'settings' ? `drawer-panel-settings-${name}` : 'drawer-content'}" aria-selected="${active === name}" tabindex="${active === name ? 0 : -1}">${t(name)}</button>`).join('');
     if (drawerTabsFingerprint !== tabs) { $('#drawer-tabs').innerHTML = tabs; drawerTabsFingerprint = tabs; }
   }
   const contentHost = $('#drawer-content');
@@ -1407,7 +1442,7 @@ function selectDrawerTab(name) {
     $('#drawer-content').scrollTop = settingsPanels.get(settingsTab)?.scroll || 0;
     if (settingsTab === 'hiddenCube') readCubeState();
     if (['controls', 'about'].includes(settingsTab)) readRuntimeState();
-  } else if (drawer === 'analysis' && ANALYSIS_SECTIONS.includes(name)) {
+  } else if (drawer === 'analysis' && visibleAnalysisSections(ANALYSIS_SECTIONS, prefs).includes(name)) {
     if (['training', 'effects', 'pets'].includes(name)) snapshot = null;
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
     if (name === 'history') historyCache?.retry();
@@ -1429,6 +1464,7 @@ function selectDrawerTab(name) {
 }
 
 function openDrawer(kind, requestedTab = 'overview') {
+  if (kind === 'analysis') { const allowed = visibleAnalysisSections(ANALYSIS_SECTIONS, prefs); if (!allowed.length) { kind = 'settings'; requestedTab = 'appearance'; } else if (!allowed.includes(requestedTab)) requestedTab = allowed[0]; }
   if (!drawer) restoreFocus = document.activeElement;
   drawer = kind; tab = requestedTab;
   if (kind === 'settings') settingsTab = settingsSection(requestedTab);
@@ -1526,6 +1562,12 @@ $('#pet-tracker').addEventListener('click', event => {
   if (control.dataset.petAction === 'collapse') savePreferences({ petTrackerCollapsed: !prefs.petTrackerCollapsed });
 });
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
+$('#modules-button').addEventListener('click', () => openDrawer('settings', 'appearance'));
+$('#module-home').addEventListener('click', event => {
+  const action = event.target.closest('[data-module-action]')?.dataset.moduleAction;
+  if (action === 'pets') openPetGuide();
+  if (action === 'all') savePreferences({ displayModules: displayModulePreset('all') });
+});
 $('#damage-scope').addEventListener('change', event => { savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
 $('#drag-region').addEventListener('pointerdown', event => { if (isFullscreenDashboard(prefs) || startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
@@ -1537,7 +1579,7 @@ $('.drawer-header').addEventListener('pointerdown', event => {
     invoke('start_drag').catch(() => toast(t('failed'), true));
   }
 });
-$('#analysis-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis'); });
+$('#analysis-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis', !prefs.displayModules.dps && prefs.displayModules.pets ? 'pets' : 'overview'); });
 $('#training-button').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'training'); });
 $('#event-chip').addEventListener('click', () => { if (prefs.activeEventId.startsWith('boss:')) { snapshot = null; openDrawer('analysis', 'worldBosses'); } else openDrawer('settings', 'calendar'); });
 $('#cube-entry').addEventListener('click', () => openDrawer('settings', 'hiddenCube'));
@@ -1575,6 +1617,10 @@ $('#drawer-tabs').addEventListener('click', event => { const name = delegatedCon
 $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || event.ctrlKey || event.metaKey) return; const next = nextTab($$('#drawer-tabs button').map(button => button.dataset.tab), drawer === 'settings' ? settingsTab : tab, event.key); if (next) { event.preventDefault(); selectDrawerTab(next); } });
 
 $('#drawer-content').addEventListener('change', async event => {
+  if (event.target.name === 'displayModule' && DISPLAY_MODULES.includes(event.target.value)) {
+    const name = event.target.value;
+    savePreferences({ displayModules: { ...prefs.displayModules, [name]: event.target.checked } }); refreshDrawer(); $(`[name=displayModule][value="${name}"]`)?.focus({ preventScroll: true }); return;
+  }
   if (['petGoal', 'showPetTracker', 'petAutoTrack'].includes(event.target.name)) {
     const name = event.target.name; savePreferences({ [name]: event.target.type === 'checkbox' ? event.target.checked : event.target.value }); refreshDrawer(name); return;
   }
@@ -1726,6 +1772,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
   if (actionName === 'refresh-build' || actionName === 'refresh-pets') await readCharacterData();
+  if (actionName === 'modules-pets' || actionName === 'modules-all') { savePreferences({ displayModules: displayModulePreset(actionName === 'modules-pets' ? 'pets' : 'all') }); refreshDrawer(); }
   if (actionName === 'open-pet-guide') openPetGuide();
   if (actionName === 'pet-pin') togglePetPin(Number(id));
   if (['pet-guide-reset', 'pet-guide-catalog'].includes(actionName)) { petSelectedId = null; petFilters = petGuideFilterAction(petFilters, actionName); refreshDrawer(); }
@@ -1852,6 +1899,7 @@ function receiveState(value) {
   state = normalizeState(value);
   const petMetadata = petMetadataTransition(previous, state, { previousActorId: liveServerActorId(previous), currentActorId: liveServerActorId(state) });
   if (petMetadata.clear) { characterData = characterSnapshot(); if (drawer === 'analysis' && ['build', 'pets'].includes(tab)) refreshDrawer(); }
+  else if ((previous.diagnostics?.stream_gaps ?? 0) !== (state.diagnostics?.stream_gaps ?? 0) || (previous.capture?.missed_packets ?? 0) !== (state.capture?.missed_packets ?? 0)) markPetSnapshotStale('capture-gap');
   if (!state.field_boss_available) { worldData = fieldBossSnapshot(); if (drawer === 'analysis' && tab === 'worldBosses') refreshDrawer(); }
   if (petMetadata.fetch) readCharacterData();
   if (metadataEpoch(previous, 'world') !== metadataEpoch(state, 'world') && state.field_boss_available && (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses')) readWorldData();
