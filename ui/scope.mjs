@@ -21,11 +21,17 @@ export function scopedEncounter(state, scope = 'personal') {
   }
   if (scope === 'party') {
     const memberIds = new Set((state?.party_member_ids || []).map(String));
-    const known = ['server', 'manual'].includes(state?.party_membership_source);
+    const membershipKnown = ['server', 'manual'].includes(state?.party_membership_source);
     const elapsed = elapsedFor(state, 'party_elapsed_ms');
-    const filtered = known ? players.filter(player => player.in_party === true || memberIds.has(String(player.id))).map(player => ({ ...player, dps: scopedRate(nonnegative(player.damage), elapsed) })) : [];
-    const damage = known ? nonnegative(state?.party_total_damage) ?? filtered.reduce((sum, player) => sum + (nonnegative(player.damage) ?? 0), 0) : null;
-    return { scope, known, players: filtered, targets: known ? state?.party_targets || [] : [], damage, dps: known ? nonnegative(state?.party_dps) ?? scopedRate(damage, elapsed) : null, elapsed };
+    const filtered = membershipKnown ? players.filter(player => player.in_party === true || memberIds.has(String(player.id))).map(player => ({ ...player, dps: scopedRate(nonnegative(player.damage), elapsed) })) : [];
+    const received = filtered.filter(player => nonnegative(player.damage) !== null);
+    const receivedIds = new Set(received.map(player => String(player.id)));
+    const completeRows = memberIds.size > 0 && [...memberIds].every(id => receivedIds.has(id)) && received.length === filtered.length;
+    const explicitEmpty = state?.party_membership_source === 'manual' && Array.isArray(state.party_member_ids) && !memberIds.size && !filtered.length;
+    const fallbackDamage = completeRows || explicitEmpty ? received.reduce((sum, player) => sum + player.damage, 0) : null;
+    const damage = membershipKnown ? nonnegative(state?.party_total_damage) ?? fallbackDamage : null;
+    const known = membershipKnown && damage !== null;
+    return { scope, known, membershipKnown, players: filtered, targets: membershipKnown ? state?.party_targets || [] : [], damage, dps: known ? nonnegative(state?.party_dps) ?? scopedRate(damage, elapsed) : null, elapsed };
   }
   const elapsed = elapsedFor(state, 'personal_elapsed_ms');
   const filtered = players.filter(player => sameId(player.id, localId)).map(player => ({ ...player, dps: nonnegative(state?.personal_dps) ?? scopedRate(nonnegative(player.damage), elapsed) }));
@@ -45,7 +51,7 @@ export function meterScopes(state, preferences = {}) {
   const rosterScope = ['personal', 'party', 'observed'].includes(preferences.rosterScope) ? preferences.rosterScope : 'observed';
   const summaries = Object.fromEntries(['personal', 'party', 'observed'].map(scope => [scope, scopedEncounter(state, scope)]));
   const requested = summaries[rosterScope];
-  const fallback = rosterScope === 'party' && !requested.known && summaries.observed.players.length > 0;
+  const fallback = rosterScope === 'party' && !requested.known && requested.membershipKnown !== true && summaries.observed.players.length > 0;
   return { summary: summaries[summaryScope], roster: fallback ? summaries.observed : requested, summaries, rosterScope, fallback };
 }
 

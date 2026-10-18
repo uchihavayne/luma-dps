@@ -127,6 +127,27 @@ test('an explicit manual roster excludes nearby strangers and an empty known ros
   assert.equal(empty.known, true); assert.equal(empty.damage, 0); assert.deepEqual(empty.players, []);
 });
 
+test('verified party membership cannot turn a missing aggregate or capped member rows into a measured zero', () => {
+  const base = normalizeState({ ...nearby(), party_membership_source: 'server', party_member_ids: [2, 3], party_total_damage: null, party_dps: null });
+  const partial = scopedEncounter(base, 'party');
+  assert.equal(partial.known, false); assert.equal(partial.membershipKnown, true);
+  assert.equal(partial.damage, null); assert.equal(partial.dps, null);
+  assert.deepEqual(partial.players.map(row => row.id), ['2']);
+  const meter = meterScopes(base, { rosterScope: 'party', damageScope: 'party' });
+  assert.equal(meter.fallback, false); assert.equal(meter.roster.scope, 'party');
+  assert.deepEqual(meter.roster.players.map(row => row.name), ['Me']);
+  for (const state of [{ ...base, players: [] }, { ...base, players: [], party_dps: 900 }]) {
+    const selected = scopedEncounter(state, 'party');
+    assert.equal(selected.known, false); assert.equal(selected.damage, null); assert.equal(selected.dps, null);
+  }
+  const explicitZero = scopedEncounter({ ...base, players: [], party_total_damage: 0 }, 'party');
+  assert.equal(explicitZero.known, true); assert.equal(explicitZero.damage, 0); assert.equal(explicitZero.dps, 0);
+  const completeRows = scopedEncounter({ ...base, players: [...base.players, { id: '3', damage: 1000 }] }, 'party');
+  assert.equal(completeRows.known, true); assert.equal(completeRows.damage, 3000); assert.equal(completeRows.dps, 300);
+  const noMemberList = scopedEncounter({ ...base, party_member_ids: [], players: [] }, 'party');
+  assert.equal(noMemberList.membershipKnown, true); assert.equal(noMemberList.known, false);
+});
+
 test('all observed actors and totals require an explicit observed scope', () => {
   const scoped = scopedEncounter(nearby(), 'observed');
   assert.equal(scoped.damage, 9000); assert.equal(scoped.dps, 900); assert.equal(scoped.players.length, 2);

@@ -55,6 +55,19 @@ export function reconcileKeyedRows(container, items, { key, create, update }) {
   const focused = active && container.contains(active) ? active : null;
   const scrollTop = container.scrollTop, scrollLeft = container.scrollLeft;
   const existing = new Map([...container.children].map(element => [element.dataset.key, element]));
+  // Moving or removing the pressed button before pointerup cancels its click.
+  // Keep live values current, and let the caller reconcile the latest list on
+  // release when false is returned. No outdated item list is retained here.
+  const structuralChange = items.length !== container.children.length
+    || items.some((item, index) => String(key(item, index)) !== container.children[index]?.dataset.key);
+  if (structuralChange && container.querySelector?.('button:active,[role="button"]:active')) {
+    items.forEach((item, index) => {
+      const row = existing.get(String(key(item, index)));
+      if (row) update(row, item, index);
+    });
+    container.scrollTop = scrollTop; container.scrollLeft = scrollLeft;
+    return false;
+  }
   const retained = new Set();
   items.forEach((item, index) => {
     const id = String(key(item, index));
@@ -72,4 +85,5 @@ export function reconcileKeyedRows(container, items, { key, create, update }) {
   for (const row of [...container.children]) if (!retained.has(row)) row.remove();
   if (focused?.isConnected && container.ownerDocument.activeElement !== focused) focused.focus({ preventScroll: true });
   container.scrollTop = scrollTop; container.scrollLeft = scrollLeft;
+  return true;
 }

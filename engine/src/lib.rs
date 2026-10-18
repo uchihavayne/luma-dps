@@ -290,6 +290,7 @@ impl From<&Encounter> for AllTargetsSummary {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeterState {
+    pub pet_collection_owner: Option<character::PetCollectionOwner>,
     pub encounter_started_ms: Option<u64>,
     pub focused_target_id: Option<u64>,
     pub focused_target_observed_at_ms: Option<u64>,
@@ -371,6 +372,7 @@ type Aggregate = BTreeMap<(u64, u64), BTreeMap<u32, SkillState>>;
 struct Completed {
     aggregates: Aggregate,
     identities: HashMap<u64, Identity>,
+    bosses: Vec<u64>,
     record: Encounter,
     pair_activity: BTreeMap<(u64, u64), SourceActivity>,
     paused_ms: u64,
@@ -418,6 +420,7 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    collection_generation: u64,
     focus_epoch: u64,
     current_context: EncounterContext,
     party_id: Option<u32>,
@@ -482,6 +485,7 @@ pub struct MeterEngine {
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            collection_generation: 0,
             focus_epoch: 0,
             current_context: EncounterContext::default(),
             party_id: None,
@@ -960,6 +964,21 @@ impl MeterEngine {
                     .get(&id)
                     .and_then(|entry| entry.name.as_deref())
                     .is_some_and(|old| old != name);
+                if own
+                    && (self.pet_collection_owner().is_none()
+                        || !self.character.matches_server_self(id, &name))
+                {
+                    self.collection_generation = self.collection_generation.wrapping_add(1);
+                } else if !own
+                    && self.own_id == Some(id)
+                    && self.identities.get(&id).is_some_and(|entry| entry.removed)
+                {
+                    // A new non-self occupant of a removed scene handle cannot
+                    // inherit the old character's collection binding.
+                    self.collection_generation = self.collection_generation.wrapping_add(1);
+                    self.character.clear();
+                    self.character_revision = self.character_revision.wrapping_add(1);
+                }
                 if self.recent_personal_hit.as_ref().is_some_and(|hit| {
                     hit.target_id == id
                         || hit.actor_id == id && changed_name
@@ -1117,6 +1136,14 @@ impl MeterEngine {
                 model,
                 kind,
             } => {
+                if self
+                    .pet_collection_owner()
+                    .is_some_and(|owner| owner.actor_id == id)
+                {
+                    self.collection_generation = self.collection_generation.wrapping_add(1);
+                    self.character.clear();
+                    self.character_revision = self.character_revision.wrapping_add(1);
+                }
                 // Another spawn record is a new occupant of this scene handle;
                 // it cannot rename the previous hit, even if the model matches.
                 self.clear_recent_personal_entity(id);
@@ -1284,6 +1311,11 @@ impl MeterEngine {
                         .is_some_and(|server| server != profile.server);
                     if changed_server {
                         if self.own_id == Some(profile.id) {
+                            // Conflicting received server metadata cannot
+                            // replace combat self, nor retain its collection.
+                            self.collection_generation = self.collection_generation.wrapping_add(1);
+                            self.character.clear();
+                            self.character_revision = self.character_revision.wrapping_add(1);
                             continue;
                         }
                         self.ingest_event(
@@ -1672,6 +1704,7 @@ impl MeterEngine {
         }
     }
     pub fn connection_changed(&mut self) {
+        self.collection_generation = self.collection_generation.wrapping_add(1);
         self.recent_personal_hit = None;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.finish(self.last_hit);
@@ -1784,7 +1817,22 @@ impl MeterEngine {
     }
     pub fn set_boss_targets(&mut self, ids: &[u64]) {
         self.bosses = ids.iter().copied().take(256).collect();
+        if let Some(completed) = self
+            .completed
+            .as_mut()
+            .filter(|completed| completed.generation == self.generation)
+        {
+            // Same-session manual retagging changes the displayed report,
+            // while its saved history entry remains immutable.
+            completed.bosses.clone_from(&self.bosses);
+        }
         self.dirty();
+    }
+    fn report_bosses(&self) -> &[u64] {
+        self.completed
+            .as_ref()
+            .map(|completed| completed.bosses.as_slice())
+            .unwrap_or(&self.bosses)
     }
     pub fn reset(&mut self) {
         self.recent_personal_hit = None;
@@ -2231,6 +2279,7 @@ impl MeterEngine {
         } else {
             (&self.aggregates, &self.identities)
         };
+        let bosses = self.report_bosses();
         let mut players = BTreeMap::<u64, BTreeMap<u32, SkillState>>::new();
         let mut targets = BTreeMap::<u64, TargetState>::new();
         let mut target_contributors = BTreeMap::<u64, BTreeMap<u64, u64>>::new();
@@ -2295,7 +2344,7 @@ impl MeterEngine {
             }) {
                 continue;
             }
-            if mode == "boss" && !self.bosses.contains(target) {
+            if mode == "boss" && !bosses.contains(target) {
                 continue;
             }
             let damage = skills
@@ -2311,7 +2360,7 @@ impl MeterEngine {
                 name: target_identity
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| format!("Target #{}", target)),
-                is_boss: self.bosses.contains(target),
+                is_boss: bosses.contains(target),
                 damage: 0,
                 current_hp: target_identity.and_then(|entry| entry.hp),
                 observed_peak_hp: target_identity.and_then(|entry| entry.peak_hp),
@@ -2695,9 +2744,10 @@ impl MeterEngine {
             )
         };
         let local = record.local_player_id;
+        let bosses = self.report_bosses();
         let outgoing = |source, target| {
             pve_pair(identities, source, target, local)
-                && (mode != "boss" || self.bosses.contains(&target))
+                && (mode != "boss" || bosses.contains(&target))
         };
         let (first, elapsed) = span_for(&outgoing);
         if let Some(first) = first {
@@ -2892,6 +2942,7 @@ impl MeterEngine {
         self.completed = Some(Completed {
             aggregates: std::mem::take(&mut self.aggregates),
             identities,
+            bosses: self.bosses.clone(),
             record,
             pair_activity: std::mem::take(&mut self.pair_activity),
             paused_ms: self.paused_ms,
@@ -3023,6 +3074,7 @@ impl MeterEngine {
         );
         cooldowns.sort_by_key(|row| row["skill_id"].as_u64().unwrap_or(0));
         MeterState {
+            pet_collection_owner: self.pet_collection_owner(),
             encounter_started_ms,
             focused_target_id,
             focused_target_observed_at_ms,
@@ -3235,7 +3287,7 @@ impl MeterEngine {
         if self.target_mode == "boss" {
             record
                 .damage_samples
-                .retain(|sample| self.bosses.contains(&sample.target))
+                .retain(|sample| self.report_bosses().contains(&sample.target))
         }
         record
     }
@@ -3250,7 +3302,28 @@ impl MeterEngine {
         self.field_bosses.snapshot()
     }
     pub fn character_snapshot(&self) -> character::CharacterSnapshot {
-        self.character.snapshot()
+        let mut snapshot = self.character.snapshot();
+        snapshot.pet_collection_owner = self.pet_collection_owner();
+        snapshot
+    }
+    fn pet_collection_owner(&self) -> Option<character::PetCollectionOwner> {
+        let actor_id = self.own_id?;
+        let identity = self.identities.get(&actor_id)?;
+        let name = identity.name.as_deref()?;
+        // Death/despawn invalidates live combat presence, not the receiving
+        // character's collection. Only a current server-self binding qualifies.
+        if !identity.player
+            || identity.npc
+            || identity.pet
+            || !self.character.matches_server_self(actor_id, name)
+        {
+            return None;
+        }
+        Some(character::PetCollectionOwner {
+            actor_id,
+            source: "server-self".into(),
+            generation: self.collection_generation,
+        })
     }
     pub fn resources_snapshot(&self, now: u64) -> resources::ResourceSnapshot {
         self.resources.snapshot(now)

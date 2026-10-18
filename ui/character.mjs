@@ -59,9 +59,19 @@ export function renderCharacterCollections(value, { locale = 'tr' } = {}) {
   return `<section class="record-card character-collections"><div class="record-top"><strong>${english ? 'Power & collections' : 'Güç ve koleksiyonlar'}</strong><span class="tag">${status}</span></div><div class="analysis-metrics">${data.combat_power ? `<div><span>${english ? 'Combat power' : 'Savaş gücü'}</span><strong>${number(data.combat_power.current)}</strong><small>${english ? 'Highest received' : 'Alınan en yüksek'} · ${number(data.combat_power.highest)}</small></div>` : ''}${data.wing ? `<div><span>${english ? 'Equipped wing' : 'Takılı kanat'}</span><strong>#${data.wing.wing_id}</strong><small>${english ? 'Skin' : 'Görünüm'} · ${data.wing.skin_id === null ? '—' : `#${data.wing.skin_id}`}</small></div>` : ''}</div>${data.species.length ? `<div class="skill-table">${data.species.map(row => `<details><summary>${english ? 'Genus' : 'Tür bilgisi'} #${row.species_id} · Lv.${row.level} · ${number(row.progress)}</summary><p class="help">${english ? 'Received progress. Completion threshold is unknown.' : 'Alınan ilerleme. Tamamlama eşiği bilinmiyor.'}</p>${row.effects.length ? `<ul>${row.effects.map(effect => `<li>${english ? 'Page' : 'Sayfa'} ${effect.page} · ${english ? 'Slot' : 'Yuva'} ${effect.slot + 1} · #${effect.stat_id}: ${escape(number(effect.value))}</li>`).join('')}</ul>` : `<p class="help">${english ? 'No received effect slots.' : 'Alınan etki yuvası yok.'}</p>`}</details>`).join('')}</div>` : ''}<p class="help">${english ? 'Equipped wing and received genus progress; no complete unlock or stat-effect catalog is inferred.' : 'Takılı kanat ve alınan tür ilerlemesi; tüm açılımlar veya stat etkileri tahmin edilmez.'}</p></section>`;
 }
 
+// Collection ownership survives combat entity removal, but only within this
+// server-confirmed character generation. Never reconstruct it from a build.
+export function petCollectionOwner(value = {}) {
+  const owner = value?.pet_collection_owner;
+  if (!owner || typeof owner !== 'object' || Array.isArray(owner) || owner.source !== 'server-self') return null;
+  const actor = owner.actor_id;
+  if (!['number', 'string'].includes(typeof actor) || !/^[1-9]\d{0,9}$/.test(String(actor)) || Number(actor) > 0xffffffff || !Number.isSafeInteger(owner.generation) || owner.generation < 0) return null;
+  return { actor_id: String(actor), source: 'server-self', generation: owner.generation };
+}
+
 export function characterSnapshot(value = {}) {
   value = value && typeof value === 'object' ? value : {};
-  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })), pet_progress: petProgress(value.pet_progress) };
+  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })), pet_progress: petProgress(value.pet_progress), pet_collection_owner: petCollectionOwner(value) };
 }
 
 export function fieldBossSnapshot(value = {}) {

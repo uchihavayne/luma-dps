@@ -64,6 +64,183 @@ fn own(engine: &mut MeterEngine, id: u64, at: u64) {
 }
 
 #[test]
+fn confirmed_collection_owner_survives_death_without_reviving_combat_identity() {
+    for death in [false, true] {
+        let mut engine = MeterEngine::default();
+        own(&mut engine, 7, 100);
+        receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+        let initial = engine.character_snapshot();
+        let owner = initial.pet_collection_owner.unwrap();
+        assert_eq!(owner.actor_id, 7);
+        assert_eq!(owner.source, "server-self");
+        engine.ingest_event(Event::Removed { id: 7, death }, 300);
+        assert!(engine.live_team_identity()["local"].is_null());
+        assert_eq!(
+            engine.live_state(400).pet_collection_owner,
+            Some(owner.clone())
+        );
+        let snapshot = engine.character_snapshot();
+        assert_eq!(snapshot.pet_collection_owner, Some(owner.clone()));
+        assert_eq!(snapshot.pet_progress.unwrap().pets[0].progress, Some(32));
+        // A duplicate same-character self announcement after respawn is not a
+        // collection switch, even though combat presence was removed.
+        own(&mut engine, 7, 500);
+        assert_eq!(
+            engine.character_snapshot().pet_collection_owner,
+            Some(owner)
+        );
+        assert_eq!(
+            engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
+            Some(32)
+        );
+    }
+}
+
+#[test]
+fn collection_owner_changes_on_character_replacement_and_same_actor_reconnect() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+    let old = engine.character_snapshot().pet_collection_owner.unwrap();
+    engine.ingest_event(
+        Event::Identity {
+            id: 7,
+            name: "Replacement".into(),
+            class: None,
+            own: true,
+        },
+        300,
+    );
+    let changed = engine.character_snapshot();
+    let owner = changed.pet_collection_owner.unwrap();
+    assert_ne!(owner.generation, old.generation);
+    assert!(changed.pet_progress.is_none());
+    receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 2)]), 400);
+    let before_reconnect = engine.character_snapshot().pet_collection_owner.unwrap();
+    engine.connection_changed();
+    assert!(engine.live_state(500).pet_collection_owner.is_none());
+    assert!(engine.character_snapshot().pet_collection_owner.is_none());
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    engine.ingest_event(
+        Event::Identity {
+            id: 7,
+            name: "Replacement".into(),
+            class: None,
+            own: true,
+        },
+        600,
+    );
+    let after = engine.character_snapshot();
+    assert_ne!(
+        after.pet_collection_owner.unwrap().generation,
+        before_reconnect.generation
+    );
+    assert!(after.pet_progress.is_none());
+    own(&mut engine, 8, 700);
+    assert_eq!(
+        engine
+            .character_snapshot()
+            .pet_collection_owner
+            .unwrap()
+            .actor_id,
+        8
+    );
+    assert!(engine.character_snapshot().pet_progress.is_none());
+}
+
+#[test]
+fn reused_self_scene_handles_and_manual_aliases_cannot_claim_collection_ownership() {
+    for npc in [false, true] {
+        let mut engine = MeterEngine::default();
+        own(&mut engine, 7, 100);
+        receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+        engine.ingest_event(Event::Removed { id: 7, death: true }, 300);
+        if npc {
+            engine.ingest_event(
+                Event::Npc {
+                    id: 7,
+                    name: None,
+                    model: 2400617,
+                    kind: 0x1c,
+                },
+                400,
+            );
+        } else {
+            engine.ingest_event(
+                Event::Identity {
+                    id: 7,
+                    name: "Other".into(),
+                    class: None,
+                    own: false,
+                },
+                400,
+            );
+        }
+        assert!(engine.live_state(500).pet_collection_owner.is_none());
+        assert!(engine.character_snapshot().pet_collection_owner.is_none());
+        assert!(engine.character_snapshot().pet_progress.is_none());
+    }
+    let mut engine = MeterEngine::default();
+    engine.set_local_player(None, "Alias").unwrap();
+    assert!(engine.character_snapshot().pet_collection_owner.is_none());
+    assert!(engine.live_state(100).pet_collection_owner.is_none());
+}
+
+#[test]
+fn a_transient_capture_gap_keeps_the_same_collection_owner_with_stale_counters() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+    let owner = engine.character_snapshot().pet_collection_owner.unwrap();
+    engine.capture_loss();
+    let snapshot = engine.character_snapshot();
+    assert_eq!(snapshot.pet_collection_owner, Some(owner));
+    let pets = snapshot.pet_progress.unwrap();
+    assert_eq!(pets.continuity, PetContinuity::LastKnown);
+    assert_eq!(pets.pets[0].progress, Some(32));
+    assert!(pets.pets[0].progress_stale);
+}
+
+#[test]
+fn a_known_self_home_server_conflict_invalidates_collection_but_initial_metadata_does_not() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+    let owner = engine.character_snapshot().pet_collection_owner;
+    for (server, at) in [(1001, 300), (1001, 400)] {
+        engine.ingest_event(
+            Event::MemberProfiles {
+                members: vec![packets::MemberProfile {
+                    id: 7,
+                    server,
+                    name: "Player7".into(),
+                }],
+            },
+            at,
+        );
+        assert_eq!(engine.character_snapshot().pet_collection_owner, owner);
+        assert_eq!(
+            engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
+            Some(32)
+        );
+    }
+    engine.ingest_event(
+        Event::MemberProfiles {
+            members: vec![packets::MemberProfile {
+                id: 7,
+                server: 1002,
+                name: "Player7".into(),
+            }],
+        },
+        500,
+    );
+    assert!(engine.character_snapshot().pet_collection_owner.is_none());
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    assert!(engine.live_state(600).pet_collection_owner.is_none());
+    assert_eq!(engine.live_team_identity()["local"]["actor_id"], 7);
+}
+
+#[test]
 fn pet_login_prefix_preserves_actual_levels_progress_and_unknown_targets() {
     let mut engine = MeterEngine::default();
     own(&mut engine, 7, 100);

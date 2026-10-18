@@ -1,7 +1,8 @@
 import { trainingState } from './analysis.mjs';
 import { assistanceState, encounterAssistance } from './assistance.mjs';
-import { networkLatency, cooldownObservation } from './telemetry.mjs';
-import { characterSnapshot } from './character.mjs';
+import { networkLatency, cooldownObservation, petProgress, stalePetProgress } from './telemetry.mjs';
+import { characterSnapshot, petCollectionOwner } from './character.mjs';
+export { petCollectionOwner } from './character.mjs';
 import { normalizeLatencyHistory } from './latency-history.mjs';
 import { focusedTarget } from './bosses.mjs';
 
@@ -255,6 +256,29 @@ export function liveServerActorId(state = {}) {
   return value?.identity_source === 'server' && /^[1-9]\d{0,9}$/.test(String(id)) && Number(id) <= 0xffffffff ? String(id) : null;
 }
 
+export function petCollectionEpoch(value = {}) {
+  const owner = petCollectionOwner(value);
+  return owner ? `${owner.generation}:${owner.actor_id}` : 'none';
+}
+
+export function acceptsPetCollectionSnapshot(state, incoming) {
+  const owner = petCollectionOwner(state), received = petCollectionOwner(incoming);
+  if (!owner || !received || owner.actor_id !== received.actor_id || owner.generation !== received.generation) return false;
+  return incoming.pet_progress === null || incoming.pet_progress === undefined || petProgress(incoming.pet_progress, { localPlayerId: owner.actor_id }) !== null;
+}
+
+// Entity death cannot erase a verified collection. Keep its received counters
+// visible, with no rate estimate until the matching combat self is available.
+export function petCollectionProgress(state, snapshot, { now = Date.now() } = {}) {
+  if (!acceptsPetCollectionSnapshot(state, snapshot)) return null;
+  const owner = petCollectionOwner(state), received = petProgress(snapshot.pet_progress, { localPlayerId: owner.actor_id });
+  if (!received) return null;
+  const reversed = !Number.isSafeInteger(now) || now < 0 || received.observed_at_ms > now + 250 || received.pets.some(row => row.observed_at_ms > now + 250);
+  const reason = liveServerActorId(state) !== owner.actor_id ? 'combat-entity-unavailable'
+    : state.capture?.status !== 'capturing' ? 'capture-unavailable' : reversed ? 'clock-reversal' : null;
+  return reason ? stalePetProgress(received, { now, reason }) : received;
+}
+
 // A short-lived affordance after an actual own hit, including the moment the
 // target dies. Reading a report or repainting never extends its hit timestamp.
 export function normalizeRecentPersonalTarget(value) {
@@ -355,7 +379,7 @@ export function normalizeState(value) {
   const historyRevision = Number.isSafeInteger(s.history_revision) && s.history_revision >= 0 ? s.history_revision : 0;
   const historyCount = Number.isSafeInteger(s.history_count) && s.history_count >= 0 ? s.history_count : (Array.isArray(s.history) ? s.history.length : 0);
   const encounterActive = typeof s.encounter_active === 'boolean' ? s.encounter_active : null;
-  const metadata = { state_revision: Number.isSafeInteger(s.state_revision) && s.state_revision >= 0 ? s.state_revision : null, character_revision: Number.isSafeInteger(s.character_revision) && s.character_revision >= 0 ? s.character_revision : 0, character_available: s.character_available === true, field_boss_revision: Number.isSafeInteger(s.field_boss_revision) && s.field_boss_revision >= 0 ? s.field_boss_revision : 0, field_boss_available: s.field_boss_available === true, recent_personal_target: normalizeRecentPersonalTarget(s.recent_personal_target), all_targets_summary: allTargetsSummary(s.all_targets_summary) };
+  const metadata = { state_revision: Number.isSafeInteger(s.state_revision) && s.state_revision >= 0 ? s.state_revision : null, character_revision: Number.isSafeInteger(s.character_revision) && s.character_revision >= 0 ? s.character_revision : 0, character_available: s.character_available === true, field_boss_revision: Number.isSafeInteger(s.field_boss_revision) && s.field_boss_revision >= 0 ? s.field_boss_revision : 0, field_boss_available: s.field_boss_available === true, recent_personal_target: normalizeRecentPersonalTarget(s.recent_personal_target), all_targets_summary: allTargetsSummary(s.all_targets_summary), pet_collection_owner: petCollectionOwner(s) };
   return { ...identityState(s), ...metadata, live_team_identity: s.live_team_identity && typeof s.live_team_identity === 'object' && !Array.isArray(s.live_team_identity) ? s.live_team_identity : null, party_identity_roster: s.party_identity_roster && typeof s.party_identity_roster === 'object' && !Array.isArray(s.party_identity_roster) ? s.party_identity_roster : null, resources: s.resources && typeof s.resources === 'object' && !Array.isArray(s.resources) ? s.resources : null, actor_cooldowns: Array.isArray(s.actor_cooldowns) ? s.actor_cooldowns.slice(0, 1024).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], observed_casts: Array.isArray(s.observed_casts) ? s.observed_casts.slice(0, 512) : [], training: trainingState(s.training), assist: assistanceState(s.assist), history_revision: historyRevision, history_count: historyCount, encounter_active: encounterActive, status: str(s.status, 120) || 'disconnected', elapsed_ms: Math.max(0, finite(s.elapsed_ms)), total_damage: Math.max(0, finite(s.total_damage)), dps: nullableRate(s.dps), paused: Boolean(s.paused), players: (Array.isArray(s.players) ? s.players : []).slice(0, 100).map(normalizePlayer), targets: liveTargets(s.targets, s.focused_target_id), observed_targets: liveTargets(s.observed_targets, s.focused_target_id), encounter_started_ms: typeof s.encounter_started_ms === 'number' && Number.isSafeInteger(s.encounter_started_ms) && s.encounter_started_ms >= 0 ? s.encounter_started_ms : null, history: (Array.isArray(s.history) ? s.history : []).slice(0, 200).map(normalizeEncounter).filter(Boolean), cooldowns: Array.isArray(s.cooldowns) ? s.cooldowns.slice(0, 256).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], diagnostics: { frames: diagnosticCount(s.diagnostics?.frames), damage_events: diagnosticCount(s.diagnostics?.damage_events), stream_gaps: Math.max(0, finite(s.diagnostics?.stream_gaps)), ambiguous_periodic_events: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_events)), ambiguous_periodic_amount: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_amount)) }, capture: { network_latency: networkLatency(capture.network_latency), status: str(capture.status, 120), detail: str(capture.detail, 500), error_code: str(capture.error_code, 80), packets: Math.max(0, finite(capture.packets)), missed_packets: Math.max(0, finite(capture.missed_packets)), game_processes: Number.isFinite(capture.game_processes) ? Math.max(0, capture.game_processes) : null, game_connections: Number.isFinite(capture.game_connections) ? Math.max(0, capture.game_connections) : null, last_packet_at_ms: Number.isFinite(capture.last_packet_at_ms) ? Math.max(0, capture.last_packet_at_ms) : null, admin: { required: admin.required === true, elevated: typeof admin.elevated === 'boolean' ? admin.elevated : null, status: str(admin.status, 80), detail: str(admin.detail, 300) } } };
 }
 

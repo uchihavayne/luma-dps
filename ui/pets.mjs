@@ -1,5 +1,5 @@
 import { petProgress } from './telemetry.mjs';
-import { PET_PIN_LIMIT } from './model.mjs';
+import { PET_PIN_LIMIT, petCollectionEpoch } from './model.mjs';
 export { PET_PIN_LIMIT } from './model.mjs';
 
 const record = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -143,11 +143,29 @@ export function trackedPets(plan, pins, { automatic = true, now = Date.now() } =
 }
 
 export function petMetadataTransition(previous = {}, current = {}, { previousActorId = previous.local_player_id ?? null, currentActorId = current.local_player_id ?? null } = {}) {
-  const identityChanged = previousActorId !== currentActorId;
+  const identityChanged = previousActorId !== currentActorId || petCollectionEpoch(previous) !== petCollectionEpoch(current);
   const revisionChanged = previous.character_revision !== current.character_revision;
   const lost = (previous.diagnostics?.stream_gaps ?? 0) !== (current.diagnostics?.stream_gaps ?? 0) || (previous.capture?.missed_packets ?? 0) !== (current.capture?.missed_packets ?? 0);
   const buildAvailabilityChanged = previous.character_available !== current.character_available;
   return { fetch: identityChanged || revisionChanged || lost || buildAvailabilityChanged, clear: identityChanged };
+}
+
+// Incoming counters may refresh this panel while a user is pinning a pet.
+// Keep the pressed node through its click, then restore focus by its real key.
+export function refreshPetGuidePanel(host, refresh) {
+  if (!host || typeof refresh !== 'function' || host.querySelector('button:active')) return false;
+  const active = host.contains(host.ownerDocument.activeElement) ? host.ownerDocument.activeElement : null;
+  const name = active?.name || '', action = active?.dataset?.action, id = active?.dataset?.id;
+  const value = active?.value, start = active?.selectionStart, end = active?.selectionEnd, scroll = host.scrollTop;
+  refresh();
+  const target = active ? [...host.querySelectorAll('[name],button[data-action]')].find(node => name ? node.name === name : action && node.dataset?.action === action && node.dataset?.id === id) : null;
+  if (target) {
+    if (name && typeof value === 'string') target.value = value;
+    target.focus({ preventScroll: true });
+    if (Number.isInteger(start) && Number.isInteger(end)) { try { target.setSelectionRange(start, end); } catch {} }
+  }
+  host.scrollTop = scroll;
+  return true;
 }
 
 export function petLabels(locale = 'tr') {

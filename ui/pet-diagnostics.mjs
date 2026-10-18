@@ -1,5 +1,4 @@
-import { liveServerActorId, normalizeRecentPersonalTarget } from './model.mjs';
-import { petProgress } from './telemetry.mjs';
+import { liveServerActorId, normalizeRecentPersonalTarget, petCollectionOwner, petCollectionProgress } from './model.mjs';
 import { normalizePetPins } from './pets.mjs';
 
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -10,7 +9,7 @@ const captureStates = new Set(['capturing', 'starting', 'waiting', 'stopped', 'd
 // those can contain names, reports, endpoints and unrelated player information.
 export function petDiagnosticReport({ version, mode, state = {}, character = {}, pins, now = Date.now() } = {}) {
   const actor = liveServerActorId(state), selected = normalizePetPins(pins);
-  const observed = actor ? petProgress(character.pet_progress, { localPlayerId: actor }) : null;
+  const observed = petCollectionProgress(state, character, { now });
   const received = normalizeRecentPersonalTarget(state.recent_personal_target);
   const ownHit = actor && received?.actor_id === actor ? received : null;
   const age = ownHit && count(now) !== null && now >= ownHit.hit_at_ms ? now - ownHit.hit_at_ms : null;
@@ -21,7 +20,7 @@ export function petDiagnosticReport({ version, mode, state = {}, character = {},
     app_version: typeof version === 'string' && /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version) ? version : 'unknown',
     mode: ['native', 'demo', 'browser'].includes(mode) ? mode : 'unknown',
     exported_at_ms: count(now),
-    identity: { server_confirmed: actor !== null, actor_id: actor },
+    identity: { server_confirmed: actor !== null, actor_id: actor, collection_owner: petCollectionOwner(state) },
     capture: { status: captureStates.has(capture.status) ? capture.status : 'unknown',
       packets: count(capture.packets), missed_packets: count(capture.missed_packets),
       game_connections: count(capture.game_connections), stream_gaps: count(state.diagnostics?.stream_gaps) },

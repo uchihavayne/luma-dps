@@ -8,6 +8,8 @@ Set the desktop release version consistently in `src-tauri/Cargo.toml`, `src-tau
 
 Run on Windows with MSVC build tools, Rust 1.95.0, Node.js 24 and Python 3.11+:
 
+The required automated gate is `python tools/audit.py`. It runs the checks below, rejects empty test discovery and source changes during the run, and writes a local JSON report. GitHub executes the same gate before building. Review skipped checks and the separate live acceptance requirements. See [quality gate](docs/quality-gate.md).
+
 ```powershell
 cargo fmt --manifest-path engine/Cargo.toml -- --check
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

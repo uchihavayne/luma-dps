@@ -1,7 +1,7 @@
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
-import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus } from './model.mjs';
+import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus, petCollectionOwner, petCollectionEpoch, acceptsPetCollectionSnapshot, petCollectionProgress } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
@@ -30,7 +30,7 @@ import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
 import { normalizeCaptureDiagnostics, captureDiagnosticText, renderCaptureDiagnostics, PACKET_MONITOR_EXPORTS } from './capture-diagnostics.mjs';
-import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, PET_PIN_LIMIT } from './pets.mjs';
+import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, refreshPetGuidePanel, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -48,6 +48,7 @@ let state = normalizeState(demo ? new URLSearchParams(location.search).get('part
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
+let deferredRosterRefresh = false;
 let selectedBoardTargetId = null;
 let automaticTargetFocus = null;
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
@@ -64,7 +65,7 @@ let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
 const petCatalog = normalizePetCatalog(PET_CATALOG);
 let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null;
-let petPinObservation = null, petDiagnosticsOpen = false, petDiagnosticPending = false;
+let petPinObservation = null, petDiagnosticsOpen = false, petDiagnosticPending = false, petDrawerRefreshPending = false;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
@@ -93,7 +94,7 @@ const cubeDemo = demo && new URLSearchParams(location.search).get('cubeDemo') ==
 const telemetryDemo = demo && new URLSearchParams(location.search).get('telemetryDemo') === '1';
 if (telemetryDemo) {
   const at = Date.now();
-  state = normalizeState({ ...state, local_player_id: 7, local_identity_source: 'server',
+  state = normalizeState({ ...state, local_player_id: 7, local_identity_source: 'server', pet_collection_owner: { actor_id: 7, source: 'server-self', generation: 0 },
     players: state.players.map(player => ({ ...player, id: player.is_local ? 7 : player.id })),
     targets: state.targets.map((target, index) => ({ ...target, id: index === 0 ? 10 : target.id })),
     assist: { stagger: [{ actor_id: 10, maximum: 1200, current: 750, broken: false, observed_at_ms: at, fresh_for_ms: 5000, fresh: true, source: 'server' }] },
@@ -103,7 +104,7 @@ if (telemetryDemo) {
     party_identity_roster: { source: 'server', members: [{ actor_id: 9, name: 'Liora', class_name: 'Cleric', identity_confirmed: true }] }, observed_casts: [{ actor_id: 9, skill_id: 11010000, source: 'server-cast', last_observed_at_ms: at - 3000, use_count: 3, fresh: true, ready_confirmed: false }],
     capture: { status: 'capturing', game_connections: 2, network_latency: { status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 87, variation_ms: 2, observed_at_ms: at, sampled_at_ms: at, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 } },
   });
-  characterData = characterSnapshot({ own: { actor_id: 7, name: state.local_player_name, source: 'server-self', observed_at_ms: at },
+  characterData = characterSnapshot({ pet_collection_owner: state.pet_collection_owner, own: { actor_id: 7, name: state.local_player_name, source: 'server-self', observed_at_ms: at },
     pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1042, active_pet_known: true, inventory_complete: true,
       pets: [{ pet_id: 1042, level: 2, progress: 34, progress_source: 'server-delta', session_gained: 2, observed_at_ms: at }, { pet_id: 1124, level: 3, progress: null, progress_source: 'unknown', session_gained: 0, observed_at_ms: at }] },
   });
@@ -514,8 +515,9 @@ function renderMeter() {
   const solo = !board && targetScoped && ownSummary?.evidence === 'received-own' ? targetView.target.own_participant : null;
   const roster = board ? { known: true, players: boardPlayers, damage: board.totalDamage, dps: board.dps, elapsed: board.elapsedMs, ranked: true } : solo ? { known: true, players: [{ ...solo, is_local: true }], damage: targetView.target.damage, dps: targetView.target.damage / Math.max(targetView.target.elapsed_ms / 1000, 1), elapsed: targetView.target.elapsed_ms } : scopes.roster;
   const targetOption = $('#damage-scope option[value=target]');
-  targetOption.hidden = !targetView.target?.participants_available || !(targetView.target.is_boss || targetView.target.participant_count >= 2); targetOption.disabled = targetOption.hidden;
-  if (board) $('#damage-scope').value = 'target';
+  targetOption.hidden = !targetScoped; targetOption.disabled = targetOption.hidden;
+  targetOption.textContent = board ? (prefs.locale === 'tr' ? 'Hedef · 10' : 'Target · 10') : prefs.locale === 'tr' ? 'Seçili hedef' : 'Selected target';
+  if (targetScoped) $('#damage-scope').value = 'target';
   $('#sort').disabled = Boolean(board); $('#sort').title = board ? (prefs.locale === 'tr' ? 'Bu hedefe verilen hasara göre ilk 10' : 'Top ten by damage to this target') : t('sort');
   $('#target-roster-strip').hidden = !targetScoped;
   if (targetScoped) {
@@ -527,11 +529,12 @@ function renderMeter() {
   for (const [scope, original] of Object.entries(scopes.summaries)) {
     const observed = targetScoped ? targetSummary(targetView.target, state, scope) : null;
     const summary = observed ? { known: observed.known, dps: observed.dps, damage: observed.totalDamage } : original;
+    const summaryKnown = summary.known && !(measurement.kind === 'boss-filter' && !summary.damage) && observed?.evidence !== 'no-observed-contribution';
     const node = $(`[data-summary-scope="${scope}"]`);
     if (!node) continue;
     setText(node.querySelector('small'), t({personal:'shortPersonal', party:'shortParty', observed:'shortObserved'}[scope]));
-    setText(node.querySelector('strong'), summary.known && !(measurement.kind === 'boss-filter' && !summary.damage) && observed?.evidence !== 'no-observed-contribution' ? rate(summary.dps) : '—');
-    node.title = `${board ? `${displayTargetName(targetView.target, prefs.locale)} · ` : ''}${t(`${scope}Dps`)}: ${summary.known ? rate(summary.dps) : t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summary.known ? num(summary.damage) : '—'}`;
+    setText(node.querySelector('strong'), summaryKnown ? rate(summary.dps) : '—');
+    node.title = `${targetScoped ? `${displayTargetName(targetView.target, prefs.locale)} · ` : ''}${t(`${scope}Dps`)}: ${summaryKnown ? rate(summary.dps) : measurementMessage(measurement, targetView) || t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summaryKnown ? num(summary.damage) : '—'}`;
   }
   const targets = prefs.mode === 'boss' ? scoped.targets.filter(target => target.is_boss) : scoped.targets;
   const topTarget = targetView.target || [...targets].sort((a, b) => b.damage - a.damage)[0];
@@ -549,8 +552,8 @@ function renderMeter() {
   const scopeMessage = !prefs.displayModules.dps ? '' : measurementMessage(measurement, targetView) || (board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '');
   setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo', 'paused'].includes(status.kind) ? scopeMessage : status.message);
   notice.title = `${scopeMessage ? `${scopeMessage}\n` : ''}${status.message}\n${status.detail}`;
-  $('#damage-scope').title = board ? $('#target-roster-strip').title : scopes.fallback ? t('partyFallback') : t('rosterScope');
-  $('#players').setAttribute('aria-label', board ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
+  $('#damage-scope').title = targetScoped ? $('#target-roster-strip').title : scopes.fallback ? t('partyFallback') : t('rosterScope');
+  $('#players').setAttribute('aria-label', targetScoped ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
   if (prefs.displayModules.dps && state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
   const canDiagnose = native && !notice.hidden && status.tone === 'error';
@@ -636,11 +639,11 @@ function renderPlayers(status, scoped) {
   const container = $('#players');
   const cooldownMembers = new Map(automaticTeamState(state).members.map(member => [member.actor_id, member]));
   if (!scoped.players.length) {
-    reconcileKeyedRows(container, [status], {
+    deferredRosterRefresh = reconcileKeyedRows(container, [status], {
       key: () => 'empty',
       create: () => { const row = document.createElement('div'); row.className = 'empty'; row.innerHTML = '<span class="empty-symbol" aria-hidden="true">◈</span><strong></strong><span class="empty-help"></span>'; return row; },
       update: row => { setText(row.querySelector('strong'), t(!scoped.known ? 'chooseCharacter' : prefs.rosterScope === 'personal' ? 'personalWaiting' : prefs.rosterScope === 'party' ? 'partyWaiting' : 'emptyTitle')); setText(row.querySelector('.empty-help'), !scoped.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : status.message); },
-    });
+    }) === false;
     return;
   }
   const maxDps = Math.max(...scoped.players.map(player => player.dps), 1), minimumDps = Math.min(...scoped.players.map(player => player.dps));
@@ -650,7 +653,7 @@ function renderPlayers(status, scoped) {
     const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
     return { player, key: `player:${base}:${occurrence}` };
   });
-  reconcileKeyedRows(container, players, {
+  deferredRosterRefresh = reconcileKeyedRows(container, players, {
     key: item => item.key,
     create: () => {
       const row = document.createElement('button'); row.type = 'button'; row.className = 'player';
@@ -686,7 +689,7 @@ function renderPlayers(status, scoped) {
       const shareNode = row.querySelector('.player-share'); shareNode.hidden = !prefs.showShares;
       setText(shareNode, `${(playerShare(player, scoped.damage) * 100).toFixed(1)}%`);
     },
-  });
+  }) === false;
 }
 
 function download(name, text, type = 'application/json') {
@@ -1214,26 +1217,34 @@ function renderCombatWarning() {
   if (key !== warnedWindup) { warnedWindup = key; beep(); }
 }
 
+function characterDataEpoch() { return `${metadataEpoch(state, 'character')}:${petCollectionEpoch(state)}`; }
+
 async function readCharacterData() {
   if (characterPending || !native) return;
-  const epoch = metadataEpoch(state, 'character');
+  const epoch = characterDataEpoch();
   characterPending = true;
-  try { const result = characterSnapshot(await invoke('get_character_state')); if (epoch === metadataEpoch(state, 'character')) characterData = result; }
-  catch { if (epoch === metadataEpoch(state, 'character')) markPetSnapshotStale('snapshot-unavailable'); }
+  try {
+    const result = await invoke('get_character_state');
+    if (epoch === characterDataEpoch()) {
+      if (acceptsPetCollectionSnapshot(state, result)) characterData = characterSnapshot(result);
+      else if (!petCollectionOwner(state) && !petCollectionOwner(result)) characterData = characterSnapshot({ ...result, pet_progress: null });
+    }
+  }
+  catch { if (epoch === characterDataEpoch()) markPetSnapshotStale('snapshot-unavailable'); }
   finally {
     characterPending = false; renderPetTracking();
     if (drawer === 'analysis' && tab === 'pets') refreshPetsDrawer();
     else if (drawer === 'analysis' && tab === 'build') refreshDrawer();
-    if (epoch !== metadataEpoch(state, 'character')) readCharacterData();
+    if (epoch !== characterDataEpoch()) readCharacterData();
   }
 }
 
 function markPetSnapshotStale(reason) {
-  const owned = petProgress(characterData.pet_progress, { localPlayerId: liveServerActorId(state) });
+  const owned = petCollectionProgress(state, characterData);
   characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(owned, { reason }) });
 }
 
-function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal, pins: prefs.petPins }); }
+function currentPetPlan() { return petPlan(petCollectionProgress(state, characterData), petCatalog, { localPlayerId: petCollectionOwner(state)?.actor_id ?? null, goal: prefs.petGoal, pins: prefs.petPins }); }
 
 function currentTargetPets() {
   const now = targetPetDemo && telemetryDemo ? state.recent_personal_target?.hit_at_ms : Date.now();
@@ -1288,12 +1299,8 @@ function petsContent() {
 }
 
 function refreshPetsDrawer() {
-  if (drawer !== 'analysis' || tab !== 'pets') return;
-  const active = document.activeElement, host = $('#drawer-content');
-  const name = host.contains(active) ? active.name : '', start = active?.selectionStart, end = active?.selectionEnd, scroll = host.scrollTop;
-  refreshDrawer(name);
-  if (name && Number.isInteger(start)) { try { host.querySelector(`[name="${name}"]`)?.setSelectionRange(start, end); } catch {} }
-  host.scrollTop = scroll;
+  if (drawer !== 'analysis' || tab !== 'pets') { petDrawerRefreshPending = false; return; }
+  petDrawerRefreshPending = !refreshPetGuidePanel($('#drawer-content'), () => refreshDrawer());
 }
 
 function renderPetTracking() {
@@ -1343,7 +1350,7 @@ function togglePetPin(id) {
 }
 
 function petProgressContent(input) {
-  const observed = petProgress(input, { localPlayerId: liveServerActorId(state) });
+  const observed = petCollectionProgress(state, input);
   return `<h3 class="section-title">${t('petProgress')}</h3><p class="help">${observed ? `${observed.pets.length} ${petLabels(prefs.locale).registered}` : t('noPetProgress')}</p><button class="action-button" data-action="open-pet-guide">${t('pets')} ↗</button>`;
 }
 
@@ -1353,7 +1360,7 @@ function buildContent() {
   if (!choices.some(choice => choice.id === selectedBuild)) selectedBuild = choices[0]?.id || 'own';
   const current = choices.find(choice => choice.id === selectedBuild)?.value;
   const header = `${source(snapshot ? t('snapshot') : t('serverObserved'))}<p class="help">${t('buildHelp')}</p><div class="button-row">${button('refresh-build', 'refreshBuild', characterPending || !native || snapshot ? 'disabled' : '', true)}</div>`;
-  const pets = snapshot ? '' : `<div id="automatic-odyle">${odyleContent()}</div>` + petProgressContent(data.pet_progress);
+  const pets = snapshot ? '' : `<div id="automatic-odyle">${odyleContent()}</div>` + petProgressContent(data);
   if (!current) return header + pets + empty('noBuild');
   return `${header}${pets}${renderCharacterCollections(current, { locale: prefs.locale })}<label class="field"><span>${t('receivedBuild')}</span><select name="selectedBuild">${choices.map(choice => `<option value="${esc(choice.id)}" ${selectedBuild === choice.id ? 'selected' : ''}>${esc(choice.name)}</option>`).join('')}</select></label><div class="status-card"><strong>${esc(current.name || (selectedBuild === 'unbound' ? t('unboundBuild') : state.local_player_name || t('ownBuild')))}</strong><div class="record-meta">${t('snapshotTime')}: ${dateText(current.observed_at_ms)}${current.actor_id ? ` · #${esc(current.actor_id)}` : ''}${current.server_id ? ` · Server #${esc(current.server_id)}` : ''}${current.level !== null && current.level !== undefined ? ` · ${t('level')}: ${current.level}` : ''}${current.gear_score !== null && current.gear_score !== undefined ? ` · Gear: ${current.gear_score}` : ''}</div></div><h3 class="section-title">${t('observedEquipment')}</h3>${current.equipment.length && !current.equipment_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.equipment.length ? current.equipment.map(item => `<div class="record-card"><div class="record-top"><strong>Item #${esc(item.item_id || '?')}</strong><span class="tag">${item.slot === null ? `#${item.entry_index ?? '?'}` : `${t('slot')} ${item.slot}`}</span></div><div class="record-meta">${item.enchant === null ? '' : `${t('enchant')}: +${item.enchant}`}${item.godstone_id ? ` · ${t('godstone')} #${esc(item.godstone_id)}` : ''}${item.stones ? `<br>${t('stones')}: ${item.stones.map(stone => `#${esc(stone.stat_id || '?')} · ${stone.tier ?? '?'}`).join(' / ') || '—'}` : ''}${item.stats ? `<br>${t('stats')}: ${item.stats.map(stat => `#${esc(stat.stat_id || '?')}: ${stat.value ?? '?'}`).join(' · ') || '—'}` : ''}${item.skill_bonuses ? `<br>${t('skillBonuses')}: ${item.skill_bonuses.map(skill => `#${esc(skill.skill_id || '?')} +${skill.levels ?? '?'}`).join(' · ') || '—'}` : ''}</div></div>`).join('') : empty('noObservedEquipment')}<h3 class="section-title">${t('skills')}</h3>${current.skills.length && !current.skills_complete ? `<p class="help">${t('partialBuild')}</p>` : ''}${current.skills.length ? `<div class="build-skills">${current.skills.map(skill => `<div><span>Skill #${esc(skill.skill_id || '?')}</span><strong>${t('level')} ${skill.level ?? '?'}</strong><small>${t('baseLevel')}: ${skill.base_level ?? '?'}</small></div>`).join('')}</div>` : empty('noSkills')}<h3 class="section-title">${t('daevanion')}</h3>${current.boards.length ? current.boards.map(board => `<div class="record-card"><strong>Board #${esc(board.board_id || '?')}</strong><div class="record-meta">${t('nodes')}: ${board.node_ids.map(id => `#${esc(id)}`).join(', ') || '—'}</div></div>`).join('') : empty('noBoards')}`;
 }
@@ -1813,7 +1820,7 @@ $('#target-pet-pin').addEventListener('click', event => {
   togglePetPin(id);
   renderTargetPetPin();
 });
-for (const type of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(type, () => requestAnimationFrame(() => { renderTargetPetPin(); renderPetTracking(); scheduleOverlayRegions(); }));
+for (const type of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(type, () => requestAnimationFrame(() => { renderTargetPetPin(); renderPetTracking(); if (petDrawerRefreshPending) refreshPetsDrawer(); if (deferredRosterRefresh) { deferredRosterRefresh = false; renderMeter(); } scheduleOverlayRegions(); }));
 document.addEventListener('scroll', scheduleOverlayRegions, true);
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#modules-button').addEventListener('click', () => openDrawer('settings', 'appearance'));
@@ -2190,7 +2197,7 @@ function receiveState(value) {
   if (previous.encounter_started_ms !== state.encounter_started_ms || previous.local_player_id !== state.local_player_id || previous.diagnostics.stream_gaps !== state.diagnostics.stream_gaps || previous.capture.missed_packets !== state.capture.missed_packets) { selectedBoardTargetId = null; automaticTargetFocus = null; }
   const diagnosticFingerprint = JSON.stringify([state.capture.status, state.capture.error_code, state.capture.admin?.elevated]);
   if (diagnosticFingerprint !== captureDiagnosticFingerprint) { captureDiagnosticFingerprint = diagnosticFingerprint; readCaptureDiagnostics(); }
-  const petMetadata = petMetadataTransition(previous, state, { previousActorId: liveServerActorId(previous), currentActorId: liveServerActorId(state) });
+  const petMetadata = petMetadataTransition(previous, state, { previousActorId: petCollectionOwner(previous)?.actor_id ?? null, currentActorId: petCollectionOwner(state)?.actor_id ?? null });
   if (petMetadata.clear) { characterData = characterSnapshot(); if (drawer === 'analysis' && ['build', 'pets'].includes(tab)) refreshDrawer(); }
   else if ((previous.diagnostics?.stream_gaps ?? 0) !== (state.diagnostics?.stream_gaps ?? 0) || (previous.capture?.missed_packets ?? 0) !== (state.capture?.missed_packets ?? 0)) markPetSnapshotStale('capture-gap');
   if (!state.field_boss_available) { worldData = fieldBossSnapshot(); if (drawer === 'analysis' && tab === 'worldBosses') refreshDrawer(); }

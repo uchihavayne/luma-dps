@@ -4,6 +4,10 @@ Entries describe preview builds. Live validation is listed separately from autom
 
 ## 0.21.0 preview · 2026-10-18
 
+- Add a reproducible automated release gate with source fingerprints, fail-closed test discovery/timeouts, local JSON reports and a CI build barrier. Independently review the gate itself and test stale-success and missing-module failures.
+- Preserve confirmed pet collection ownership through self death/despawn while invalidating old character/session generations. Reject delayed previous-owner snapshots, retain disconnected/clock-reversed counters as last-known, and stop their ETA/recent-gain estimates. Preserve pressed/focused pet guide controls through live updates.
+- Freeze completed boss classifications across zone/reconnect boundaries without carrying them into a new encounter. Keep incomplete party totals and missing target clocks unknown. Preserve pressed player rows until release during live ranking changes.
+
 - Keep same-encounter observed target boards available independently of the Boss category filter. Add a direct target selector for the observed Top 10, including targets without a boss label or a recent personal hit. Preserve a real personally attacked target while fresh received damage continues on it; clear continuity on identity, encounter or capture discontinuities.
 - Show a dedicated same-window target DPS, personal contribution and rank summary, including a personally hit target before other contributors arrive. Automatically show a single fresh shared target with ten or more received contributors; multiple candidates remain selectable. Do not infer a boss classification from crowd size.
 - Distinguish Boss-filtered damage, missing identity/contribution and undecoded traffic from measured zero. Retain an unfiltered encounter summary and offer a direct Show All action. Preserve missing/invalid rates as unknown rather than turning them into zero.

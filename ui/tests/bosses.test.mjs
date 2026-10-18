@@ -308,3 +308,19 @@ test('no observed contribution is distinct from an unavailable contribution sour
   assert.equal(conflict.known, false); assert.equal(conflict.evidence, 'conflicting-own-identity');
   assert.equal(targetSummary(null, local).evidence, 'target-unavailable');
 });
+
+test('an unknown target clock preserves damage but never manufactures a damage-as-DPS fallback', () => {
+  for (const elapsed_ms of [null, undefined, NaN, -1]) {
+    const value = target({ elapsed_ms, own_participant: player(1, 100, { dps: null }), party_total_damage: 200, party_dps: null });
+    const local = state({ party_membership_source: 'server' });
+    for (const [scope, damage] of [['personal', 100], ['party', 200], ['observed', 1000]]) {
+      const summary = targetSummary(value, local, scope);
+      assert.equal(summary.known, true); assert.equal(summary.totalDamage, damage);
+      assert.equal(summary.elapsedMs, null); assert.equal(summary.dps, null);
+    }
+    assert.equal(targetSummary({ ...value, own_participant: player(1, 100, { dps: 25 }) }, local).dps, 25);
+    assert.equal(targetSummary({ ...value, party_dps: 40 }, local, 'party').dps, 40);
+  }
+  const firstHit = targetSummary(target({ elapsed_ms: 0, own_participant: player(1, 100, { dps: null }) }), state());
+  assert.equal(firstHit.elapsedMs, 0); assert.equal(firstHit.dps, 100);
+});

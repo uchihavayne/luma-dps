@@ -159,3 +159,5 @@ See [release checks](RELEASING.md), [changes](CHANGELOG.md) and [privacy/securit
 The calendar client requests only three fixed public HTTPS subscription URLs. It sends no character names, damage records or accounts. Refreshes happen at startup when needed, daily thereafter, or on explicit refresh. Invalid responses preserve the last valid schedule; certificate verification remains enabled.
 
 Support: [Buy Me a Coffee](https://buymeacoffee.com/12hrsofficp).
+
+Run `python tools/audit.py` for the complete automated release gate and local JSON result. GitHub runs the same gate before building. See [quality gate](docs/quality-gate.md) for coverage, failure behavior and remaining live checks. End users do not need development tools.

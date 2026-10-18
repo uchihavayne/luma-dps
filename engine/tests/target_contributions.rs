@@ -568,3 +568,76 @@ fn unfiltered_summary_preserves_a_known_observed_zero_without_guessing_party_mem
     assert_eq!(value["party_total_damage"], 0);
     assert_eq!(value["party_elapsed_ms"], 0);
 }
+
+#[test]
+fn finished_boss_reports_keep_their_classification_across_zone_and_connection_boundaries() {
+    for reconnect in [false, true] {
+        let mut engine = MeterEngine::default();
+        identity(&mut engine, 1, "Local", true);
+        npc(&mut engine, 900, "Explicitly selected boss");
+        engine.set_boss_targets(&[900]);
+        engine.set_target_mode("boss");
+        hit(&mut engine, 1, 900, 100, 1000);
+        hit(&mut engine, 1, 900, 200, 3000);
+
+        if reconnect {
+            engine.connection_changed();
+        } else {
+            engine.ingest_event(Event::ZoneChange { zone_id: 600001 }, 4000);
+        }
+        let saved = engine.history_snapshot().1.remove(0);
+        assert_eq!(saved.total_damage, 300);
+        assert!(saved.targets[0].is_boss);
+        let shown = engine.live_state(5000);
+        assert!(!shown.encounter_active);
+        assert_eq!(shown.total_damage, saved.total_damage);
+        assert_eq!(shown.dps, saved.dps);
+        assert!(shown.targets[0].is_boss);
+        assert_eq!(engine.current_record(5000).damage_samples.len(), 2);
+
+        // Reusing the numeric target in the next encounter must not reuse the
+        // old designation: only the finished report retains it.
+        hit(&mut engine, 2, 900, 50, 6000);
+        let fresh = engine.live_state(7000);
+        assert_eq!(fresh.total_damage, 0);
+        assert_eq!(fresh.all_targets_summary.total_damage, 50);
+    }
+}
+
+#[test]
+fn manual_boss_retagging_changes_only_the_same_generation_display_not_saved_history() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    npc(&mut engine, 900, "Explicitly selected boss");
+    engine.set_boss_targets(&[900]);
+    engine.set_target_mode("boss");
+    hit(&mut engine, 1, 900, 100, 1000);
+    engine.ingest_event(
+        Event::Removed {
+            id: 900,
+            death: true,
+        },
+        2000,
+    );
+    assert_eq!(engine.live_state(2500).total_damage, 100);
+
+    engine.set_boss_targets(&[]);
+    assert_eq!(engine.live_state(2500).total_damage, 0);
+    assert_eq!(
+        engine.live_state(2500).all_targets_summary.total_damage,
+        100
+    );
+    assert!(engine.current_record(2500).damage_samples.is_empty());
+    assert!(engine.history_snapshot().1[0].targets[0].is_boss);
+    engine.set_boss_targets(&[900]);
+    assert_eq!(engine.live_state(2500).total_damage, 100);
+    assert_eq!(engine.current_record(2500).damage_samples.len(), 1);
+
+    engine.connection_changed();
+    engine.set_boss_targets(&[]);
+    assert_eq!(engine.live_state(3000).total_damage, 100);
+    assert!(engine.history_snapshot().1[0].targets[0].is_boss);
+    hit(&mut engine, 2, 900, 50, 4000);
+    assert_eq!(engine.live_state(5000).total_damage, 0);
+    assert_eq!(engine.live_state(5000).all_targets_summary.total_damage, 50);
+}

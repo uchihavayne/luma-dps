@@ -109,7 +109,7 @@ export function bossRoster(target, state = {}) {
 }
 
 export function targetSummary(target, state = {}, scope = 'personal') {
-  const elapsedMs = number(target?.elapsed_ms) ?? 0;
+  const elapsedMs = number(target?.elapsed_ms);
   if (!target) return { known: false, totalDamage: null, dps: null, elapsedMs, scope, evidence: 'target-unavailable' };
   let totalDamage = null, dps = null, evidence = 'contribution-unavailable';
   if (scope === 'observed') { totalDamage = number(target.damage); evidence = totalDamage === null ? 'contribution-unavailable' : 'received-target'; }
@@ -130,7 +130,7 @@ export function targetSummary(target, state = {}, scope = 'personal') {
       totalDamage = 0; dps = 0; evidence = 'no-observed-contribution';
     }
   } else evidence = 'unresolved-identity';
-  if (totalDamage !== null && dps === null) dps = totalDamage / Math.max(elapsedMs / 1000, 1);
+  if (totalDamage !== null && dps === null && elapsedMs !== null) dps = totalDamage / Math.max(elapsedMs / 1000, 1);
   return { known: totalDamage !== null, totalDamage, dps, elapsedMs, scope, evidence };
 }
 

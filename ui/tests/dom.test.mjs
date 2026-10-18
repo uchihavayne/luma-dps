@@ -36,6 +36,7 @@ function fixture() {
   const container = {
     ownerDocument: document, children: [], scrollTop: 70, scrollLeft: 3, moves: 0,
     contains: node => container.children.includes(node),
+    querySelector: selector => selector.includes(':active') ? container.children.find(row => row.pressed) || null : null,
     insertBefore(row, before) {
       container.moves += 1;
       const old = container.children.indexOf(row); if (old !== -1) container.children.splice(old, 1);
@@ -79,6 +80,33 @@ test('ranking changes keep focused rows and restore focus without moving the scr
   assert.equal(f.created(), 2); assert.deepEqual(f.container.children, [b, a]);
   assert.equal(f.document.activeElement, b); assert.deepEqual(b.focusOptions, { preventScroll: true });
   assert.equal(f.container.scrollTop, 70);
+});
+
+test('a pressed player cannot move away between press and click when ranks change; values still update', () => {
+  const f = fixture();
+  reconcileKeyedRows(f.container, [{ id: 'a', value: 20 }, { id: 'b', value: 10 }], f.options);
+  const [a, b] = f.container.children; b.pressed = true; f.container.moves = 0;
+  assert.equal(reconcileKeyedRows(f.container, [{ id: 'a', value: 21 }, { id: 'b', value: 11 }], f.options), true);
+  assert.equal(a.value, 21); assert.equal(b.value, 11); assert.equal(f.container.moves, 0);
+  const complete = reconcileKeyedRows(f.container, [{ id: 'b', value: 30 }, { id: 'a', value: 25 }], f.options);
+  assert.deepEqual(f.container.children, [a, b]); assert.equal(f.container.moves, 0);
+  assert.equal(a.value, 25); assert.equal(b.value, 30); assert.equal(complete, false);
+  b.pressed = false;
+  assert.equal(reconcileKeyedRows(f.container, [{ id: 'b', value: 31 }, { id: 'a', value: 25 }], f.options), true);
+  assert.deepEqual(f.container.children, [b, a]); assert.equal(b.value, 31); assert.equal(f.created(), 2);
+  assert.equal(f.container.scrollTop, 70);
+});
+
+test('pressed rows survive a transient replacement until release and only the latest replacement is applied', () => {
+  const f = fixture();
+  reconcileKeyedRows(f.container, [{ id: 'a', value: 20 }], f.options);
+  const a = f.container.children[0]; a.pressed = true;
+  assert.equal(reconcileKeyedRows(f.container, [{ id: 'empty' }], f.options), false);
+  assert.deepEqual(f.container.children, [a]); assert.equal(a.isConnected, true); assert.equal(f.created(), 1);
+  a.pressed = false;
+  assert.equal(reconcileKeyedRows(f.container, [{ id: 'c', value: 40 }], f.options), true);
+  assert.equal(a.isConnected, false); assert.equal(f.created(), 2);
+  assert.deepEqual(f.container.children.map(row => row.dataset.key), ['c']);
 });
 
 test('removed players leave the tree and new players alone create a new row', () => {

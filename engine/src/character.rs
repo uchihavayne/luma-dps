@@ -268,7 +268,16 @@ pub struct PetProgressSnapshot {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PetCollectionOwner {
+    pub actor_id: u64,
+    pub source: String,
+    pub generation: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CharacterSnapshot {
+    #[serde(default)]
+    pub pet_collection_owner: Option<PetCollectionOwner>,
     pub own: Option<CharacterBuild>,
     pub unbound_own: Option<CharacterBuild>,
     pub inspected: Vec<InspectedCharacter>,
@@ -1073,6 +1082,14 @@ pub struct CharacterStore {
     unbound_pets: Option<PetProgressSnapshot>,
 }
 impl CharacterStore {
+    pub fn matches_server_self(&self, actor_id: u64, name: &str) -> bool {
+        self.own.as_ref().is_some_and(|own| {
+            own.source == "server-self"
+                && own.actor_id == Some(actor_id)
+                && !name.is_empty()
+                && own.name == name
+        })
+    }
     pub fn clear(&mut self) {
         *self = Self::default()
     }
@@ -1456,6 +1473,7 @@ impl CharacterStore {
     }
     pub fn snapshot(&self) -> CharacterSnapshot {
         CharacterSnapshot {
+            pet_collection_owner: None,
             own: self.own.clone(),
             unbound_own: self.unbound.clone(),
             inspected: self.inspected.iter().cloned().collect(),
