@@ -1101,7 +1101,7 @@ function renderPetTracking() {
   const host = $('#pet-tracker');
   host.hidden = !prefs.displayModules.pets || !prefs.showPetTracker || !rows.length;
   if (!host.hidden) {
-    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: !petOnlyDisplay(prefs) && $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
+    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: prefs.displayModules.dps && $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
     if (host._content !== html) { const scroll = host.querySelector('.pet-tracker-rows')?.scrollTop || 0; host.innerHTML = html; host._content = html; const list = host.querySelector('.pet-tracker-rows'); if (list) list.scrollTop = scroll; }
   }
   const chip = $('#pet-chip'); chip.hidden = !prefs.displayModules.pets;
