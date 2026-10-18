@@ -2,6 +2,15 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.19.0 preview · 2026-10-18
+
+- Make the main fullscreen control open a responsive dashboard that fills the viewport, with larger measurements, readable participants and an integrated Cube dock. Preserve the small draggable/resizable transparent HUD as a separate layout, its saved size and the normal window geometry. Compact-strip preferences no longer collapse the fullscreen dashboard.
+- Keep fullscreen layout changes authoritative alongside native window state, so a queued theme/opacity save cannot restore a stale HUD mode after a fullscreen shortcut. Retain the required global recovery shortcut, drawer interaction and zero-background-opacity support.
+- Add a same-app pet guide with 207 reference pets, 495 monster/area records and source map links for 155 pets. Include search, genus/status filters, remaining/recent sorting, next/max goals and up to six pinned trackers above the DPS roster. Preserve source attribution; map links open reference pages rather than supplying in-game GPS or live routing.
+- Correct ordinary EU/NA pet progress to use current-tier soul requirements of 5/25/75. Bind absolute lists and increments to confirmed self identity, invalidate stale baselines across gaps and level changes, and keep unsupported values unknown. Show remaining souls only from valid counters and ETA only from a valid observed gain rate; do not infer a future drop rate.
+
+Browser checks confirm a 1920 × 1080 dashboard fills that viewport. Geometry, layout-state and pet-counter regressions cover the implemented cases. Actual AION2 pointer routing, global rescue, monitor/DPI transitions, EU pet baseline/counter integration and real Cube navigation still need live validation. The static reference is not a complete current-client catalog. See [pet sources](docs/pet-sources.md) and [feature coverage](docs/feature-parity.md).
+
 ## 0.18.0 preview · 2026-10-18
 
 - Decode supported canonical variable-length prefixes in own/nearby character snapshots and retain received class suffixes. Read structurally validated member-profile names before or without a party roster, while keeping exact home-server matching, local identity and party membership separate. Missing received names remain explicitly pending; not every anonymous actor is claimed to be resolved.

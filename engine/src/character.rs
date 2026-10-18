@@ -181,6 +181,52 @@ pub struct ObservedPetProgress {
     pub required_progress: Option<u64>,
     pub session_gained: u64,
     pub observed_at_ms: u64,
+    #[serde(default)]
+    pub session_started_at_ms: Option<u64>,
+    /// Already-observed gains at the timing baseline, excluded from a rate.
+    /// A first delta has no measured interval preceding its arrival.
+    #[serde(default)]
+    pub session_baseline_gained: u64,
+    #[serde(default)]
+    pub session_gain_events: u64,
+    #[serde(default)]
+    pub last_gain_at_ms: Option<u64>,
+}
+
+impl ObservedPetProgress {
+    fn observed(pet_id: u32, level: Option<u32>, progress: Option<u64>, now: u64) -> Self {
+        Self {
+            pet_id,
+            level,
+            progress,
+            progress_source: if progress.is_some() {
+                "server-absolute"
+            } else {
+                "unknown"
+            }
+            .into(),
+            required_progress: None,
+            session_gained: 0,
+            observed_at_ms: now,
+            session_started_at_ms: Some(now),
+            session_baseline_gained: 0,
+            session_gain_events: 0,
+            last_gain_at_ms: None,
+        }
+    }
+
+    fn inherit_session(&mut self, previous: &Self) {
+        self.session_gained = previous.session_gained;
+        if let Some(started_at_ms) = previous.session_started_at_ms {
+            self.session_started_at_ms = Some(started_at_ms);
+            self.session_baseline_gained = previous.session_baseline_gained;
+        } else {
+            // A legacy snapshot without timing cannot supply an elapsed rate.
+            self.session_baseline_gained = previous.session_gained;
+        }
+        self.session_gain_events = previous.session_gain_events;
+        self.last_gain_at_ms = previous.last_gain_at_ms;
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -661,15 +707,7 @@ fn pet_inventory_prefix(frame: &[u8]) -> Result<(CharacterEvent, usize), Charact
         {
             return Err(CharacterError::Invalid);
         }
-        pets.push(ObservedPetProgress {
-            pet_id: id,
-            level: Some(level),
-            progress: None,
-            progress_source: "unknown".into(),
-            required_progress: None,
-            session_gained: 0,
-            observed_at_ms: 0,
-        });
+        pets.push(ObservedPetProgress::observed(id, Some(level), None, 0));
     }
     if active != 0 && !ids.contains(&active) {
         return Err(CharacterError::Invalid);
@@ -887,6 +925,13 @@ fn pet_gains(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
 }
 
 fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    if !zeros(frame, 2, 2) {
+        return Err(if frame.len() < 4 {
+            CharacterError::Truncated
+        } else {
+            CharacterError::Invalid
+        });
+    }
     let mut reader = Reader {
         bytes: frame,
         offset: 4,
@@ -898,6 +943,38 @@ fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     }
     reader.end()?;
     Ok(Some(CharacterEvent::PetLevel { pet_id, level }))
+}
+
+fn valid_pet_event(event: &CharacterEvent) -> bool {
+    let valid_id = |id: u32| (1_000..=99_999).contains(&id);
+    match event {
+        CharacterEvent::PetInventory {
+            active_pet_id,
+            pets,
+        } => {
+            if pets.len() > MAX_PETS {
+                return false;
+            }
+            let mut ids = BTreeSet::new();
+            pets.iter().all(|pet| {
+                valid_id(pet.pet_id)
+                    && ids.insert(pet.pet_id)
+                    && pet.level.is_some_and(|level| (1..=3).contains(&level))
+                    && pet
+                        .progress
+                        .is_none_or(|progress| progress <= u64::from(u32::MAX))
+            }) && active_pet_id.is_none_or(|id| ids.contains(&id))
+        }
+        CharacterEvent::PetGains { gains } => {
+            let mut ids = BTreeSet::new();
+            gains.len() <= usize::from(u8::MAX)
+                && gains.iter().all(|(id, gained)| {
+                    valid_id(*id) && (1..1_000).contains(gained) && ids.insert(*id)
+                })
+        }
+        CharacterEvent::PetLevel { pet_id, level } => valid_id(*pet_id) && (1..=3).contains(level),
+        _ => false,
+    }
 }
 
 pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
@@ -1021,16 +1098,20 @@ impl CharacterStore {
         self.own = Some(build);
     }
     pub fn ingest(&mut self, event: CharacterEvent, now: u64) {
-        self.clock(now);
         if matches!(
             event,
             CharacterEvent::PetInventory { .. }
                 | CharacterEvent::PetGains { .. }
                 | CharacterEvent::PetLevel { .. }
         ) {
+            if !valid_pet_event(&event) {
+                return;
+            }
+            self.clock(now);
             self.ingest_pets(event, now);
             return;
         }
+        self.clock(now);
         if let CharacterEvent::Inspection(mut inspected) = event {
             inspected.observed_at_ms = now;
             self.inspected.retain(|old| {
@@ -1138,13 +1219,14 @@ impl CharacterStore {
                 mut pets,
             } => {
                 for pet in &mut pets {
-                    pet.session_gained = state
-                        .pets
-                        .iter()
-                        .find(|old| old.pet_id == pet.pet_id)
-                        .map_or(0, |old| old.session_gained);
-                    pet.observed_at_ms = now;
+                    let mut received =
+                        ObservedPetProgress::observed(pet.pet_id, pet.level, pet.progress, now);
+                    if let Some(previous) = state.pets.iter().find(|old| old.pet_id == pet.pet_id) {
+                        received.inherit_session(previous);
+                    }
+                    *pet = received;
                 }
+                pets.sort_by_key(|pet| pet.pet_id);
                 state.active_pet_id = active_pet_id;
                 state.active_pet_known = true;
                 state.inventory_complete = true;
@@ -1152,38 +1234,43 @@ impl CharacterStore {
             }
             CharacterEvent::PetGains { gains } => {
                 for (id, gained) in gains {
-                    let index = match state.pets.binary_search_by_key(&id, |pet| pet.pet_id) {
-                        Ok(index) => index,
-                        Err(index) => {
-                            if state.pets.len() >= MAX_PETS {
+                    let (index, first_observation) =
+                        match state.pets.binary_search_by_key(&id, |pet| pet.pet_id) {
+                            Ok(index) => (index, false),
+                            Err(index) => {
+                                if state.pets.len() >= MAX_PETS {
+                                    state.inventory_complete = false;
+                                    self.limited = true;
+                                    continue;
+                                }
+                                state.pets.insert(
+                                    index,
+                                    ObservedPetProgress::observed(id, None, None, now),
+                                );
                                 state.inventory_complete = false;
-                                self.limited = true;
-                                continue;
+                                (index, true)
                             }
-                            state.pets.insert(
-                                index,
-                                ObservedPetProgress {
-                                    pet_id: id,
-                                    level: None,
-                                    progress: None,
-                                    progress_source: "unknown".into(),
-                                    required_progress: None,
-                                    session_gained: 0,
-                                    observed_at_ms: now,
-                                },
-                            );
-                            state.inventory_complete = false;
-                            index
-                        }
-                    };
+                        };
                     let pet = &mut state.pets[index];
                     pet.session_gained = pet.session_gained.saturating_add(u64::from(gained));
+                    if first_observation {
+                        pet.session_baseline_gained = pet.session_gained;
+                    }
+                    pet.session_gain_events = pet.session_gain_events.saturating_add(1);
+                    pet.last_gain_at_ms = Some(now);
                     if pet.level == Some(3) {
                         pet.progress = None;
                         pet.progress_source = "unknown".into();
-                    } else if let Some(progress) = &mut pet.progress {
-                        *progress = progress.saturating_add(u64::from(gained));
-                        pet.progress_source = "server-delta".into();
+                    } else if let Some(progress) = pet.progress {
+                        pet.progress = progress
+                            .checked_add(u64::from(gained))
+                            .filter(|value| *value <= u64::from(u32::MAX));
+                        pet.progress_source = if pet.progress.is_some() {
+                            "server-delta"
+                        } else {
+                            "unknown"
+                        }
+                        .into();
                     }
                     pet.observed_at_ms = now;
                 }
@@ -1199,15 +1286,7 @@ impl CharacterStore {
                         }
                         state.pets.insert(
                             index,
-                            ObservedPetProgress {
-                                pet_id,
-                                level: None,
-                                progress: None,
-                                progress_source: "unknown".into(),
-                                required_progress: None,
-                                session_gained: 0,
-                                observed_at_ms: now,
-                            },
+                            ObservedPetProgress::observed(pet_id, None, None, now),
                         );
                         state.inventory_complete = false;
                         index

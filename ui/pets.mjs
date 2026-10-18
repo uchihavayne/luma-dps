@@ -1,0 +1,135 @@
+import { petProgress } from './telemetry.mjs';
+
+const record = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+const list = (value, maximum) => Array.isArray(value) ? value.slice(0, maximum) : [];
+const integer = (value, min = 0, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= min && value <= max ? value : null;
+const text = (value, maximum = 120) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, maximum) : '';
+const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+const searchText = value => String(value).normalize('NFKC').toLocaleLowerCase('en').replace(/\s+/g, ' ').trim();
+export const PET_PIN_LIMIT = 6;
+export const PET_PAGE_SIZE = 24;
+
+export function petReferenceUrl(value) {
+  if (typeof value !== 'string' || value.length > 800) return '';
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !['metabot.gg', 'www.metabot.gg', 'github.com', 'aion2.plaync.com'].includes(url.hostname)) return '';
+    if (url.hostname.endsWith('metabot.gg') && !/^\/en\/aion-2\/(mounts|map)(?:\/|$)/.test(url.pathname)) return '';
+    if (url.hostname === 'github.com' && !url.pathname.startsWith('/MartinLVila/aion2-pet-overlay/')) return '';
+    return url.href;
+  } catch { return ''; }
+}
+
+export function normalizePetPins(value) {
+  return [...new Set(list(value, 100).filter(id => integer(id, 1000, 99999) !== null))].slice(0, PET_PIN_LIMIT);
+}
+
+export function normalizePetCatalog(value) {
+  value = record(value);
+  const seen = new Set(), duplicate = new Set(), pets = [];
+  for (const input of list(value.pets, 2500)) {
+    const row = record(input), id = integer(row.id, 1000, 99999), name = text(row.name);
+    if (id === null || !name || row.id_mapping_verified !== true) continue;
+    if (seen.has(id)) { duplicate.add(id); continue; }
+    seen.add(id);
+    const locations = list(row.locations, 64).map(input => {
+      const location = record(input);
+      return { zone: text(location.zone), area: text(location.area), monster: text(location.monster), monster_level: integer(location.monster_level, 1, 1000), teleport: text(location.teleport), source_url: petReferenceUrl(location.source_url), map_url: petReferenceUrl(location.map_url) };
+    }).filter(location => location.zone || location.area);
+    const bonuses = list(row.bonuses, 30).map(input => {
+      const bonus = record(input);
+      return { stat: text(bonus.stat), level: integer(bonus.level, 1, 3), value: typeof bonus.value === 'number' && Number.isFinite(bonus.value) && Math.abs(bonus.value) <= 1e9 ? bonus.value : null, unit: bonus.unit === 'points' ? '' : bonus.unit === 'percent' ? '%' : text(bonus.unit, 12), verification: text(bonus.verification, 64) };
+    }).filter(bonus => bonus.stat && bonus.level !== null);
+    pets.push({ id, name, genus: text(row.genus, 40), faction: ['elyos', 'asmodian', 'both'].includes(row.faction) ? row.faction : 'unknown', locations, bonuses, source_url: petReferenceUrl(row.source_url), map_url: petReferenceUrl(row.map_url) });
+  }
+  const requirement = record(value.requirements), souls = list(requirement.souls, 3);
+  const verified = value.region === 'EU/NA' && requirement.verified === true && requirement.basis === 'per-level' && souls.length === 3 && souls.every(value => integer(value, 1, 1000000) !== null) && Boolean(petReferenceUrl(requirement.source_url));
+  return { schema_version: 1, region: text(value.region, 20), verified_at: text(value.verified_at, 40), requirements: verified ? { basis: 'per-level', souls, source_url: petReferenceUrl(requirement.source_url) } : null, pets: pets.filter(pet => !duplicate.has(pet.id)) };
+}
+
+export function petCompletion(observed, requirements, { now = Date.now(), goal = 'max' } = {}) {
+  const row = record(observed), level = integer(row.level, 1, 3), progress = integer(row.progress, 0, 0xffffffff);
+  const last = integer(row.observed_at_ms);
+  const validTime = last !== null && last <= now + 250;
+  const base = { level, progress: validTime ? progress : null, status: 'unknown', nextRemaining: null, maxRemaining: null, remaining: null, percent: null, required: null, soulsPerMinute: null, etaMs: null };
+  if (level === 3 && validTime) return { ...base, status: 'complete', nextRemaining: 0, maxRemaining: 0, remaining: 0, percent: 100 };
+  if (!level || !validTime || !requirements || !Array.isArray(requirements.souls) || requirements.souls.length !== 3 || !requirements.souls.every(value => integer(value, 1, 1000000) !== null) || !['server-absolute', 'server-delta'].includes(row.progress_source) || progress === null) return base;
+  const required = requirements.souls[level];
+  if (!Number.isSafeInteger(required)) return base;
+  if (progress >= required) return { ...base, required, status: 'awaiting-level' };
+  const nextRemaining = required - progress;
+  const maxRemaining = requirements.souls.slice(level).reduce((sum, value) => sum + value, 0) - progress;
+  const remaining = goal === 'next' ? nextRemaining : maxRemaining;
+  const start = integer(row.session_started_at_ms), lastGain = integer(row.last_gain_at_ms), gained = integer(row.session_gained), baseline = integer(row.session_baseline_gained), events = integer(row.session_gain_events);
+  const rateKnown = start !== null && lastGain !== null && gained !== null && baseline !== null && gained > baseline && events >= 3 && start <= lastGain && lastGain <= now && now - start >= 30000 && now - lastGain <= 120000;
+  const soulsPerMinute = rateKnown ? (gained - baseline) * 60000 / (now - start) : null;
+  const etaMs = soulsPerMinute > 0 ? remaining * 60000 / soulsPerMinute : null;
+  return { ...base, status: 'progress', nextRemaining, maxRemaining, remaining, percent: progress / required * 100, required, soulsPerMinute, etaMs: Number.isFinite(etaMs) && etaMs <= 7 * 86400000 ? etaMs : null };
+}
+
+export function petPlan(input, catalog, { localPlayerId, now = Date.now(), goal = 'max' } = {}) {
+  const observed = petProgress(input, { localPlayerId });
+  const current = new Map((observed?.pets || []).map(row => [row.pet_id, row]));
+  const known = new Set(catalog.pets.map(row => row.id));
+  const rows = catalog.pets.map(pet => {
+    const live = current.get(pet.id);
+    return { ...pet, observed: Boolean(live), summoned: observed?.active_pet_id === pet.id, sessionGained: live?.session_gained || 0, lastGainAt: live?.last_gain_at_ms !== null && live?.last_gain_at_ms <= now ? live.last_gain_at_ms : null, ...petCompletion(live, pet.genus === 'Special' ? null : catalog.requirements, { now, goal }) };
+  });
+  for (const live of current.values()) if (!known.has(live.pet_id)) rows.push({ id: live.pet_id, name: '', genus: '', faction: 'unknown', locations: [], bonuses: [], source_url: '', map_url: '', observed: true, summoned: observed.active_pet_id === live.pet_id, sessionGained: live.session_gained, lastGainAt: live.last_gain_at_ms !== null && live.last_gain_at_ms <= now ? live.last_gain_at_ms : null, ...petCompletion(live, null, { now, goal }) });
+  return { rows, observed, total: catalog.pets.length, observedCount: current.size, completeCount: rows.filter(row => row.status === 'complete').length };
+}
+
+export function filteredPets(plan, { query = '', faction = 'all', genus = 'all', status = 'all', sort = 'name', page = 0, pins = [] } = {}) {
+  const needle = searchText(query), pinned = new Set(normalizePetPins(pins));
+  const rows = plan.rows.filter(row => (!needle || searchText([row.name, row.genus, row.id, ...row.locations.flatMap(location => [location.zone, location.area, location.monster, location.teleport]), ...row.bonuses.map(bonus => bonus.stat)].join(' ')).includes(needle)) && (faction === 'all' || row.faction === faction || row.faction === 'both') && (genus === 'all' || row.genus === genus) && (status === 'all' || status === 'pinned' ? status !== 'pinned' || pinned.has(row.id) : status === 'observed' ? row.observed : status === 'complete' ? row.status === 'complete' : status === 'incomplete' ? row.status !== 'complete' : true));
+  rows.sort((a, b) => sort === 'remaining' ? (a.remaining ?? Infinity) - (b.remaining ?? Infinity) || a.name.localeCompare(b.name, 'en') : sort === 'recent' ? (b.lastGainAt ?? 0) - (a.lastGainAt ?? 0) || b.sessionGained - a.sessionGained || a.name.localeCompare(b.name, 'en') : a.name.localeCompare(b.name, 'en') || a.id - b.id);
+  const pages = Math.max(1, Math.ceil(rows.length / PET_PAGE_SIZE)), selectedPage = Math.min(pages - 1, Math.max(0, integer(page) ?? 0));
+  return { rows: rows.slice(selectedPage * PET_PAGE_SIZE, (selectedPage + 1) * PET_PAGE_SIZE), total: rows.length, pages, page: selectedPage };
+}
+
+export function trackedPets(plan, pins, { automatic = true, now = Date.now() } = {}) {
+  const selected = normalizePetPins(pins);
+  if (selected.length) return selected.map(id => plan.rows.find(row => row.id === id)).filter(Boolean).map(row => ({ ...row, automatic: false }));
+  if (!automatic) return [];
+  const rows = plan.rows.filter(row => row.observed && row.status !== 'complete');
+  rows.sort((a, b) => Number(b.lastGainAt !== null && b.lastGainAt <= now && now - b.lastGainAt <= 120000) - Number(a.lastGainAt !== null && a.lastGainAt <= now && now - a.lastGainAt <= 120000) || (b.lastGainAt ?? 0) - (a.lastGainAt ?? 0) || Number(b.summoned) - Number(a.summoned) || b.sessionGained - a.sessionGained || a.id - b.id);
+  return rows.slice(0, 1).map(row => ({ ...row, automatic: true }));
+}
+
+export function petMetadataTransition(previous = {}, current = {}, { previousActorId = previous.local_player_id ?? null, currentActorId = current.local_player_id ?? null } = {}) {
+  const identityChanged = previousActorId !== currentActorId;
+  const revisionChanged = previous.character_revision !== current.character_revision;
+  const lost = (previous.diagnostics?.stream_gaps ?? 0) !== (current.diagnostics?.stream_gaps ?? 0) || (previous.capture?.missed_packets ?? 0) !== (current.capture?.missed_packets ?? 0);
+  return { fetch: identityChanged || revisionChanged, clear: identityChanged || lost || previous.character_available === true && current.character_available !== true };
+}
+
+export function petLabels(locale = 'tr') {
+  return locale === 'en' ? {
+    title: 'Pet guide & farming', tracker: 'Pet tracking', search: 'Search pet, zone or stat', all: 'All', elyos: 'Elyos', asmodian: 'Asmodian', both: 'Both factions', unknown: 'Unknown', genus: 'Genus', status: 'Progress', incomplete: 'Not maxed', complete: 'Level 3 complete', observed: 'Received', pinned: 'Pinned', sort: 'Sort', name: 'Name', remaining: 'Souls left', recent: 'Recent gains', apply: 'Search', pin: 'Pin', unpin: 'Unpin', next: 'Next level', max: 'Level 3', goal: 'Tracker goal', automatic: 'Automatically track recent gains', show: 'Show tracker', missing: 'Waiting for a received pet counter', transition: 'Waiting for the level update', location: 'Farming locations', noLocation: 'No verified farming location in this catalog', bonus: 'Reference collection bonuses', noBonus: 'No verified bonus values', map: 'Open source map', source: 'Data source', reference: 'Catalog reference', partial: 'Pet login data is incomplete. Only received counters are used for souls left.', baseline: 'Log in with Luma open to receive pet counters. Future gains and level changes update automatically.', limit: 'Up to 6 pinned pets', estimated: 'Estimated', notObserved: 'Counter not received', summoned: 'Summoned', collapse: 'Collapse pet tracker', expand: 'Expand pet tracker', guide: 'Pet guide', nextPage: 'Next', previous: 'Previous', noResults: 'No pets match these filters.', raw: 'Received counter', session: 'This session', catalog: 'Catalog pets', registered: 'Received pets', unlock: 'Registration', inferredBonus: 'Reference bonus; not a live stat reading', missingName: 'Pet name unavailable', perMinute: 'souls/min', approximate: 'Varies with farming pace', details: 'Locations & bonuses',
+  } : {
+    title: 'Pet rehberi ve kasma', tracker: 'Pet takibi', search: 'Pet, bölge veya özellik ara', all: 'Tümü', elyos: 'Elyos', asmodian: 'Asmodian', both: 'İki taraf', unknown: 'Bilinmiyor', genus: 'Tür', status: 'İlerleme', incomplete: 'Maksimum olmayan', complete: 'Seviye 3 tamam', observed: 'Verisi alınan', pinned: 'Sabitlenen', sort: 'Sıralama', name: 'Ad', remaining: 'Kalan ruh', recent: 'Son kazanımlar', apply: 'Ara', pin: 'Sabitle', unpin: 'Sabitlemeyi kaldır', next: 'Sonraki seviye', max: 'Seviye 3', goal: 'Takip hedefi', automatic: 'Son ruh kazanılan peti otomatik takip et', show: 'Takibi göster', missing: 'Oyundan pet sayacı bekleniyor', transition: 'Seviye güncellemesi bekleniyor', location: 'Kasma bölgeleri', noLocation: 'Katalogda doğrulanmış kasma konumu yok', bonus: 'Rehberdeki koleksiyon bonusları', noBonus: 'Doğrulanmış bonus değeri yok', map: 'Kaynak haritada aç', source: 'Veri kaynağı', reference: 'Katalog bilgisi', partial: 'Pet giriş verisi tam değil. Kalan ruh yalnız alınan sayaçlardan hesaplanır.', baseline: 'Pet sayaçları için Luma açıkken karakterine giriş yap. Sonraki kazanımlar ve seviye değişimleri otomatik güncellenir.', limit: 'En fazla 6 pet sabitlenebilir', estimated: 'Tahmini', notObserved: 'Sayaç alınmadı', summoned: 'Çağrılan', collapse: 'Pet takibini daralt', expand: 'Pet takibini genişlet', guide: 'Pet rehberi', nextPage: 'Sonraki', previous: 'Önceki', noResults: 'Filtrelere uyan pet yok.', raw: 'Alınan sayaç', session: 'Bu oturumda', catalog: 'Katalogdaki pet', registered: 'Verisi alınan pet', unlock: 'Kaydetme', inferredBonus: 'Rehber bonusu; canlı özellik ölçümü değil', missingName: 'Pet adı bulunamadı', perMinute: 'ruh/dk', approximate: 'Kasma hızına göre değişir', details: 'Konumlar ve bonuslar',
+  };
+}
+
+const petName = (row, labels) => row.name || `${labels.missingName} · ${row.id}`;
+const number = (value, locale) => value.toLocaleString(locale === 'en' ? 'en' : 'tr', { maximumFractionDigits: 1 });
+const eta = (value, labels, locale) => value === null ? '' : `${labels.estimated} ${Math.max(1, Math.ceil(value / 60000)) < 60 ? `${Math.max(1, Math.ceil(value / 60000))} ${locale === 'en' ? 'min' : 'dk'}` : `${number(value / 3600000, locale)} ${locale === 'en' ? 'hr' : 'sa'}`}`;
+const remainingText = (row, labels, locale) => row.status === 'complete' ? labels.complete : row.status === 'awaiting-level' ? labels.transition : row.remaining === null ? labels.notObserved : `${number(row.remaining, locale)} ${locale === 'en' ? 'souls left' : 'ruh kaldı'}`;
+const progressBar = row => `<div class="pet-progress-track"${row.percent === null ? '' : ` role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${row.percent.toFixed(1)}"`}><i style="width:${row.percent ?? 0}%"></i></div>`;
+const sourceButton = (url, label) => url ? `<a class="action-button secondary" href="${escape(url)}" target="_blank" rel="noopener noreferrer" data-pet-reference>${escape(label)} ↗</a>` : '';
+
+export function renderPetTracker(rows, { locale = 'tr', collapsed = false, compact = false } = {}) {
+  const labels = petLabels(locale);
+  if (compact && rows.length) return `<div class="pet-tracker-heading pet-tracker-mini"><button type="button" data-pet-action="guide" title="${escape(rows.map(row => `${petName(row, labels)} · ${remainingText(row, labels, locale)}`).join('\n'))}">${escape(petName(rows[0], labels))} · ${escape(remainingText(rows[0], labels, locale))}${rows.length > 1 ? ` · +${rows.length - 1}` : ''}</button></div>`;
+  return `<div class="pet-tracker-heading"><button type="button" data-pet-action="guide">${labels.tracker}${rows.length ? ` · ${rows.length}` : ''}</button><button type="button" data-pet-action="collapse" aria-expanded="${!collapsed}" aria-label="${collapsed ? labels.expand : labels.collapse}">${collapsed ? '⌄' : '⌃'}</button></div><div class="pet-tracker-rows" ${collapsed ? 'hidden' : ''}>${rows.map(row => `<article class="pet-tracker-row${row.status === 'complete' ? ' is-complete' : ''}"><button type="button" class="pet-tracker-open" data-pet-action="open" data-id="${row.id}"><span><strong>${escape(petName(row, labels))}</strong><small>${row.automatic ? 'AUTO · ' : ''}${row.level === null ? '—' : `Lv.${row.level}`} · ${escape(remainingText(row, labels, locale))}</small></span><span class="pet-tracker-eta">${escape(eta(row.etaMs, labels, locale))}</span>${progressBar(row)}</button>${row.automatic ? '' : `<button class="pet-unpin" type="button" data-pet-action="unpin" data-id="${row.id}" aria-label="${labels.unpin} · ${escape(petName(row, labels))}" title="${labels.unpin}">×</button>`}</article>`).join('')}</div>`;
+}
+
+export function renderPetGuide(plan, catalog, { locale = 'tr', filters = {}, pins = [], goal = 'max', show = true, automatic = true, selectedId = null } = {}) {
+  const labels = petLabels(locale), selection = filteredPets(plan, { ...filters, pins });
+  const selected = plan.rows.find(row => row.id === selectedId);
+  const rows = selected && !selection.rows.some(row => row.id === selectedId) ? [selected, ...selection.rows] : selection.rows;
+  const hasFaction = catalog.pets.some(row => row.faction !== 'unknown');
+  const pinned = new Set(normalizePetPins(pins)), genera = [...new Set(catalog.pets.map(row => row.genus).filter(Boolean))].sort();
+  const options = (values, selected) => values.map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? 'selected' : ''}>${escape(label)}</option>`).join('');
+  return `<section class="pet-guide"><div class="pet-overview"><span><strong>${catalog.pets.length}</strong>${labels.catalog}</span><span><strong>${plan.observedCount}</strong>${labels.registered}</span><span><strong>${plan.completeCount}</strong>Lv.3</span></div><p class="help">${labels.baseline}</p>${plan.observed && !plan.observed.inventory_complete ? `<p class="quality-warning">${labels.partial}</p>` : ''}<form id="pet-filter-form"><label class="field"><span>${labels.search}</span><input type="search" name="petQuery" value="${escape(filters.query || '')}" maxlength="120" autocomplete="off"></label><div class="field-grid"><label class="field" ${hasFaction ? '' : 'hidden'}><span>${locale === 'en' ? 'Faction' : 'Taraf'}</span><select name="petFaction">${options([['all', labels.all], ['elyos', labels.elyos], ['asmodian', labels.asmodian]], filters.faction || 'all')}</select></label><label class="field"><span>${labels.genus}</span><select name="petGenus">${options([['all', labels.all], ...genera.map(value => [value, value])], filters.genus || 'all')}</select></label><label class="field"><span>${labels.status}</span><select name="petStatus">${options(['all', 'incomplete', 'observed', 'pinned', 'complete'].map(value => [value, labels[value]]), filters.status || 'all')}</select></label><label class="field"><span>${labels.sort}</span><select name="petSort">${options(['name', 'remaining', 'recent'].map(value => [value, labels[value]]), filters.sort || 'name')}</select></label></div><button class="action-button" type="submit">${labels.apply}</button></form><div class="pet-tracker-settings"><label class="field"><span>${labels.goal}</span><select name="petGoal">${options([['max', labels.max], ['next', labels.next]], goal)}</select></label><label class="check-field"><input type="checkbox" name="showPetTracker" ${show ? 'checked' : ''}>${labels.show}</label><label class="check-field"><input type="checkbox" name="petAutoTrack" ${automatic ? 'checked' : ''}>${labels.automatic}</label><p class="help">${labels.limit}. ${catalog.requirements ? `${labels.unlock}: ${catalog.requirements.souls[0]} · Lv.2: +${catalog.requirements.souls[1]} · Lv.3: +${catalog.requirements.souls[2]}` : ''}</p></div><div class="pet-results-heading"><strong>${selection.total} ${locale === 'en' ? 'results' : 'sonuç'}</strong><span>${selection.page + 1} / ${selection.pages}</span></div><div class="pet-guide-grid">${rows.length ? rows.map(row => `<article class="pet-guide-card${pinned.has(row.id) ? ' is-pinned' : ''}"><div class="record-top"><div><strong>${escape(petName(row, labels))}</strong><small>${escape([row.genus, row.faction === 'unknown' ? '' : labels[row.faction] || row.faction, row.level === null ? '' : `Lv.${row.level}`, row.summoned ? labels.summoned : ''].filter(Boolean).join(' · '))}</small></div><button type="button" class="pet-pin" data-action="pet-pin" data-id="${row.id}" aria-pressed="${pinned.has(row.id)}" aria-label="${pinned.has(row.id) ? labels.unpin : labels.pin} · ${escape(petName(row, labels))}" ${!pinned.has(row.id) && pinned.size >= PET_PIN_LIMIT ? 'disabled' : ''}>${pinned.has(row.id) ? '◆' : '◇'} ${pinned.has(row.id) ? labels.pinned : labels.pin}</button></div><strong class="pet-remaining">${escape(remainingText(row, labels, locale))}</strong>${progressBar(row)}<div class="pet-counter-detail">${row.progress !== null ? `${labels.raw}: ${number(row.progress, locale)}${row.required ? ` / ${number(row.required, locale)}` : ''}` : labels.missing}${row.sessionGained ? ` · ${labels.session} +${number(row.sessionGained, locale)}` : ''}${row.nextRemaining !== null && row.status !== 'complete' ? `<br>${labels.next}: ${number(row.nextRemaining, locale)} · ${labels.max}: ${number(row.maxRemaining, locale)}` : ''}${row.etaMs !== null ? `<br>${escape(eta(row.etaMs, labels, locale))} · ${number(row.soulsPerMinute, locale)} ${labels.perMinute} · ${labels.approximate}` : ''}</div><details data-state-key="pet-${row.id}" ${row.id === selectedId ? 'open' : ''}><summary>${labels.details}</summary><h4>${labels.location}</h4>${row.locations.length ? `<ul class="pet-locations">${row.locations.map(location => `<li><span class="pet-location-pin" aria-hidden="true">⌖</span><span><strong>${escape(location.zone)}</strong>${location.area ? `<small>${escape(location.area)}</small>` : ''}${location.monster ? `<small>${escape(location.monster)}${location.monster_level ? ` · Lv.${location.monster_level}` : ''}</small>` : ''}${sourceButton(location.map_url, labels.map)}${location.teleport ? `<small>${locale === 'en' ? 'Teleport' : 'Işınlanma'}: ${escape(location.teleport)}</small>` : ''}</span></li>`).join('')}</ul>` : `<p class="help">${labels.noLocation}</p>`}<h4>${labels.bonus}</h4>${row.bonuses.length ? `<ul class="pet-bonuses">${row.bonuses.map(bonus => `<li><span>${escape(bonus.stat)}</span><strong>${bonus.value === null ? '—' : `${bonus.value > 0 ? '+' : ''}${number(bonus.value, locale)}${escape(bonus.unit)}`}</strong>${bonus.level ? `<small>Lv.${bonus.level}</small>` : ''}</li>`).join('')}</ul><p class="help">${labels.inferredBonus}</p>` : `<p class="help">${labels.noBonus}</p>`}<div class="button-row">${sourceButton(row.map_url, labels.map)}</div></details><div class="pet-source-credit">${sourceButton(row.source_url, 'MetaBot.GG · ' + labels.source)}</div></article>`).join('') : `<p class="status-card">${labels.noResults}</p>`}</div><div class="button-row pet-pagination"><button class="action-button secondary" data-action="pet-guide-previous" ${selection.page === 0 ? 'disabled' : ''}>${labels.previous}</button><span>${selection.page + 1} / ${selection.pages}</span><button class="action-button secondary" data-action="pet-guide-next" ${selection.page >= selection.pages - 1 ? 'disabled' : ''}>${labels.nextPage}</button></div></section>`;
+}

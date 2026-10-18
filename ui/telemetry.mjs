@@ -40,6 +40,8 @@ export function petProgress(value, { localPlayerId } = {}) {
     pets.push({ pet_id: pet, level: integer(row.level, 1, 3), progress,
       progress_source: progress === null ? 'unknown' : row.progress_source,
       required_progress: null, session_gained: integer(row.session_gained) ?? 0,
+      session_started_at_ms: integer(row.session_started_at_ms), session_baseline_gained: integer(row.session_baseline_gained) ?? 0,
+      session_gain_events: integer(row.session_gain_events) ?? 0, last_gain_at_ms: integer(row.last_gain_at_ms),
       observed_at_ms: integer(row.observed_at_ms) });
   }
   const active = integer(value.active_pet_id, 1000, 99999);

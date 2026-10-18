@@ -22,9 +22,11 @@ import { renderCombatInsights, renderEffectAttribution, renderBossProjection } f
 import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
-import { overlayRect, overlayGesture } from './overlay.mjs';
+import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
 import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
+import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
+import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -51,7 +53,8 @@ let trainingDuration = 60000, trainingDurationDraft = '60', trainingTargetId = '
 let historyClearPending = false;
 let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
-let petPage = 0;
+const petCatalog = normalizePetCatalog(PET_CATALOG);
+let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
@@ -87,6 +90,12 @@ if (telemetryDemo) {
   });
 }
 if (targetDemo) state = normalizeState(targetDemoState(state));
+if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1') {
+  const at = Date.now();
+  characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1002, active_pet_known: true, inventory_complete: true,
+    pets: [{ pet_id: 1002, level: 1, progress: 12, progress_source: 'server-delta', session_gained: 12, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 6, last_gain_at_ms: at - 1000, observed_at_ms: at }, { pet_id: 1003, level: 2, progress: 40, progress_source: 'server-absolute', session_gained: 4, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 4, last_gain_at_ms: at - 2000, observed_at_ms: at }, { pet_id: 1004, level: 3, progress: null, session_gained: 0, observed_at_ms: at }] } });
+  prefs = normalizePreferences({ ...prefs, petPins: [1002, 1003] });
+}
 if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '1') {
   const at = Date.now();
   roomIntent = true; teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
@@ -110,6 +119,7 @@ Object.assign(words.tr, { team: 'Takım', autoOdyle: 'Otomatik Odyle', odyleWait
 Object.assign(words.en, { team: 'Team', autoOdyle: 'Automatic Odyle', odyleWaiting: 'Waiting for Odyle data. Logging into a character with Luma open captures the initial energy list.', odyleRegular: 'Regular energy', odyleBonus: 'Bonus energy', odyleTotal: 'Available total', odyleCapacity: 'Regular energy capacity is derived from membership state; bonus energy is separate.', observedTime: 'Last observed', counterLearning: 'Counter received · learning time unit', estimatedCooldown: 'Estimated', ownCooldownHelp: 'Server counters for your own character. Time is learned from consistent samples and marked ~. Only a newly received zero confirms readiness.' });
 Object.assign(words.tr, { petProgress: 'Pet ilerlemesi', petHelp: 'Karakterine ait alınan pet seviyesi, ilerleme ve bu oturumdaki kazanımlar. Bilinmeyen adlar kimlikleriyle görünür; gerekli ruh sayısı tahmin edilmez.', noPetProgress: 'Pet verisi henüz alınmadı. Luma açıkken karakterine giriş yaptığında veya pet ilerlemesi geldiğinde görünür.', petActive: 'Çağrılan', petGained: 'Bu oturumda alınan', petAbsolute: 'Alınan ilerleme', petUnknown: 'İlerleme alınmadı', petPrevious: 'Önceki', petNext: 'Sonraki', petPartial: 'Yalnızca alınan pet kayıtları gösteriliyor; tam envanter değil.', stagger: 'Boss dengesi', noStagger: 'Güncel denge verisi alınmadı.', staggerHelp: 'Sunucudan alınan denge çubuğu ve kırılma durumu. Yeni veri gelmezse 5 saniye sonra gösterge kaldırılır; kırılma süresi tahmin edilmez.', eventStagger: 'Denge kırıldı' });
 Object.assign(words.en, { petProgress: 'Pet progress', petHelp: 'Received pet levels, progress and gains from this session for your character. Unknown names use IDs; required soul counts are not guessed.', noPetProgress: 'No pet data received yet. It appears after login with Luma open or when pet progress arrives.', petActive: 'Summoned', petGained: 'Received this session', petAbsolute: 'Observed progress', petUnknown: 'Progress unavailable', petPrevious: 'Previous', petNext: 'Next', petPartial: 'Only observed pet records are shown, not a complete inventory.', stagger: 'Boss stagger', noStagger: 'No fresh stagger observation.', staggerHelp: 'Server-reported stagger bar and break state. The display clears after 5 seconds without new data; no break duration is predicted.', eventStagger: 'Stagger broken' });
+Object.assign(words.tr, { pets: 'Pet rehberi' }); Object.assign(words.en, { pets: 'Pet guide' });
 Object.assign(words.tr, { community: communityLabels.tr.community, copyEncounterText: 'Karşılaşma metnini kopyala' });
 Object.assign(words.en, { community: communityLabels.en.community, copyEncounterText: 'Copy encounter text' });
 Object.assign(words.tr, { hiddenCube: 'Hidden Cube', cubeTitle: 'Hidden Cube ses bulucu', cubeIntro: 'Oyunun çıkış sesindeki Küp örneğini yerel olarak eşleştirir. AION2 sesi arka planda otomatik dinlenir. Eşleşince pusula DPS listesinin yanında belirir; mikrofon kullanılmaz ve canlı ses kaydedilmez.', cubeStart: 'Dinlemeyi başlat', cubeStop: 'Dinlemeyi durdur', cubeBusy: 'Hazırlanıyor…', cubeSource: 'Dinlenecek ses', cubeGame: 'Yalnızca AION2', cubeSystem: 'Bu cihazın ses çıkışı', cubeGameHelp: 'AION2 sesini diğer uygulamalardan ayırır. Oyun açıldığında dinleme başlar. Kulaklık veya stereo çıkış ile sol/sağ gösterilebilir.', cubeSystemHelp: 'Sistem çıkışı seçildi: diğer uygulamalar ve Luma uyarıları da duyulur. Desteklenmeyen oyun ses yakalamasında bu seçeneği kendin kullanabilirsin.', cubeThreshold: 'Eşleşme eşiği', cubeThresholdHelp: 'Düşük eşik sessiz örnekleri daha kolay kabul eder, yanlış eşleşmeleri de artırabilir. Yüksek eşik daha seçicidir. Dinlemeyi durdurup değiştir.', cubeIndicator: 'Küçük barda Küp göstergesini göster', cubeSimilarity: 'Ses benzerliği', cubeSimilarityHelp: 'Yüzde, örnekle benzerlik puanıdır; kesinlik veya olasılık değildir.', cubeDirection: 'Stereo yön', cubeStrength: 'Eşleşen sinyal', cubeTrend: 'Sinyal değişimi', cubeLimit: 'Ses üzerinden kesin metre, harita konumu ve ön/arka hesaplanamaz. Stereo sol/sağ ve sinyal değişimi gösterilir; kamerayı döndürerek yönü karşılaştır.', cubeRelative: 'Sinyal güçlenmesi yalnızca göreli bir ipucudur. Oyun ses seviyesi, çevre sesleri ve kameranın yönü de değeri değiştirir.', cubeReference: 'Ses örneği', cubeBuiltin: 'Yerleşik Hidden Cube örneği', cubeImport: 'Kendi ses örneğini seç', cubeImportHelp: 'M4A veya WAV · en çok 8 MB ve 30 saniye. Örnek bu cihazda saklanır; internete gönderilmez. İçeriği yalnızca Küp sesi olan temiz bir kayıt kullan.', cubeReset: 'Yerleşik örneğe dön', cubeImported: 'Küp ses örneği kaydedildi', cubeImportInvalid: 'Ses örneği okunamadı. Desteklenen, en çok 8 MB bir ses dosyası seç.', cubePreview: 'Tarayıcı örneği · Canlı ses dinlenmiyor.', cubeAudioFormat: 'Ses biçimi', cubeUnknownFormat: 'Ses çıkışı bekleniyor', cubeNoDirection: 'Sol/sağ için stereo ses gerekir.', cubeReadFailed: 'Ses bulucunun durumu okunamadı', cubeActiveControls: 'Ses kaynağını veya örneği değiştirmek için önce dinlemeyi durdur.' });
@@ -246,17 +256,21 @@ function applyAppearance() {
   $('#meter').dataset.density = prefs.density;
   $('#meter').dataset.rowMetric = prefs.rowMetric;
   $('#meter').dataset.summaryMetric = prefs.summaryMetric;
-  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && !drawer);
+  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && !drawer && !isFullscreenDashboard(prefs));
+  $('#compact-button').disabled = isFullscreenDashboard(prefs);
   $('#meter').dataset.showClass = String(prefs.showClass);
-  $('#drag-region').style.cursor = prefs.locked ? 'default' : 'grab';
+  $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
 }
 
 function syncOverlayGeometry() {
-  if (document.body.classList.contains('fullscreen-overlay') !== prefs.fullscreenOverlay) { overlayRegionFingerprint = ''; overlayRegionFailures = 0; }
+  const dashboard = isFullscreenDashboard(prefs);
+  if (document.body.classList.contains('fullscreen-overlay') !== prefs.fullscreenOverlay || document.body.classList.contains('fullscreen-dashboard') !== dashboard) { overlayRegionFingerprint = ''; overlayRegionFailures = 0; }
   if (!prefs.fullscreenOverlay) overlayRegionFingerprint = '';
-  if (!prefs.fullscreenOverlay && hudGesture) { try { hudGesture.target.releasePointerCapture(hudGesture.pointerId); } catch {} hudGesture = null; }
+  if ((!prefs.fullscreenOverlay || dashboard) && hudGesture) { try { hudGesture.target.releasePointerCapture(hudGesture.pointerId); } catch {} hudGesture = null; }
   document.body.classList.toggle('fullscreen-overlay', prefs.fullscreenOverlay);
+  document.body.classList.toggle('fullscreen-dashboard', dashboard);
+  document.body.classList.toggle('fullscreen-hud', prefs.fullscreenOverlay && !dashboard);
   if (prefs.fullscreenOverlay) {
     const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) });
     for (const [key, value] of Object.entries(rect)) document.documentElement.style.setProperty(`--hud-${key}`, `${value}px`);
@@ -283,23 +297,23 @@ function scheduleOverlayRegions() {
   });
 }
 
-async function toggleFullscreenOverlay(enabled = !prefs.fullscreenOverlay) {
+async function toggleFullscreenOverlay(enabled = !prefs.fullscreenOverlay, layout = enabled ? 'dashboard' : fullscreenLayout(prefs)) {
   if (fullscreenPending) return;
   fullscreenPending = true;
   try {
     if (native) await preferenceCommitter.run(async () => {
-      const confirmed = normalizePreferences(await invoke('set_fullscreen_overlay', { enabled }));
-      prefs = normalizePreferences({ ...prefs, fullscreenOverlay: confirmed.fullscreenOverlay });
+      const confirmed = normalizePreferences(await invoke('set_fullscreen_overlay', { enabled, layout }));
+      prefs = normalizePreferences({ ...prefs, fullscreenOverlay: confirmed.fullscreenOverlay, fullscreenLayout: confirmed.fullscreenLayout });
       preferenceCommitter.confirm(prefs); storeLocalPreferences(prefs);
       overlayRegionFailures = 0; overlayRegionFingerprint = ''; applyAppearance(); renderMeter();
     });
-    else savePreferences({ fullscreenOverlay: enabled });
+    else savePreferences({ fullscreenOverlay: enabled, fullscreenLayout: layout });
   } catch (error) { toast(String(error).slice(0, 200), true); }
   finally { fullscreenPending = false; if (drawer === 'settings') refreshDrawer('fullscreenOverlay'); }
 }
 
 function startHudGesture(event, resize = false) {
-  if (!prefs.fullscreenOverlay || event.button !== 0 || event.isPrimary === false || prefs.locked && !drawer) return false;
+  if (!prefs.fullscreenOverlay || isFullscreenDashboard(prefs) || event.button !== 0 || event.isPrimary === false || prefs.locked && !drawer) return false;
   event.preventDefault();
   const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) });
   hudGesture = { pointerId: event.pointerId, pointerX: event.clientX, pointerY: event.clientY, rect, preferences: { ...prefs }, resize, target: event.currentTarget, patch: {} };
@@ -330,17 +344,17 @@ const protectCubeIntent = value => cubeAutoListenIntent === null ? value : { ...
 const preferenceCommitter = native ? createPreferenceCommitter(prefs, {
   write: value => invoke('set_preferences', { preferences: protectCubeIntent(value) }),
   onConfirmed: value => {
-    const owned = Object.fromEntries(['fullscreenOverlay', 'locked'].filter(key => typeof value[key] === 'boolean').map(key => [key, value[key]]));
+    const owned = { ...Object.fromEntries(['fullscreenOverlay', 'locked'].filter(key => typeof value[key] === 'boolean').map(key => [key, value[key]])), fullscreenLayout: fullscreenLayout(value) };
     if (Object.entries(owned).some(([key, flag]) => prefs[key] !== flag)) {
       prefs = normalizePreferences({ ...prefs, ...owned }); applyAppearance(); renderMeter();
       if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(document.activeElement?.name);
     }
-    storeLocalPreferences(protectCubeIntent({ ...value, fullscreenOverlay: prefs.fullscreenOverlay, locked: prefs.locked }));
+    storeLocalPreferences(protectCubeIntent({ ...value, fullscreenOverlay: prefs.fullscreenOverlay, fullscreenLayout: prefs.fullscreenLayout, locked: prefs.locked }));
   },
   onRejected: (error, rollback) => {
     if (rollback) {
       const focusName = document.activeElement?.name;
-      prefs = normalizePreferences(protectCubeIntent({ ...rollback, fullscreenOverlay: prefs.fullscreenOverlay, locked: prefs.locked })); applyAppearance(); renderMeter();
+      prefs = normalizePreferences(protectCubeIntent({ ...rollback, fullscreenOverlay: prefs.fullscreenOverlay, fullscreenLayout: prefs.fullscreenLayout, locked: prefs.locked })); applyAppearance(); renderMeter();
       if (drawer) refreshDrawer(focusName);
     }
     toast(`${t('failed')}: ${String(error).slice(0, 100)}`, true);
@@ -357,7 +371,7 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
-  $('#fullscreen-button').title = prefs.locale === 'tr' ? (prefs.fullscreenOverlay ? 'Pencere görünümüne dön' : 'Saydam tam ekran') : (prefs.fullscreenOverlay ? 'Return to window' : 'Transparent fullscreen'); $('#fullscreen-button').setAttribute('aria-label', $('#fullscreen-button').title); $('#fullscreen-button').setAttribute('aria-pressed', String(prefs.fullscreenOverlay));
+  $('#fullscreen-button').title = prefs.locale === 'tr' ? (prefs.fullscreenOverlay ? 'Pencere görünümüne dön' : 'Tam ekran paneli') : (prefs.fullscreenOverlay ? 'Return to window' : 'Fullscreen dashboard'); $('#fullscreen-button').setAttribute('aria-label', $('#fullscreen-button').title); $('#fullscreen-button').setAttribute('aria-pressed', String(prefs.fullscreenOverlay));
   $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
   $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
@@ -457,7 +471,7 @@ function renderMeter() {
   $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : t('chooseCharacter');
   if (board) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
   for (const selector of ['#dps-value', '#damage-value']) $(selector).parentElement.style.setProperty('--metric-length', Math.max(4, $(selector).textContent.length));
-  $('#mode-caption').textContent = t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
+  $('#mode-caption').textContent = board ? (prefs.locale === 'tr' ? 'Seçili hedef' : 'Selected target') : t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
   $('#boss-summary').hidden = Boolean(board) || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
   const notice = $('#notice'); notice.hidden = false;
   for (const tone of ['demo', 'error', 'warning']) notice.classList.toggle(tone, status.tone === tone);
@@ -598,8 +612,8 @@ function combatSettingsContent() {
 
 function controlsContent() {
   const tr = prefs.locale === 'tr';
-  const options = [['fullscreenOverlay', tr ? 'Saydam tam ekran: yalnızca panel görünür' : 'Transparent fullscreen: only the HUD is visible'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Tek satır kompakt görünüm' : 'One-line compact view']];
-  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Tam ekranda panelin dışı oyuna tıklanır. Başlıktan sürükle; köşeden boyutlandır. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'Clicks outside the fullscreen HUD reach the game. Drag its header and resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
+  const options = [['fullscreenOverlay', tr ? 'Tam ekran görünümünü aç' : 'Enable fullscreen view'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Pencere ve HUD için tek satır kompakt görünüm' : 'One-line compact view for the window and HUD']];
+  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Üstteki tam ekran düğmesi ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The toolbar fullscreen button opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
 }
 
 async function readRuntimeState() {
@@ -1000,22 +1014,66 @@ function renderCombatWarning() {
 }
 
 async function readCharacterData() {
-  if (characterPending || !native || snapshot) return;
+  if (characterPending || !native) return;
   const epoch = metadataEpoch(state, 'character');
   characterPending = true;
-  try { const result = characterSnapshot(await action('get_character_state')); if (epoch === metadataEpoch(state, 'character')) characterData = result; }
-  catch {}
-  finally { characterPending = false; if (drawer === 'analysis' && tab === 'build') { refreshDrawer(); if (epoch !== metadataEpoch(state, 'character')) readCharacterData(); } }
+  try { const result = characterSnapshot(await invoke('get_character_state')); if (epoch === metadataEpoch(state, 'character')) characterData = result; }
+  catch { if (epoch === metadataEpoch(state, 'character')) characterData = characterSnapshot({ ...characterData, pet_progress: null }); }
+  finally {
+    characterPending = false; renderPetTracking();
+    if (drawer === 'analysis' && tab === 'pets') refreshPetsDrawer();
+    else if (drawer === 'analysis' && tab === 'build') refreshDrawer();
+    if (epoch !== metadataEpoch(state, 'character')) readCharacterData();
+  }
+}
+
+function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal }); }
+
+function petsContent() {
+  const plan = currentPetPlan();
+  petFilters.page = filteredPets(plan, { ...petFilters, pins: prefs.petPins }).page;
+  return `${demo ? source(t('sourceDemo')) : ''}${renderPetGuide(plan, petCatalog, { locale: prefs.locale, filters: petFilters, pins: prefs.petPins, goal: prefs.petGoal, show: prefs.showPetTracker, automatic: prefs.petAutoTrack, selectedId: petSelectedId })}<details class="pet-data-notice"><summary>${prefs.locale === 'tr' ? 'Pet verileri ve lisans bildirimi' : 'Pet data and license notice'}</summary><p>MetaBot.GG · ${esc(petCatalog.verified_at)} · ${esc(PET_CATALOG.source_client_build)}</p><pre>${esc(PET_DATA_NOTICE)}</pre></details>`;
+}
+
+function refreshPetsDrawer() {
+  if (drawer !== 'analysis' || tab !== 'pets') return;
+  const active = document.activeElement, host = $('#drawer-content');
+  const name = host.contains(active) ? active.name : '', start = active?.selectionStart, end = active?.selectionEnd, scroll = host.scrollTop;
+  refreshDrawer(name);
+  if (name && Number.isInteger(start)) { try { host.querySelector(`[name="${name}"]`)?.setSelectionRange(start, end); } catch {} }
+  host.scrollTop = scroll;
+}
+
+function renderPetTracking() {
+  const plan = currentPetPlan(), rows = trackedPets(plan, prefs.petPins, { automatic: prefs.petAutoTrack });
+  const host = $('#pet-tracker');
+  host.hidden = !prefs.showPetTracker || !rows.length;
+  if (!host.hidden) {
+    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
+    if (host._content !== html) { const scroll = host.querySelector('.pet-tracker-rows')?.scrollTop || 0; host.innerHTML = html; host._content = html; const list = host.querySelector('.pet-tracker-rows'); if (list) list.scrollTop = scroll; }
+  }
+  const chip = $('#pet-chip'); chip.hidden = false;
+  setText(chip, `${t('pets')}${prefs.petPins.length ? ` · ${prefs.petPins.length}` : ''}`);
+  chip.title = petLabels(prefs.locale).title;
+}
+
+function openPetGuide(id = null) {
+  petSelectedId = Number.isSafeInteger(id) ? id : null;
+  openDrawer('analysis', 'pets');
+}
+
+function togglePetPin(id) {
+  if (!Number.isSafeInteger(id) || !currentPetPlan().rows.some(row => row.id === id)) return;
+  const restorePin = document.activeElement?.dataset.action === 'pet-pin';
+  if (prefs.petPins.includes(id)) savePreferences({ petPins: prefs.petPins.filter(value => value !== id) });
+  else if (prefs.petPins.length < PET_PIN_LIMIT) savePreferences({ petPins: [...prefs.petPins, id], showPetTracker: true });
+  else toast(petLabels(prefs.locale).limit);
+  if (drawer === 'analysis' && tab === 'pets') { refreshPetsDrawer(); if (restorePin) $(`#drawer-content [data-action="pet-pin"][data-id="${id}"]`)?.focus({ preventScroll: true }); }
 }
 
 function petProgressContent(input) {
-  const observed = petProgress(input, { localPlayerId: state.local_player_id });
-  const heading = `<h3 class="section-title">${t('petProgress')} ${source(demo ? t('sourceDemo') : t('serverObserved'))}</h3><p class="help">${t('petHelp')}</p>`;
-  if (!observed || !observed.pets.length) return heading + `<p class="status-card">${t('noPetProgress')}</p>`;
-  const ordered = [...observed.pets].sort((a, b) => Number(b.pet_id === observed.active_pet_id) - Number(a.pet_id === observed.active_pet_id) || b.session_gained - a.session_gained || a.pet_id - b.pet_id);
-  const pageCount = Math.ceil(ordered.length / 32); petPage = Math.min(petPage, pageCount - 1);
-  const rows = ordered.slice(petPage * 32, (petPage + 1) * 32);
-  return `${heading}${observed.inventory_complete ? '' : `<p class="help">${t('petPartial')}</p>`}<div class="pet-progress-grid">${rows.map(pet => `<div class="record-card pet-progress-card"><div class="record-top"><strong>Pet #${pet.pet_id}</strong><span class="tag">${pet.pet_id === observed.active_pet_id ? `${t('petActive')} · ` : ''}${t('level')} ${pet.level ?? '—'}</span></div><div class="pet-progress-values"><span>${t('petAbsolute')}<strong>${pet.progress === null ? '—' : fullNumber(pet.progress)}</strong></span><span>${t('petGained')}<strong>+${fullNumber(pet.session_gained)}</strong></span></div><div class="record-meta">${pet.progress === null ? t('petUnknown') : t('observedAt') + ': ' + dateText(pet.observed_at_ms)}</div></div>`).join('')}</div>${pageCount > 1 ? `<div class="button-row pet-pagination"><button class="action-button secondary" data-action="pet-previous" ${petPage === 0 ? 'disabled' : ''}>${t('petPrevious')}</button><span>${petPage + 1} / ${pageCount} · ${ordered.length}</span><button class="action-button secondary" data-action="pet-next" ${petPage >= pageCount - 1 ? 'disabled' : ''}>${t('petNext')}</button></div>` : ''}`;
+  const observed = petProgress(input, { localPlayerId: liveServerActorId(state) });
+  return `<h3 class="section-title">${t('petProgress')}</h3><p class="help">${observed ? `${observed.pets.length} ${petLabels(prefs.locale).registered}` : t('noPetProgress')}</p><button class="action-button" data-action="open-pet-guide">${t('pets')} ↗</button>`;
 }
 
 function buildContent() {
@@ -1215,7 +1273,7 @@ function odyleContent() {
 
 function renderLiveTools() {
   const value = automaticOdyle(), team = automaticTeamState(state), strip = $('#live-tools');
-  strip.hidden = !value.available && !team.total_members && !roomIntent;
+  strip.hidden = false;
   $('#odyle-chip').hidden = !value.available;
   setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : '—'}`);
   $('#odyle-chip').title = `${t('odyleRegular')}: ${value.base ?? '—'} / ${value.base_capacity ?? '—'} · ${t('odyleBonus')}: ${value.bonus ?? '—'}`;
@@ -1225,6 +1283,7 @@ function renderLiveTools() {
   const liveOdyle = $('#automatic-odyle');
   const fingerprint = JSON.stringify([prefs.locale, value.available, value.actor_id, value.base, value.bonus, value.base_capacity, value.observed_at_ms]);
   if (liveOdyle && liveOdyle.dataset.fingerprint !== fingerprint) { liveOdyle.innerHTML = odyleContent(); liveOdyle.dataset.fingerprint = fingerprint; }
+  renderPetTracking();
 }
 
 function teamContent() {
@@ -1331,7 +1390,7 @@ function renderDrawerContent() {
   }
   contentHost.setAttribute('role', drawer === 'analysis' ? 'tabpanel' : 'region');
   contentHost.setAttribute('aria-labelledby', drawer === 'analysis' ? `drawer-tab-analysis-${tab}` : 'drawer-title');
-  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, rotation: rotationContent, healing: healingContent, runs: runsContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
+  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, rotation: rotationContent, healing: healingContent, runs: runsContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, pets: petsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
   if (drawerContentFingerprint !== content) { const details = new Map([...contentHost.querySelectorAll('details[data-state-key]')].map(node => [node.dataset.stateKey, node.open])); const activeName = contentHost.contains(document.activeElement) ? document.activeElement.name : ''; contentHost.innerHTML = content; for (const node of contentHost.querySelectorAll('details[data-state-key]')) if (details.has(node.dataset.stateKey)) node.open = details.get(node.dataset.stateKey); if (activeName) contentHost.querySelector(`[name="${activeName}"]`)?.focus({ preventScroll: true }); drawerContentFingerprint = content; }
   tickTimers();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -1348,7 +1407,7 @@ function selectDrawerTab(name) {
     if (settingsTab === 'hiddenCube') readCubeState();
     if (['controls', 'about'].includes(settingsTab)) readRuntimeState();
   } else if (drawer === 'analysis' && ANALYSIS_SECTIONS.includes(name)) {
-    if (['training', 'effects'].includes(name)) snapshot = null;
+    if (['training', 'effects', 'pets'].includes(name)) snapshot = null;
     tab = name; $('#drawer-content').scrollTop = 0; renderDrawerContent();
     if (name === 'history') historyCache?.retry();
     if (name === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
@@ -1356,7 +1415,7 @@ function selectDrawerTab(name) {
     if (['curves', 'rotation', 'healing', 'overview', 'effects'].includes(name)) { historyCache?.retry(); readCurveRecord(); }
     if (name === 'runs') historyCache?.retry();
     if (name === 'effects') readAssistTimeline();
-    if (name === 'build') readCharacterData();
+    if (['build', 'pets'].includes(name)) readCharacterData();
     if (name === 'worldBosses') readWorldData();
   } else return;
   const selected = $(`#drawer-tabs [data-tab="${name}"]`); selected?.focus({ preventScroll: true });
@@ -1385,7 +1444,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && ['curves', 'rotation', 'healing', 'overview', 'effects'].includes(requestedTab)) { historyCache?.retry(); readCurveRecord(); }
   if (kind === 'analysis' && requestedTab === 'runs') historyCache?.retry();
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
-  if (kind === 'analysis' && requestedTab === 'build') readCharacterData();
+  if (kind === 'analysis' && ['build', 'pets'].includes(requestedTab)) { if (requestedTab === 'pets') snapshot = null; readCharacterData(); }
   if (kind === 'analysis' && requestedTab === 'worldBosses') readWorldData();
   if (kind === 'settings') { readRuntimeState(); readObsState(); readEventSchedule(); if (settingsTab === 'hiddenCube') readCubeState(); }
   $('#close-drawer').focus();
@@ -1457,11 +1516,20 @@ $('#compact-button').addEventListener('click', () => savePreferences({ compactSt
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
 $('#team-chip').addEventListener('click', () => openDrawer('analysis', 'team'));
+$('#pet-chip').addEventListener('click', () => openPetGuide());
+$('#pet-tracker').addEventListener('click', event => {
+  const control = delegatedControl(event, event.currentTarget, 'button[data-pet-action]'); if (!control) return;
+  if (control.dataset.petAction === 'guide') openPetGuide();
+  if (control.dataset.petAction === 'open') openPetGuide(Number(control.dataset.id));
+  if (control.dataset.petAction === 'unpin') togglePetPin(Number(control.dataset.id));
+  if (control.dataset.petAction === 'collapse') savePreferences({ petTrackerCollapsed: !prefs.petTrackerCollapsed });
+});
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#damage-scope').addEventListener('change', event => { savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
-$('#drag-region').addEventListener('pointerdown', event => { if (startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
+$('#drag-region').addEventListener('pointerdown', event => { if (isFullscreenDashboard(prefs) || startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
 $('.drawer-header').addEventListener('pointerdown', event => {
+  if (isFullscreenDashboard(prefs)) return;
   if (drawer && isDrawerDragStart(event, event.currentTarget) && startHudGesture(event)) return;
   if (native && drawer && isDrawerDragStart(event, event.currentTarget)) {
     event.preventDefault();
@@ -1484,8 +1552,9 @@ $('#target-modes').addEventListener('click', async event => {
 $('#pause-button').addEventListener('click', async () => { try { await action('set_paused', { paused: !state.paused }, () => { state.paused = !state.paused; }); if (native) await refreshState(); else renderMeter(); } catch {} });
 $('#reset-button').addEventListener('click', async () => { try { await action('reset_encounter', undefined, () => { state = normalizeState({ status: 'demo', paused: state.paused }); }); if (native) await refreshState(); else renderMeter(); toast(t('resetDone')); } catch {} });
 $('#lock-button').addEventListener('click', async () => { try { const locked = !prefs.locked; if (native) await action('set_locked', { locked }); savePreferences({ locked }); } catch {} });
-$('#resize-button').addEventListener('pointerdown', event => { if (startHudGesture(event, true)) return; if (event.button === 0 && !prefs.locked) { event.preventDefault(); action('start_resize').catch(() => {}); } });
+$('#resize-button').addEventListener('pointerdown', event => { if (isFullscreenDashboard(prefs) || startHudGesture(event, true)) return; if (event.button === 0 && !prefs.locked) { event.preventDefault(); action('start_resize').catch(() => {}); } });
 $('#resize-button').addEventListener('keydown', event => {
+  if (isFullscreenDashboard(prefs)) return;
   const step = resizeStep(event.key, event.shiftKey);
   if (step && !prefs.locked) { event.preventDefault(); if (prefs.fullscreenOverlay) { const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }); savePreferences({ overlayWidth: rect.width + step.dx, overlayHeight: rect.height + step.dy }); } else action('resize_by', step).catch(() => {}); }
   else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toast(native ? t('resizeHelp') : t('nativeOnly')); }
@@ -1505,8 +1574,16 @@ $('#drawer-tabs').addEventListener('click', event => { const name = delegatedCon
 $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || event.ctrlKey || event.metaKey) return; const next = nextTab($$('#drawer-tabs button').map(button => button.dataset.tab), drawer === 'settings' ? settingsTab : tab, event.key); if (next) { event.preventDefault(); selectDrawerTab(next); } });
 
 $('#drawer-content').addEventListener('change', async event => {
+  if (['petGoal', 'showPetTracker', 'petAutoTrack'].includes(event.target.name)) {
+    const name = event.target.name; savePreferences({ [name]: event.target.type === 'checkbox' ? event.target.checked : event.target.value }); refreshDrawer(name); return;
+  }
+  if (['petFaction', 'petGenus', 'petStatus', 'petSort'].includes(event.target.name)) {
+    const values = Object.fromEntries(new FormData(event.target.form));
+    petFilters = { query: values.petQuery || '', faction: values.petFaction || 'all', genus: values.petGenus || 'all', status: values.petStatus || 'all', sort: values.petSort || 'name', page: 0 }; petSelectedId = null; refreshDrawer(event.target.name); return;
+  }
   const element = event.target, name = element.name;
-  if (name === 'fullscreenOverlay') { await toggleFullscreenOverlay(element.checked); return; }
+  if (name === 'fullscreenOverlay') { await toggleFullscreenOverlay(element.checked, fullscreenLayout(prefs)); return; }
+  if (name === 'fullscreenLayout') { await toggleFullscreenOverlay(prefs.fullscreenOverlay, element.value); return; }
   if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
   if (element.form?.id === 'team-join-form') { teamConsent = element.form.elements.teamConsent.checked; teamInviteDraft = element.form.elements.teamInvite.value; for (const button of element.form.querySelectorAll('button')) button.disabled = !native || teamBusy || !teamConsent; return; }
   if (name === 'automaticTeamClass') { teamClassFilter = element.value; updateTeamLive(); return; }
@@ -1562,6 +1639,7 @@ $('#drawer-content').addEventListener('change', async event => {
 });
 
 $('#drawer-content').addEventListener('input', event => {
+  if (event.target.name === 'petQuery') petFilters.query = event.target.value.slice(0, 120);
   const element = event.target;
   if (element.name === 'trainingSeconds') { trainingDurationDraft = element.value; const duration = validateTrainingDuration(trainingDurationDraft); if (duration !== null) trainingDuration = duration; updateTrainingLive(); return; }
   if (element.form?.id === 'history-filter-form' || element.form?.id === 'history-note-form') { captureHistoryForm(element.form); return; }
@@ -1573,6 +1651,12 @@ $('#drawer-content').addEventListener('input', event => {
   if (['textScale', 'opacity'].includes(element.name)) { preferenceCommitter?.invalidate(); prefs[element.name] = Number(element.value); applyAppearance(); }
 });
 $('#drawer-content').addEventListener('click', async event => {
+  const petLink = delegatedControl(event, event.currentTarget, 'a[data-pet-reference]');
+  if (petLink) {
+    event.preventDefault(); const url = petReferenceUrl(petLink.getAttribute('href'));
+    if (url) { if (native) { try { await action('open_pet_reference', { url }); } catch {} } else window.open(url, '_blank', 'noopener,noreferrer'); }
+    return;
+  }
   const duration = delegatedControl(event, event.currentTarget, 'button[data-training-duration]')?.dataset.trainingDuration;
   if (duration) { const validated = validateTrainingDuration(Number(duration) / 1000); if (validated !== null) { trainingDuration = validated; trainingDurationDraft = String(validated / 1000); refreshDrawer(); } return; }
   const interval = delegatedControl(event, event.currentTarget, 'button[data-curve-interval]')?.dataset.curveInterval;
@@ -1641,7 +1725,9 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
   if (actionName === 'refresh-build') await readCharacterData();
-  if (actionName === 'pet-previous' || actionName === 'pet-next') { petPage = Math.max(0, petPage + (actionName === 'pet-next' ? 1 : -1)); refreshDrawer(); }
+  if (actionName === 'open-pet-guide') openPetGuide();
+  if (actionName === 'pet-pin') togglePetPin(Number(id));
+  if (actionName === 'pet-guide-previous' || actionName === 'pet-guide-next') { petSelectedId = null; petFilters.page = Math.max(0, petFilters.page + (actionName === 'pet-guide-next' ? 1 : -1)); refreshDrawer(); }
   if (actionName === 'refresh-world') await readWorldData();
   if (actionName === 'refresh-comparison') await readComparisonRecord();
   if (actionName === 'open-world') { snapshot = null; openDrawer('analysis', 'worldBosses'); }
@@ -1691,6 +1777,9 @@ $('#drawer-content').addEventListener('click', async event => {
 
 $('#drawer-content').addEventListener('submit', async event => {
   event.preventDefault(); const form = event.target, values = Object.fromEntries(new FormData(form));
+  if (form.id === 'pet-filter-form') {
+    petFilters = { query: values.petQuery || '', faction: values.petFaction || 'all', genus: values.petGenus || 'all', status: values.petStatus || 'all', sort: values.petSort || 'name', page: 0 }; petSelectedId = null; refreshDrawer(); return;
+  }
   if (form.id === 'team-join-form') { teamInviteDraft = values.teamInvite || ''; teamConsent = values.teamConsent === 'on'; await teamAction('join_team_room'); return; }
   if (form.id === 'history-filter-form') {
     captureHistoryForm(form);
@@ -1759,10 +1848,10 @@ function receiveState(value) {
   receivedStateCount++;
   const previous = state;
   state = normalizeState(value);
-  const characterChanged = metadataEpoch(previous, 'character') !== metadataEpoch(state, 'character');
-  if (previous.local_player_id !== state.local_player_id || previous.character_available && !state.character_available) { characterData = characterSnapshot(); if (drawer === 'analysis' && tab === 'build') refreshDrawer(); }
+  const petMetadata = petMetadataTransition(previous, state, { previousActorId: liveServerActorId(previous), currentActorId: liveServerActorId(state) });
+  if (petMetadata.clear) { characterData = characterSnapshot(); if (drawer === 'analysis' && ['build', 'pets'].includes(tab)) refreshDrawer(); }
   if (!state.field_boss_available) { worldData = fieldBossSnapshot(); if (drawer === 'analysis' && tab === 'worldBosses') refreshDrawer(); }
-  if (characterChanged && drawer === 'analysis' && tab === 'build' && !snapshot) readCharacterData();
+  if (petMetadata.fetch) readCharacterData();
   if (metadataEpoch(previous, 'world') !== metadataEpoch(state, 'world') && state.field_boss_available && (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses')) readWorldData();
   historyCache?.observe(state.history_revision);
   renderMeter();
@@ -1772,6 +1861,7 @@ window.addEventListener('resize', syncOverlayGeometry);
 window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
 if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
   $('#meter').classList.toggle('short-frame', $('#meter').getBoundingClientRect().height <= 280);
+  renderPetTracking();
   scheduleOverlayRegions();
 }).observe($('#meter'));
 applyAppearance(); renderMeter();

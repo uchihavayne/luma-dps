@@ -11,6 +11,7 @@ mod hotkeys;
 mod local_history;
 mod native_capture;
 mod obs_server;
+mod pet_reference;
 mod team_sync;
 mod update_key;
 mod updates;
@@ -449,9 +450,7 @@ fn handle_global_hotkey(
                 .map_err(|_| "Preferences unavailable")?
                 .clone();
             let enabled = !fullscreen_overlay_enabled(&preferences);
-            preferences
-                .extra
-                .insert("fullscreenOverlay".into(), Value::Bool(enabled));
+            request_fullscreen_layout(&mut preferences, enabled, None)?;
             change_preferences(
                 &window,
                 shared,
@@ -534,6 +533,26 @@ fn fullscreen_overlay_enabled(preferences: &Preferences) -> bool {
         .get("fullscreenOverlay")
         .and_then(Value::as_bool)
         == Some(true)
+}
+
+fn request_fullscreen_layout(
+    preferences: &mut Preferences,
+    enabled: bool,
+    layout: Option<&str>,
+) -> Result<(), String> {
+    if layout.is_some_and(|layout| !matches!(layout, "dashboard" | "hud")) {
+        return Err("Invalid fullscreen layout".into());
+    }
+    if enabled || layout.is_some() {
+        preferences.extra.insert(
+            "fullscreenLayout".into(),
+            Value::String(layout.unwrap_or("dashboard").into()),
+        );
+    }
+    preferences
+        .extra
+        .insert("fullscreenOverlay".into(), Value::Bool(enabled));
+    Ok(())
 }
 
 fn recover_fullscreen_without_rescue(
@@ -805,15 +824,14 @@ fn set_fullscreen_overlay(
     cube: State<Arc<cube_locator::Service>>,
     hotkeys: State<Arc<HotkeyRuntime>>,
     enabled: bool,
+    layout: Option<String>,
 ) -> Result<Preferences, String> {
     let mut preferences = shared
         .preferences
         .lock()
         .map_err(|_| "Preferences unavailable")?
         .clone();
-    preferences
-        .extra
-        .insert("fullscreenOverlay".into(), Value::Bool(enabled));
+    request_fullscreen_layout(&mut preferences, enabled, layout.as_deref())?;
     change_preferences(
         &window,
         &shared,
@@ -1032,6 +1050,13 @@ impl Preferences {
     }
 
     fn validate(&self) -> Result<(), String> {
+        if self
+            .extra
+            .get("fullscreenLayout")
+            .is_some_and(|value| !matches!(value.as_str(), Some("dashboard" | "hud")))
+        {
+            return Err("Invalid fullscreen layout".into());
+        }
         for key in ["fullscreenOverlay"] {
             if self.extra.get(key).is_some_and(|value| !value.is_boolean()) {
                 return Err("Invalid full-screen overlay preference".into());
@@ -1464,6 +1489,117 @@ mod shell_tests {
             .extra
             .insert("overlayWidth".into(), serde_json::json!(5000));
         assert!(preferences.validate().is_err());
+    }
+
+    #[test]
+    fn queued_settings_cannot_revert_a_native_fullscreen_layout_selection() {
+        for native_layout in [None, Some("dashboard"), Some("hud")] {
+            let mut previous = Preferences::default();
+            if let Some(layout) = native_layout {
+                previous
+                    .extra
+                    .insert("fullscreenLayout".into(), Value::String(layout.into()));
+            }
+            let mut queued = previous.clone();
+            let stale_layout = if native_layout == Some("hud") {
+                "dashboard"
+            } else {
+                "hud"
+            };
+            queued.extra.insert(
+                "fullscreenLayout".into(),
+                Value::String(stale_layout.into()),
+            );
+            queued.theme = "pearl".into();
+            let mut settings = queued.clone();
+            preserve_native_window_preferences(
+                &previous,
+                &mut settings,
+                PreferenceOrigin::Settings,
+            );
+            assert_eq!(
+                settings.extra.get("fullscreenLayout"),
+                previous.extra.get("fullscreenLayout")
+            );
+            assert_eq!(settings.theme, "pearl");
+            preserve_native_window_preferences(
+                &previous,
+                &mut queued,
+                PreferenceOrigin::NativeWindowAction,
+            );
+            assert_eq!(queued.extra["fullscreenLayout"], stale_layout);
+        }
+    }
+
+    #[test]
+    fn fullscreen_entry_defaults_to_dashboard_and_explicit_hud_keeps_saved_geometry() {
+        let mut preferences = Preferences::default();
+        preferences
+            .extra
+            .insert("overlayX".into(), serde_json::json!(800));
+        preferences
+            .extra
+            .insert("overlayY".into(), serde_json::json!(400));
+        preferences
+            .extra
+            .insert("overlayWidth".into(), serde_json::json!(420));
+        preferences
+            .extra
+            .insert("overlayHeight".into(), serde_json::json!(340));
+        preferences.extra.insert(
+            "fullscreenRestoreGeometry".into(),
+            serde_json::json!({"private":"unchanged"}),
+        );
+        let original = preferences.clone();
+        request_fullscreen_layout(&mut preferences, false, Some("hud")).unwrap();
+        assert!(!fullscreen_overlay_enabled(&preferences));
+        assert_eq!(preferences.extra["fullscreenLayout"], "hud");
+        request_fullscreen_layout(&mut preferences, true, Some("hud")).unwrap();
+        assert_eq!(preferences.extra["fullscreenLayout"], "hud");
+        request_fullscreen_layout(&mut preferences, false, None).unwrap();
+        assert!(!fullscreen_overlay_enabled(&preferences));
+        assert_eq!(preferences.extra["fullscreenLayout"], "hud");
+        request_fullscreen_layout(&mut preferences, true, None).unwrap();
+        assert_eq!(preferences.extra["fullscreenLayout"], "dashboard");
+        assert_eq!(
+            (preferences.width, preferences.height),
+            (original.width, original.height)
+        );
+        for key in [
+            "overlayX",
+            "overlayY",
+            "overlayWidth",
+            "overlayHeight",
+            "fullscreenRestoreGeometry",
+        ] {
+            assert_eq!(preferences.extra[key], original.extra[key]);
+        }
+        assert!(preferences.validate().is_ok());
+        let before = preferences.clone();
+        assert!(request_fullscreen_layout(&mut preferences, false, Some("unsupported")).is_err());
+        assert_eq!(
+            serde_json::to_value(&preferences).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+    }
+
+    #[test]
+    fn fullscreen_layout_validation_accepts_legacy_missing_and_both_modes_only() {
+        let mut preferences = Preferences::default();
+        assert!(preferences.validate().is_ok());
+        for value in [serde_json::json!("dashboard"), serde_json::json!("hud")] {
+            preferences.extra.insert("fullscreenLayout".into(), value);
+            assert!(preferences.validate().is_ok());
+        }
+        for value in [
+            serde_json::json!("fullscreen"),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!(4),
+        ] {
+            preferences.extra.insert("fullscreenLayout".into(), value);
+            assert!(preferences.validate().is_err());
+        }
     }
 
     #[test]
@@ -2761,6 +2897,16 @@ fn preserve_native_window_preferences(
             "fullscreenOverlay".into(),
             Value::Bool(fullscreen_overlay_enabled(previous)),
         );
+        match previous.extra.get("fullscreenLayout") {
+            Some(layout) => {
+                incoming
+                    .extra
+                    .insert("fullscreenLayout".into(), layout.clone());
+            }
+            None => {
+                incoming.extra.remove("fullscreenLayout");
+            }
+        }
     }
 }
 
@@ -3265,6 +3411,12 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_pet_reference(url: String) -> Result<(), String> {
+    let checked = pet_reference::checked_url(&url)?;
+    native_capture::open_support_url(&checked)
+}
+
+#[tauri::command]
 fn export_encounter(shared: State<Arc<Shared>>) -> Result<String, String> {
     let encounter = shared
         .engine
@@ -3487,6 +3639,7 @@ fn main() {
             close_window,
             set_panel_open,
             open_url,
+            open_pet_reference,
             export_encounter,
             export_document
         ])

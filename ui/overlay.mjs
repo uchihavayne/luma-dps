@@ -1,9 +1,13 @@
 const finite = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 
-// HUD coordinates are CSS pixels; native monitor geometry is kept separately.
+export const fullscreenLayout = preferences => preferences?.fullscreenLayout === 'hud' ? 'hud' : 'dashboard';
+export const isFullscreenDashboard = preferences => preferences?.fullscreenOverlay === true && fullscreenLayout(preferences) === 'dashboard';
+
+// Both layouts use CSS pixels; the saved HUD and native window geometry stay separate.
 export function overlayRect(preferences = {}, viewport = {}, { panelOpen = false } = {}) {
   const screenWidth = Math.max(1, finite(viewport.width, 1280)), screenHeight = Math.max(1, finite(viewport.height, 720));
+  if (fullscreenLayout(preferences) === 'dashboard') return { x: 0, y: 0, width: Math.round(screenWidth), height: Math.round(screenHeight) };
   const inset = Math.max(0, Math.min(12, (screenWidth - 280) / 2, (screenHeight - 44) / 2));
   const availableWidth = Math.max(1, screenWidth - inset * 2), availableHeight = Math.max(1, screenHeight - inset * 2);
   const desiredWidth = clamp(finite(preferences.overlayWidth, 420), 280, 1200);
@@ -15,6 +19,7 @@ export function overlayRect(preferences = {}, viewport = {}, { panelOpen = false
 }
 
 export function overlayGesture(start, pointer, viewport, { resize = false, panelOpen = false } = {}) {
+  if (fullscreenLayout(start.preferences) === 'dashboard') return {};
   const dx = finite(pointer?.x, start.pointerX) - start.pointerX, dy = finite(pointer?.y, start.pointerY) - start.pointerY;
   const proposal = resize ? { ...start.preferences, overlayWidth: start.rect.width + dx, overlayHeight: start.rect.height + dy } : { ...start.preferences, overlayX: start.rect.x + dx, overlayY: start.rect.y + dy };
   const rect = overlayRect(proposal, viewport, { panelOpen });

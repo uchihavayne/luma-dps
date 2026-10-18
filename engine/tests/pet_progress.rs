@@ -1,5 +1,5 @@
 use luma_engine::{
-    character::{self, CharacterEvent},
+    character::{self, CharacterEvent, CharacterStore, ObservedPetProgress},
     packets::{self, Event},
     MeterEngine,
 };
@@ -28,6 +28,13 @@ fn gains(rows: &[(u32, u32)]) -> Vec<u8> {
         frame.extend(id.to_le_bytes());
         frame.extend(value.to_le_bytes());
     }
+    frame
+}
+
+fn level(pet_id: u32, level: u32) -> Vec<u8> {
+    let mut frame = vec![0x14, 0x90, 0, 0];
+    frame.extend(pet_id.to_le_bytes());
+    frame.extend(level.to_le_bytes());
     frame
 }
 
@@ -290,4 +297,296 @@ fn pet_only_frames_never_create_combat_damage_or_actor_identity() {
         character::decode(&gains(&[(1042, 1)])).unwrap(),
         Some(CharacterEvent::PetGains { .. })
     ));
+}
+
+#[test]
+fn absolute_refresh_keeps_observed_rate_origin_without_inventing_gains() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+    receive(&mut engine, &gains(&[(1042, 2)]), 1_200);
+    receive(&mut engine, &gains(&[(1042, 1)]), 2_200);
+    let previous = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &previous.pets[0];
+    assert_eq!(pet.session_started_at_ms, Some(200));
+    assert_eq!(pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gained, 3);
+    assert_eq!(pet.session_gain_events, 2);
+    assert_eq!(pet.last_gain_at_ms, Some(2_200));
+
+    // An absolute correction is authoritative for progress, not a gain event.
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 2), (1204, 1)], &[(1042, 33)]),
+        3_200,
+    );
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.progress, Some(33));
+    assert_eq!(pet.session_started_at_ms, Some(200));
+    assert_eq!(pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gained, 3);
+    assert_eq!(pet.session_gain_events, 2);
+    assert_eq!(pet.last_gain_at_ms, Some(2_200));
+    assert_eq!(snapshot.pets[1].session_started_at_ms, Some(3_200));
+    assert_eq!(snapshot.pets[1].session_gained, 0);
+    assert_eq!(snapshot.pets[1].last_gain_at_ms, None);
+    assert_eq!(previous.pets[0].progress, Some(35));
+}
+
+#[test]
+fn first_received_gain_has_no_pre_arrival_rate_and_refresh_cannot_create_one() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &gains(&[(1042, 3)]), 5_000);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.session_started_at_ms, Some(5_000));
+    assert_eq!(pet.session_baseline_gained, 3);
+    assert_eq!(pet.session_gained - pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gain_events, 1);
+    assert_eq!(pet.last_gain_at_ms, Some(5_000));
+    assert_eq!(pet.progress, None);
+
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 1)], &[(1042, 4)]),
+        6_000,
+    );
+    receive(&mut engine, &gains(&[(1042, 2)]), 7_000);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.session_started_at_ms, Some(5_000));
+    assert_eq!(pet.session_baseline_gained, 3);
+    assert_eq!(pet.session_gained - pet.session_baseline_gained, 2);
+    assert_eq!(pet.progress, Some(6));
+    assert_eq!(pet.session_gain_events, 2);
+    assert_eq!(pet.last_gain_at_ms, Some(7_000));
+}
+
+#[test]
+fn a_level_transition_preserves_observed_gains_but_never_assumes_rollover() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 24)]), 200);
+    receive(&mut engine, &gains(&[(1042, 2)]), 1_200);
+    receive(&mut engine, &level(1042, 2), 1_300);
+    receive(&mut engine, &gains(&[(1042, 1)]), 2_200);
+    receive(&mut engine, &level(1042, 2), 2_300);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.level, Some(2));
+    assert_eq!(pet.progress, None);
+    assert_eq!(pet.required_progress, None);
+    assert_eq!(pet.session_started_at_ms, Some(200));
+    assert_eq!(pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gained, 3);
+    assert_eq!(pet.session_gain_events, 2);
+    assert_eq!(pet.last_gain_at_ms, Some(2_200));
+
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 2)], &[(1042, 1)]),
+        2_400,
+    );
+    receive(&mut engine, &level(1042, 2), 2_500);
+    assert_eq!(
+        engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
+        Some(1)
+    );
+}
+
+#[test]
+fn capture_loss_starts_a_new_gain_baseline_instead_of_reusing_an_old_rate() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 32)]), 200);
+    receive(&mut engine, &gains(&[(1042, 2)]), 1_200);
+    engine.capture_loss();
+    receive(&mut engine, &gains(&[(1042, 3)]), 10_000);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.progress, None);
+    assert_eq!(pet.session_started_at_ms, Some(10_000));
+    assert_eq!(pet.session_gained, 3);
+    assert_eq!(pet.session_baseline_gained, 3);
+    assert_eq!(pet.session_gain_events, 1);
+    assert_eq!(pet.last_gain_at_ms, Some(10_000));
+
+    engine.connection_changed();
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    own(&mut engine, 8, 20_000);
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 1)], &[(1042, 1)]),
+        20_100,
+    );
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(snapshot.actor_id, Some(8));
+    assert_eq!(snapshot.pets[0].session_started_at_ms, Some(20_100));
+    assert_eq!(snapshot.pets[0].session_gained, 0);
+    assert_eq!(snapshot.pets[0].last_gain_at_ms, None);
+}
+
+fn received_pets(frame: &[u8]) -> Vec<ObservedPetProgress> {
+    let Some(CharacterEvent::PetInventory { pets, .. }) = character::decode(frame).unwrap() else {
+        panic!("expected pet inventory");
+    };
+    pets
+}
+
+#[test]
+fn invalid_typed_pet_events_are_atomic_even_with_an_earlier_clock() {
+    let mut store = CharacterStore::default();
+    store.bind_self(7, "Player", None, 100);
+    let valid = received_pets(&inventory(0, &[(1042, 2)], &[(1042, 32)]));
+    store.ingest(
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            pets: valid.clone(),
+        },
+        200,
+    );
+    let previous = store.snapshot();
+    let mut invalid_level = valid.clone();
+    invalid_level[0].level = Some(4);
+    let mut invalid_progress = valid.clone();
+    invalid_progress[0].progress = Some(u64::from(u32::MAX) + 1);
+    for event in [
+        CharacterEvent::PetGains {
+            gains: vec![(1042, 1), (0, 2)],
+        },
+        CharacterEvent::PetGains {
+            gains: vec![(1042, 1), (1042, 2)],
+        },
+        CharacterEvent::PetGains {
+            gains: vec![(1042, 0)],
+        },
+        CharacterEvent::PetLevel {
+            pet_id: 1042,
+            level: 4,
+        },
+        CharacterEvent::PetLevel {
+            pet_id: 0,
+            level: 2,
+        },
+        CharacterEvent::PetInventory {
+            active_pet_id: Some(9999),
+            pets: valid.clone(),
+        },
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            pets: vec![valid[0].clone(), valid[0].clone()],
+        },
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            pets: invalid_level,
+        },
+        CharacterEvent::PetInventory {
+            active_pet_id: None,
+            pets: invalid_progress,
+        },
+    ] {
+        store.ingest(event.clone(), 300);
+        assert_eq!(store.snapshot(), previous);
+        store.ingest(event, 50);
+        assert_eq!(store.snapshot(), previous);
+    }
+}
+
+#[test]
+fn typed_inventory_normalizes_provenance_metadata_and_order_before_future_deltas() {
+    let mut store = CharacterStore::default();
+    store.bind_self(7, "Player", None, 100);
+    let mut pets = received_pets(&inventory(0, &[(1042, 2), (1204, 1)], &[(1042, 32)]));
+    pets.reverse();
+    for pet in &mut pets {
+        pet.required_progress = Some(9_999);
+        pet.progress_source = "guessed".into();
+        pet.session_gained = 777;
+        pet.session_started_at_ms = Some(1);
+        pet.session_baseline_gained = 88;
+        pet.session_gain_events = 99;
+        pet.last_gain_at_ms = Some(90);
+    }
+    store.ingest(
+        CharacterEvent::PetInventory {
+            active_pet_id: Some(1042),
+            pets,
+        },
+        200,
+    );
+    store.ingest(
+        CharacterEvent::PetGains {
+            gains: vec![(1042, 2)],
+        },
+        300,
+    );
+    let snapshot = store.snapshot().pet_progress.unwrap();
+    assert_eq!(
+        snapshot
+            .pets
+            .iter()
+            .map(|pet| pet.pet_id)
+            .collect::<Vec<_>>(),
+        [1042, 1204]
+    );
+    let pet = &snapshot.pets[0];
+    assert_eq!(pet.progress, Some(34));
+    assert_eq!(pet.progress_source, "server-delta");
+    assert_eq!(pet.required_progress, None);
+    assert_eq!(pet.session_gained, 2);
+    assert_eq!(pet.session_started_at_ms, Some(200));
+    assert_eq!(pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gain_events, 1);
+    assert_eq!(pet.last_gain_at_ms, Some(300));
+    assert_eq!(snapshot.pets[1].progress_source, "unknown");
+    assert_eq!(snapshot.pets[1].session_gained, 0);
+}
+
+#[test]
+fn raw_counter_overflow_becomes_unknown_without_losing_actual_session_gains() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 2)], &[(1042, u32::MAX)]),
+        200,
+    );
+    receive(&mut engine, &gains(&[(1042, 2)]), 300);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(snapshot.pets[0].progress, None);
+    assert_eq!(snapshot.pets[0].progress_source, "unknown");
+    assert_eq!(snapshot.pets[0].session_gained, 2);
+    assert_eq!(snapshot.pets[0].session_gain_events, 1);
+    assert_eq!(snapshot.pets[0].session_started_at_ms, Some(200));
+}
+
+#[test]
+fn legacy_pet_snapshots_do_not_invent_a_session_clock_or_rate_baseline() {
+    let pet: ObservedPetProgress = serde_json::from_value(serde_json::json!({
+        "pet_id":1042, "level":2, "progress":32, "progress_source":"server-absolute",
+        "required_progress":null, "session_gained":3, "observed_at_ms":200
+    }))
+    .unwrap();
+    assert_eq!(pet.progress, Some(32));
+    assert_eq!(pet.session_started_at_ms, None);
+    assert_eq!(pet.session_baseline_gained, 0);
+    assert_eq!(pet.session_gain_events, 0);
+    assert_eq!(pet.last_gain_at_ms, None);
+}
+
+#[test]
+fn pet_level_reserved_prefix_is_required_and_malformed_level_never_changes_progress() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 3)]), 200);
+    let previous = engine.character_snapshot();
+    for index in [2, 3] {
+        let mut malformed = level(1042, 2);
+        malformed[index] = 1;
+        assert!(character::decode(&malformed).is_err());
+        assert!(packets::decode(&malformed).is_err());
+        assert_eq!(engine.character_snapshot(), previous);
+    }
 }

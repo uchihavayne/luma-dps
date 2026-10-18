@@ -1,0 +1,255 @@
+/* Fullscreen dashboard and floating HUD deliberately keep separate geometry. */
+body.fullscreen-dashboard #meter.meter {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  padding: clamp(16px, 2.2vw, 42px);
+  border: 0;
+  border-radius: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: 60px auto auto auto 64px minmax(0, 1fr) 76px;
+  grid-template-areas: "top top" "target metrics" "notice notice" "warning warning" "controls tools" "players players" "footer footer";
+  column-gap: 24px;
+  overflow: hidden;
+  box-shadow: none;
+}
+body.fullscreen-dashboard #meter::after {
+  background: radial-gradient(ellipse at 10% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 65%);
+}
+body.fullscreen-dashboard #meter > .topbar {
+  grid-area: top;
+  height: 44px;
+  min-width: 0;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+body.fullscreen-dashboard #meter .brand { font-size: 14px; letter-spacing: 2px; gap: 8px; }
+body.fullscreen-dashboard #meter .brand-mark { font-size: 26px; }
+body.fullscreen-dashboard #meter .brand small { font-size: 9px; }
+body.fullscreen-dashboard #meter .topbar > .icon-button,
+body.fullscreen-dashboard #meter .topbar > .cube-entry { width: 36px; height: 36px; border-radius: 10px; }
+body.fullscreen-dashboard #meter .topbar > .icon-button > svg { width: 19px; height: 19px; }
+body.fullscreen-dashboard #meter .topbar > .close-window { font-size: 25px; }
+body.fullscreen-dashboard #meter #compact-button { display: none; }
+body.fullscreen-dashboard #meter .identity-button { max-width: 200px; font-size: 12px; padding: 7px 11px; gap: 6px; border-radius: 9px; }
+body.fullscreen-dashboard #meter .identity-button > span:first-child { font-size: 15px; }
+body.fullscreen-dashboard #meter .connection { max-width: 260px; font-size: 11px; gap: 7px; }
+body.fullscreen-dashboard #meter .connection i { width: 6px; height: 6px; }
+body.fullscreen-dashboard #meter .latency-chip { font-size: 10px; }
+body.fullscreen-dashboard #meter > .encounter-header,
+body.fullscreen-dashboard #meter > .metrics {
+  min-width: 0;
+  min-height: 158px;
+  margin: 8px 0 0;
+  padding: clamp(18px, 1.2vw, 24px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) calc(var(--opacity) * 80%), transparent);
+}
+body.fullscreen-dashboard #meter > .encounter-header { grid-area: target; overflow: hidden; }
+body.fullscreen-dashboard #meter .target-label,
+body.fullscreen-dashboard #meter .metric-label { display: block; font-size: 10px; font-weight: 650; letter-spacing: 1.3px; line-height: 15px; }
+body.fullscreen-dashboard #meter .target-line { margin-top: 10px; min-height: 34px; gap: 18px; }
+body.fullscreen-dashboard #meter .target-line h1 { font-size: clamp(20px, calc(var(--target-size) * 1.7), 42px); font-weight: 650; letter-spacing: -.6px; line-height: 1.2; }
+body.fullscreen-dashboard #meter .combat-time { font-size: 17px; font-weight: 500; letter-spacing: .5px; }
+body.fullscreen-dashboard #meter .event-chip { width: auto; max-width: 100%; min-height: 28px; margin-top: 15px; padding: 4px 10px; gap: 12px; font-size: 11px; border-radius: 7px; }
+body.fullscreen-dashboard #meter .target-vitals { position: static; inset: auto; height: auto; display: block; margin-top: 15px; font-size: 11px; line-height: 16px; }
+body.fullscreen-dashboard #meter .target-vitals > span { position: static; inset: auto; display: block; text-align: left; font-size: 11px; line-height: 16px; }
+body.fullscreen-dashboard #meter .target-vitals > i { height: 6px; margin-top: 6px; border-radius: 6px; }
+body.fullscreen-dashboard #meter > .metrics { grid-area: metrics; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 20px; }
+body.fullscreen-dashboard #meter[data-summary-metric=dps] > .metrics,
+body.fullscreen-dashboard #meter[data-summary-metric=damage] > .metrics { grid-template-columns: minmax(0, 1fr); }
+body.fullscreen-dashboard #meter .primary-metric,
+body.fullscreen-dashboard #meter .secondary-metric { align-items: flex-start; text-align: left; --metric-max: 64px; }
+body.fullscreen-dashboard #meter .metrics strong { display: block; margin-top: 8px; font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 64px); font-weight: 600; letter-spacing: -1.7px; line-height: 1.15; }
+body.fullscreen-dashboard #meter .secondary-metric strong { color: var(--text); font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 52px); }
+body.fullscreen-dashboard #meter .metric-caption,
+body.fullscreen-dashboard #meter .secondary-metric #boss-summary { display: block; font-size: 11px; line-height: 17px; margin-top: 8px; white-space: normal; }
+body.fullscreen-dashboard #meter > .notice,
+body.fullscreen-dashboard #meter > .combat-warning { position: static; inset: auto; min-width: 0; height: auto; max-height: none; margin: 12px 0 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 9px; font-size: 11px; line-height: 17px; white-space: normal; overflow-wrap: anywhere; box-shadow: none; }
+body.fullscreen-dashboard #meter > .notice { grid-area: notice; }
+body.fullscreen-dashboard #meter > .combat-warning { grid-area: warning; }
+body.fullscreen-dashboard #meter > .roster-controls { grid-area: controls; align-self: center; padding: 0; min-width: 0; gap: 12px; }
+body.fullscreen-dashboard #meter .scope-label select,
+body.fullscreen-dashboard #meter .sort-label select { height: 36px; width: 130px; max-width: 100%; padding: 7px 10px; border-radius: 9px; font-size: 12px; line-height: 20px; }
+body.fullscreen-dashboard #meter .sort-label { width: 105px; max-width: 105px; }
+body.fullscreen-dashboard #meter .sort-label select { width: 105px; max-width: 105px; }
+body.fullscreen-dashboard #meter .segmented { gap: 3px; padding: 3px; border-radius: 9px; }
+body.fullscreen-dashboard #meter .segmented button { min-height: 30px; padding: 4px 12px; border-radius: 7px; font-size: 12px; line-height: 20px; }
+body.fullscreen-dashboard #meter > .live-tools { grid-area: tools; align-self: center; justify-content: flex-end; flex-wrap: wrap; padding: 0; gap: 8px; }
+body.fullscreen-dashboard #meter > .live-tools button { padding: 8px 12px; border-radius: 8px; font-size: 11px; line-height: 18px; }
+body.fullscreen-dashboard #meter > .roster-stage { grid-area: players; display: flex; min-width: 0; min-height: 0; gap: 24px; padding: 0; }
+body.fullscreen-dashboard #meter .roster-list { min-width: 0; min-height: 0; padding: 16px; border: 1px solid var(--line); border-radius: 18px; background: color-mix(in srgb, var(--panel) calc(var(--opacity) * 30%), transparent); }
+body.fullscreen-dashboard #meter .list-heading { display: flex; padding: 0 14px 14px; font-size: 10px; letter-spacing: 1.1px; }
+body.fullscreen-dashboard #meter .target-roster-strip { min-height: 34px; padding: 0 14px 10px; margin-bottom: 10px; font-size: 11px; gap: 12px; }
+body.fullscreen-dashboard #meter .target-roster-strip strong { font-size: 12px; }
+body.fullscreen-dashboard #meter .target-roster-strip > span { font-size: 10px; }
+body.fullscreen-dashboard #meter .players { display: block; padding: 0; min-height: 0; }
+body.fullscreen-dashboard #meter:has(>.notice:not([hidden])) .players,
+body.fullscreen-dashboard #meter:has(>.combat-warning:not([hidden])) .players { padding-block: 0; }
+body.fullscreen-dashboard #meter .player { grid-template-columns: 32px minmax(0, 1fr) minmax(0, auto); min-height: 66px; gap: 12px; padding: 12px 16px 12px 10px; margin-bottom: 7px; border-radius: 11px; }
+body.fullscreen-dashboard #meter[data-density=comfortable] .player { min-height: 78px; padding-block: 15px; margin-bottom: 9px; }
+body.fullscreen-dashboard #meter .rank { font-size: calc(12px * var(--scale)); }
+body.fullscreen-dashboard #meter .player-main { display: block; }
+body.fullscreen-dashboard #meter .player-name-line { line-height: calc(21px * var(--scale)); gap: 8px; }
+body.fullscreen-dashboard #meter .player-name { font-size: calc(16px * var(--scale)); line-height: calc(21px * var(--scale)); }
+body.fullscreen-dashboard #meter[data-show-class=true] .player-class { display: flex; font-size: calc(10px * var(--scale)); line-height: calc(15px * var(--scale)); margin-top: 4px; }
+body.fullscreen-dashboard #meter .own-tag { font-size: calc(8px * var(--scale)); line-height: 14px; padding: 0 5px; }
+body.fullscreen-dashboard #meter .player-stats { display: block; min-width: 0; }
+body.fullscreen-dashboard #meter .player-numbers { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; }
+body.fullscreen-dashboard #meter .player-numbers > .player-dps { font-size: calc(20px * var(--scale)); line-height: calc(26px * var(--scale)); letter-spacing: -.5px; }
+body.fullscreen-dashboard #meter .player-numbers > .player-damage { font-size: calc(15px * var(--scale)); line-height: calc(24px * var(--scale)); letter-spacing: -.2px; }
+body.fullscreen-dashboard #meter .player-share { display: block; font-size: calc(10px * var(--scale)); line-height: calc(15px * var(--scale)); margin-top: 3px; }
+body.fullscreen-dashboard #meter .player-cooldown { max-width: none; margin-top: 4px; font-size: calc(10px * var(--scale)); line-height: calc(15px * var(--scale)); }
+body.fullscreen-dashboard #meter[data-density=compact] .player { min-height: 48px; padding-block: 8px; margin-bottom: 5px; }
+body.fullscreen-dashboard #meter[data-density=compact] .player-main { display: flex; align-items: center; gap: 8px; }
+body.fullscreen-dashboard #meter[data-density=compact] .player-class { display: none; }
+body.fullscreen-dashboard #meter[data-density=compact] .player-stats { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+body.fullscreen-dashboard #meter[data-density=compact] .player-share { display: inline; margin: 0; }
+body.fullscreen-dashboard #meter[data-density=compact] .player-cooldown { max-width: 35%; margin: 0; font-size: calc(9px * var(--scale)); line-height: calc(13px * var(--scale)); }
+body.fullscreen-dashboard #meter .empty { min-height: 160px; padding: 24px; font-size: 13px; line-height: 1.7; }
+body.fullscreen-dashboard #meter .empty-symbol { display: block; font-size: 38px; }
+body.fullscreen-dashboard #meter .empty strong { font-size: 17px; }
+body.fullscreen-dashboard #meter .cube-navigator { flex: 0 0 clamp(230px, 24vw, 380px); gap: 18px; padding: 24px; margin: 0; border-radius: 18px; overflow: auto; }
+body.fullscreen-dashboard #meter .cube-nav-heading { display: flex; }
+body.fullscreen-dashboard #meter .cube-nav-heading > strong { font-size: 12px; letter-spacing: 1.3px; }
+body.fullscreen-dashboard #meter .cube-nav-heading > .icon-button { width: 26px; height: 26px; }
+body.fullscreen-dashboard #meter .cube-nav-source { font-size: 10px; }
+body.fullscreen-dashboard #meter .cube-navigator > .cube-compass { width: min(100%, 260px); height: auto; aspect-ratio: 1; flex-shrink: 0; }
+body.fullscreen-dashboard #meter[data-cube-size=full] .cube-navigator { flex-basis: clamp(280px, 31vw, 480px); }
+body.fullscreen-dashboard #meter[data-cube-size=full] .cube-navigator > .cube-compass { width: min(100%, 340px); }
+body.fullscreen-dashboard #meter .cube-compass-left,
+body.fullscreen-dashboard #meter .cube-compass-right { display: block; font-size: 10px; }
+body.fullscreen-dashboard #meter .cube-nav-direction { font-size: 24px; }
+body.fullscreen-dashboard #meter .cube-nav-guidance,
+body.fullscreen-dashboard #meter .cube-nav-trend { display: block; font-size: 12px; line-height: 19px; }
+body.fullscreen-dashboard #meter .cube-nav-readings { display: flex; padding-top: 8px; }
+body.fullscreen-dashboard #meter .cube-nav-readings b { font-size: 24px; }
+body.fullscreen-dashboard #meter .cube-nav-readings small { font-size: 10px; }
+body.fullscreen-dashboard #meter > .footer { grid-area: footer; height: auto; min-height: 64px; gap: 18px; padding: 12px 0 0; border-top: 0; background: transparent; }
+body.fullscreen-dashboard #meter .footer-controls { gap: 6px; }
+body.fullscreen-dashboard #meter .footer .icon-button { width: 34px; height: 34px; font-size: 20px; border-radius: 9px; }
+body.fullscreen-dashboard #meter .footer .icon-button > svg { width: 19px; height: 19px; }
+body.fullscreen-dashboard #meter .roster-summary { justify-content: center; gap: 16px; }
+body.fullscreen-dashboard #meter .roster-summary > span { flex: 0 1 180px; gap: 5px; }
+body.fullscreen-dashboard #meter .roster-summary small { font-size: 9px; line-height: 13px; letter-spacing: 1px; }
+body.fullscreen-dashboard #meter .roster-summary strong { font-size: 18px; line-height: 24px; }
+body.fullscreen-dashboard #meter .footer .text-button { font-size: 13px; line-height: 22px; padding: 9px 14px; border: 1px solid var(--line); border-radius: 9px; }
+body.fullscreen-dashboard #meter .resize-button { display: none; }
+body.fullscreen-dashboard #meter .drawer { inset: 0; margin: auto; width: min(1080px, calc(100% - 48px)); height: min(900px, calc(100% - 64px)); border-radius: 20px; box-shadow: 0 24px 80px #0005; }
+body.fullscreen-dashboard #meter .drawer-header { padding: 22px 28px 18px; cursor: default; }
+body.fullscreen-dashboard #meter .drawer-header h2 { font-size: 25px; }
+body.fullscreen-dashboard #meter .drawer-tabs { padding: 10px 20px; }
+body.fullscreen-dashboard #meter .drawer-tabs button { font-size: 12px; padding: 9px 12px; }
+body.fullscreen-dashboard #meter .drawer-content { padding: 24px 28px; }
+body.fullscreen-dashboard #meter .drawer-backdrop { background: color-mix(in srgb, var(--bg) 45%, transparent); backdrop-filter: blur(10px); }
+body.fullscreen-dashboard #meter .toast { bottom: 90px; font-size: 12px; max-width: min(560px, calc(100% - 32px)); }
+@media (max-width: 1100px) {
+  body.fullscreen-dashboard #meter.meter { column-gap: 16px; padding: 18px; grid-template-rows: 54px auto auto auto 60px minmax(0, 1fr) 70px; }
+  body.fullscreen-dashboard #meter > .encounter-header,
+  body.fullscreen-dashboard #meter > .metrics { min-height: 148px; padding: 18px; gap: 14px; }
+  body.fullscreen-dashboard #meter .metrics strong { font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 44px); letter-spacing: -1px; }
+  body.fullscreen-dashboard #meter .secondary-metric strong { font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 36px); }
+  body.fullscreen-dashboard #meter > .roster-stage { gap: 16px; }
+  body.fullscreen-dashboard #meter .cube-navigator { flex-basis: 230px; padding: 18px; gap: 12px; }
+  body.fullscreen-dashboard #meter .player { min-height: 60px; }
+  body.fullscreen-dashboard #meter .connection { max-width: 160px; }
+}
+@media (max-width: 760px) {
+  body.fullscreen-dashboard #meter.meter { display: flex; flex-direction: column; gap: 12px; padding: 12px; overflow: auto; }
+  body.fullscreen-dashboard #meter > .topbar { flex-shrink: 0; height: 42px; gap: 5px; }
+  body.fullscreen-dashboard #meter .brand { font-size: 11px; letter-spacing: 1px; gap: 5px; }
+  body.fullscreen-dashboard #meter .brand-mark { font-size: 22px; }
+  body.fullscreen-dashboard #meter .brand small { font-size: 7px; }
+  body.fullscreen-dashboard #meter .identity-button { max-width: 130px; font-size: 10px; padding: 5px 7px; }
+  body.fullscreen-dashboard #meter .connection { max-width: 120px; font-size: 9px; }
+  body.fullscreen-dashboard #meter .topbar > .icon-button,
+  body.fullscreen-dashboard #meter .topbar > .cube-entry { width: 30px; height: 30px; }
+  body.fullscreen-dashboard #meter > .encounter-header,
+  body.fullscreen-dashboard #meter > .metrics { flex-shrink: 0; min-height: 0; margin: 0; padding: 18px; border-radius: 13px; }
+  body.fullscreen-dashboard #meter .target-line { margin-top: 5px; }
+  body.fullscreen-dashboard #meter .event-chip,
+  body.fullscreen-dashboard #meter .target-vitals { margin-top: 10px; }
+  body.fullscreen-dashboard #meter .metrics strong { font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 48px); }
+  body.fullscreen-dashboard #meter .secondary-metric strong { font-size: clamp(12px, calc(100cqw / var(--metric-length, 6) / .68), 42px); }
+  body.fullscreen-dashboard #meter > .notice,
+  body.fullscreen-dashboard #meter > .combat-warning { flex-shrink: 0; margin: 0; }
+  body.fullscreen-dashboard #meter > .roster-controls,
+  body.fullscreen-dashboard #meter > .live-tools { flex-shrink: 0; width: 100%; }
+  body.fullscreen-dashboard #meter > .live-tools { justify-content: flex-start; }
+  body.fullscreen-dashboard #meter > .roster-stage { flex: 1 0 280px; overflow: visible; flex-direction: column; gap: 12px; }
+  body.fullscreen-dashboard #meter .roster-list { min-height: 260px; padding: 12px; border-radius: 13px; }
+  body.fullscreen-dashboard #meter .players { max-height: 70vh; flex: 1 0 auto; }
+  body.fullscreen-dashboard #meter .cube-navigator { flex-basis: auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; justify-items: center; overflow: hidden; gap: 8px 18px; border-radius: 13px; }
+  body.fullscreen-dashboard #meter[data-cube-size=full] .cube-navigator { flex-basis: auto; display: flex; }
+  body.fullscreen-dashboard #meter[data-cube-size=full] .cube-navigator > .cube-compass { width: min(100%, 280px); }
+  body.fullscreen-dashboard #meter .cube-nav-heading { grid-column: 1 / -1; }
+  body.fullscreen-dashboard #meter .cube-nav-source { grid-column: 1 / -1; }
+  body.fullscreen-dashboard #meter .cube-navigator > .cube-compass { grid-row: span 4; width: min(100%, 180px); }
+  body.fullscreen-dashboard #meter .cube-nav-direction { font-size: 19px; }
+  body.fullscreen-dashboard #meter > .footer { flex-shrink: 0; flex-wrap: wrap; gap: 8px; min-height: 76px; padding: 0; }
+  body.fullscreen-dashboard #meter .roster-summary { order: -1; flex-basis: 100%; justify-content: space-evenly; }
+  body.fullscreen-dashboard #meter .roster-summary > span { flex: 1; }
+  body.fullscreen-dashboard #meter .roster-summary strong { font-size: 15px; }
+  body.fullscreen-dashboard #meter .footer-controls { flex: 1; }
+  body.fullscreen-dashboard #meter .drawer { position: fixed; width: calc(100% - 16px); height: calc(100% - 16px); border-radius: 13px; }
+  body.fullscreen-dashboard #meter .drawer-header { padding: 16px; }
+  body.fullscreen-dashboard #meter .drawer-tabs { padding: 7px 10px; }
+  body.fullscreen-dashboard #meter .drawer-content { padding: 16px; }
+}
+@media (max-width: 440px) {
+  body.fullscreen-dashboard #meter.meter { padding: 8px; gap: 8px; }
+  body.fullscreen-dashboard #meter .brand small { display: none; }
+  body.fullscreen-dashboard #meter .identity-button { max-width: 84px; padding: 4px 5px; font-size: 9px; }
+  body.fullscreen-dashboard #meter .connection { display: none; }
+  body.fullscreen-dashboard #meter .target-line h1 { font-size: max(18px, var(--target-size)); }
+  body.fullscreen-dashboard #meter .combat-time { font-size: 13px; }
+  body.fullscreen-dashboard #meter > .encounter-header,
+  body.fullscreen-dashboard #meter > .metrics { padding: 14px; }
+  body.fullscreen-dashboard #meter .metric-label { font-size: 8px; letter-spacing: .7px; }
+  body.fullscreen-dashboard #meter .metric-caption { font-size: 10px; }
+  body.fullscreen-dashboard #meter .scope-label select { width: 92px; }
+  body.fullscreen-dashboard #meter .sort-label,
+  body.fullscreen-dashboard #meter .sort-label select { max-width: 72px; width: 72px; }
+  body.fullscreen-dashboard #meter .scope-label select,
+  body.fullscreen-dashboard #meter .sort-label select { font-size: 10px; padding-inline: 6px; height: 32px; }
+  body.fullscreen-dashboard #meter > .roster-controls { gap: 6px; }
+  body.fullscreen-dashboard #meter .segmented button { padding-inline: 4px; font-size: 10px; min-height: 26px; }
+  body.fullscreen-dashboard #meter .roster-list { padding: 8px; }
+  body.fullscreen-dashboard #meter .list-heading { padding-inline: 7px; font-size: 8px; }
+  body.fullscreen-dashboard #meter .target-roster-strip { flex-wrap: wrap; gap: 3px; padding-inline: 7px; }
+  body.fullscreen-dashboard #meter .target-roster-strip > span { white-space: normal; }
+  body.fullscreen-dashboard #meter .player { grid-template-columns: 20px minmax(0, 1fr) minmax(0, auto); gap: 6px; padding-inline: 7px; }
+  body.fullscreen-dashboard #meter .player-name { font-size: calc(13px * var(--scale)); }
+  body.fullscreen-dashboard #meter[data-density=compact] .player-stats { display: block; }
+  body.fullscreen-dashboard #meter[data-density=compact] .player-main { display: block; }
+  body.fullscreen-dashboard #meter[data-density=compact] .player-cooldown { max-width: none; margin-top: 3px; }
+  body.fullscreen-dashboard #meter .player-numbers { flex-direction: column; align-items: flex-end; gap: 1px; }
+  body.fullscreen-dashboard #meter .player-numbers > .player-dps { font-size: calc(15px * var(--scale)); line-height: calc(19px * var(--scale)); }
+  body.fullscreen-dashboard #meter .player-numbers > .player-damage { font-size: calc(11px * var(--scale)); line-height: calc(15px * var(--scale)); }
+  body.fullscreen-dashboard #meter .roster-summary small { font-size: 8px; }
+  body.fullscreen-dashboard #meter .roster-summary strong { font-size: 12px; }
+}
+@media (max-height: 620px) and (min-width: 761px) {
+  body.fullscreen-dashboard #meter.meter { grid-template-rows: 42px auto auto auto 48px minmax(100px, 1fr) 50px; padding-block: 12px; overflow: auto; }
+  body.fullscreen-dashboard #meter > .encounter-header,
+  body.fullscreen-dashboard #meter > .metrics { min-height: 112px; padding: 14px 18px; }
+  body.fullscreen-dashboard #meter .target-line { margin-top: 5px; }
+  body.fullscreen-dashboard #meter .event-chip,
+  body.fullscreen-dashboard #meter .target-vitals { margin-top: 7px; }
+  body.fullscreen-dashboard #meter .player { min-height: 48px; padding-block: 8px; }
+  body.fullscreen-dashboard #meter .roster-list { padding: 10px; }
+  body.fullscreen-dashboard #meter > .footer { min-height: 48px; padding-top: 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.fullscreen-dashboard #meter .player,
+  body.fullscreen-dashboard #meter .player-bar { transition: none; }
+}
