@@ -67,7 +67,7 @@ export function petCompletion(observed, requirements, { now = Date.now(), goal =
   return { ...base, status: 'progress', nextRemaining, maxRemaining, remaining, percent: progress / required * 100, required, soulsPerMinute, etaMs: Number.isFinite(etaMs) && etaMs <= 7 * 86400000 ? etaMs : null };
 }
 
-export function petPlan(input, catalog, { localPlayerId, now = Date.now(), goal = 'max' } = {}) {
+export function petPlan(input, catalog, { localPlayerId, now = Date.now(), goal = 'max', pins = [] } = {}) {
   const observed = petProgress(input, { localPlayerId });
   const current = new Map((observed?.pets || []).map(row => [row.pet_id, row]));
   const known = new Set(catalog.pets.map(row => row.id));
@@ -76,6 +76,7 @@ export function petPlan(input, catalog, { localPlayerId, now = Date.now(), goal 
     return { ...pet, observed: Boolean(live), summoned: observed?.active_pet_id === pet.id, sessionGained: live?.session_gained || 0, lastGainAt: live?.last_gain_at_ms !== null && live?.last_gain_at_ms <= now ? live.last_gain_at_ms : null, ...petCompletion(live, pet.genus === 'Special' ? null : catalog.requirements, { now, goal }) };
   });
   for (const live of current.values()) if (!known.has(live.pet_id)) rows.push({ id: live.pet_id, name: '', genus: '', faction: 'unknown', locations: [], bonuses: [], source_url: '', map_url: '', observed: true, summoned: observed.active_pet_id === live.pet_id, sessionGained: live.session_gained, lastGainAt: live.last_gain_at_ms !== null && live.last_gain_at_ms <= now ? live.last_gain_at_ms : null, ...petCompletion(live, null, { now, goal }) });
+  for (const id of normalizePetPins(pins)) if (!rows.some(row => row.id === id)) rows.push({ id, name: '', genus: '', faction: 'unknown', locations: [], bonuses: [], source_url: '', map_url: '', observed: false, summoned: false, sessionGained: 0, lastGainAt: null, ...petCompletion(null, null, { now, goal }) });
   return { rows, observed, total: catalog.pets.length, observedCount: current.size, completeCount: rows.filter(row => row.status === 'complete').length };
 }
 

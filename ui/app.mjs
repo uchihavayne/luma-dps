@@ -1027,7 +1027,7 @@ async function readCharacterData() {
   }
 }
 
-function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal }); }
+function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal, pins: prefs.petPins }); }
 
 function petsContent() {
   const plan = currentPetPlan();
@@ -1059,6 +1059,7 @@ function renderPetTracking() {
 
 function openPetGuide(id = null) {
   petSelectedId = Number.isSafeInteger(id) ? id : null;
+  if (petSelectedId !== null) { const row = currentPetPlan().rows.find(row => row.id === petSelectedId); petFilters = { ...petFilters, query: row?.name || String(petSelectedId), faction: 'all', genus: 'all', status: 'all', page: 0 }; }
   openDrawer('analysis', 'pets');
 }
 

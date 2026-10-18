@@ -93,6 +93,18 @@ test('catalog links cannot introduce credentials, arbitrary hosts or executable 
   assert.ok(petReferenceUrl('https://metabot.gg/en/aion-2/map/verteron?focus=npc:2100075'));
 });
 
+test('a pinned pet missing from both catalog and the next login remains visible and removable without invented progress', () => {
+  const saved = normalizePreferences({ petPins: [99999] });
+  const value = petPlan(null, catalog, { now, localPlayerId: '7', pins: saved.petPins });
+  const rows = trackedPets(value, saved.petPins, { now });
+  assert.equal(value.observedCount, 0); assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, 99999); assert.equal(rows[0].name, '');
+  assert.equal(rows[0].observed, false); assert.equal(rows[0].remaining, null);
+  assert.equal(filteredPets(value, { status: 'pinned', pins: saved.petPins }).total, 1);
+  assert.ok(renderPetTracker(rows).includes('data-pet-action="unpin" data-id="99999"'));
+  assert.ok(renderPetGuide(value, catalog, { pins: saved.petPins, filters: { query: '99999' } }).includes('data-action="pet-pin" data-id="99999" aria-pressed="true"'));
+});
+
 test('rendered guide and tracker escape names and retain ordinary source attribution anchors', () => {
   const value = plan(), item = value.rows.find(row => row.id === 1002);
   item.name = '<img src=x onerror=alert(1)>';
