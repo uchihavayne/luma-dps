@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
+import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, normalizePlayer, normalizeEncounter, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from '../model.mjs';
 import { ANALYSIS_SECTIONS, SETTINGS_SECTIONS } from '../navigation.mjs';
 import { recentPetTarget, normalizeRecentPersonalTarget, petTargetStatus } from '../model.mjs';
@@ -241,16 +241,89 @@ test('numeric engine identifiers, percentage share and capture details survive n
 
 test('disconnected state remains empty rather than supplying synthetic statistics', () => {
   const state = normalizeState(undefined);
-  assert.equal(state.status, 'disconnected'); assert.equal(state.dps, 0); assert.equal(state.total_damage, 0);
+  assert.equal(state.status, 'disconnected'); assert.equal(state.dps, null); assert.equal(state.total_damage, 0);
   assert.deepEqual(state.players, []); assert.deepEqual(state.cooldowns, []);
 });
 
 test('invalid and negative metrics cannot produce negative widths or NaN labels', () => {
   const state = normalizeState({ dps: Infinity, elapsed_ms: -99, total_damage: 'not a number', players: [{ id: 1, damage: -22, dps: -3 }] });
-  assert.equal(state.dps, 0); assert.equal(state.elapsed_ms, 0); assert.equal(state.total_damage, 0);
+  assert.equal(state.dps, null); assert.equal(state.players[0].dps, null); assert.equal(state.elapsed_ms, 0); assert.equal(state.total_damage, 0);
   assert.equal(playerShare(state.players[0], 0), 0);
   assert.equal(playerShare({ damage: 200 }, 100), 1);
   assert.equal(clockTime(NaN), '00:00'); assert.equal(clockTime(3661000), '01:01:01');
+});
+
+test('missing, null and invalid rates remain unknown rather than becoming measured zero', () => {
+  for (const dps of [undefined, null, NaN, Infinity, -Infinity, -1, '1000', '', false, {}, []]) {
+    const input = { dps, total_damage: 5000, elapsed_ms: 5000, personal_dps: dps, party_dps: dps,
+      players: [{ id: 7, damage: 5000, dps }], targets: [{ id: 900, damage: 5000, elapsed_ms: 5000, participants: [{ id: 7, damage: 5000, dps }], own_participant: { id: 7, damage: 5000, dps } }] };
+    const state = normalizeState(input), encounter = normalizeEncounter(input);
+    assert.equal(state.dps, null); assert.equal(encounter.dps, null); assert.equal(normalizePlayer(input.players[0]).dps, null);
+    assert.equal(state.personal_dps, null); assert.equal(state.party_dps, null);
+    assert.equal(state.players[0].dps, null); assert.equal(encounter.players[0].dps, null);
+    assert.equal(state.targets[0].participants[0].dps, null); assert.equal(state.targets[0].own_participant.dps, null);
+    assert.equal(state.total_damage, 5000); assert.equal(state.players[0].damage, 5000);
+    assert.equal(normalizeState(state).dps, null); assert.equal(normalizeEncounter(encounter).dps, null);
+    assert.deepEqual(normalizeState(state), state);
+  }
+});
+
+test('explicit zero and valid received rates survive normalization without a guessed clock or aggregate substitution', () => {
+  for (const dps of [0, 1234.5]) {
+    const input = { total_damage: 5000, elapsed_ms: 5000, dps, personal_dps: dps, party_dps: dps,
+      players: [{ id: 7, damage: 5000, dps }] };
+    const state = normalizeState(input), encounter = normalizeEncounter(input), player = normalizePlayer(input.players[0]);
+    assert.equal(state.dps, dps); assert.equal(encounter.dps, dps); assert.equal(player.dps, dps);
+    assert.equal(state.personal_dps, dps); assert.equal(state.party_dps, dps);
+    assert.deepEqual(normalizeState(state), state); assert.deepEqual(normalizeEncounter(encounter), encounter);
+    assert.deepEqual(normalizePlayer(player), player);
+  }
+  const missingPlayerRate = normalizeState({ total_damage: 10000, dps: 2000, elapsed_ms: 5000, players: [{ id: 7, damage: 5000 }] });
+  assert.equal(missingPlayerRate.dps, 2000); assert.equal(missingPlayerRate.players[0].dps, null);
+  const unknown = normalizeEncounter({ actor_scope: 'personal', total_damage: null, dps: null });
+  assert.equal(unknown.total_damage, null); assert.equal(normalizeEncounter(unknown).dps, null);
+});
+
+test('engine frame and damage-event diagnostics retain received counts and distinguish absent or invalid values', () => {
+  const state = normalizeState({ diagnostics: { frames: 123, damage_events: 0, stream_gaps: 2 } });
+  assert.equal(state.diagnostics.frames, 123); assert.equal(state.diagnostics.damage_events, 0);
+  assert.equal(state.diagnostics.stream_gaps, 2);
+  assert.deepEqual(normalizeState(state).diagnostics, state.diagnostics);
+  assert.equal(normalizeState().diagnostics.frames, null); assert.equal(normalizeState().diagnostics.damage_events, null);
+  for (const value of [undefined, null, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '123', true]) {
+    const invalid = normalizeState({ diagnostics: { frames: value, damage_events: value } });
+    assert.equal(invalid.diagnostics.frames, null); assert.equal(invalid.diagnostics.damage_events, null);
+  }
+});
+
+test('unfiltered encounter summary stays separate from filtered totals and preserves nullable own and party metrics', () => {
+  const summary = { total_damage: 5000, dps: 1000, elapsed_ms: 5000, personal_total_damage: null, personal_dps: null, personal_elapsed_ms: null,
+    party_total_damage: 0, party_dps: 0, party_elapsed_ms: 0, players: [{ name: 'PRIVATE-PLAYER' }], targets: [{ name: 'PRIVATE-TARGET' }], token: 'PRIVATE-TOKEN' };
+  const state = normalizeState({ total_damage: 0, dps: 0, elapsed_ms: 0, all_targets_summary: summary });
+  assert.equal(state.total_damage, 0); assert.equal(state.dps, 0);
+  assert.deepEqual(state.all_targets_summary, { total_damage: 5000, dps: 1000, elapsed_ms: 5000,
+    personal_total_damage: null, personal_dps: null, personal_elapsed_ms: null, party_total_damage: 0, party_dps: 0, party_elapsed_ms: 0 });
+  assert.equal(JSON.stringify(state.all_targets_summary).includes('PRIVATE-'), false);
+  assert.deepEqual(normalizeState(state), state);
+  assert.equal(normalizeState().all_targets_summary, null);
+  const zero = normalizeState({ all_targets_summary: { total_damage: 0, dps: 0, elapsed_ms: 0 } });
+  assert.equal(zero.all_targets_summary.total_damage, 0); assert.equal(zero.all_targets_summary.dps, 0);
+  assert.equal(zero.all_targets_summary.personal_total_damage, null);
+});
+
+test('unfiltered summary rejects missing required fields, coercion, invalid counters and unsafe numbers', () => {
+  const valid = { total_damage: 5000, dps: 1000.5, elapsed_ms: 5000 };
+  for (const value of [null, [], 'summary', {}, { dps: 0, elapsed_ms: 0 }]) assert.equal(normalizeState({ all_targets_summary: value }).all_targets_summary, null);
+  for (const invalid of [null, -1, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '1', true]) {
+    for (const field of ['total_damage', 'dps', 'elapsed_ms']) {
+      assert.equal(normalizeState({ all_targets_summary: { ...valid, [field]: invalid } }).all_targets_summary, null);
+    }
+    const optional = normalizeState({ all_targets_summary: { ...valid, personal_total_damage: invalid, personal_dps: invalid, personal_elapsed_ms: invalid,
+      party_total_damage: invalid, party_dps: invalid, party_elapsed_ms: invalid } }).all_targets_summary;
+    assert.equal(optional.dps, 1000.5);
+    for (const field of ['personal_total_damage', 'personal_dps', 'personal_elapsed_ms', 'party_total_damage', 'party_dps', 'party_elapsed_ms']) assert.equal(optional[field], null);
+  }
+  for (const field of ['total_damage', 'elapsed_ms']) assert.equal(normalizeState({ all_targets_summary: { ...valid, [field]: 1.5 } }).all_targets_summary, null);
 });
 
 test('ranking is deterministic and does not mutate received player order', () => {

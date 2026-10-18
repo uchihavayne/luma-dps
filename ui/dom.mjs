@@ -23,7 +23,7 @@ export function delegatedControl(event, container, selector) {
   return control && container.contains(control) ? control : null;
 }
 
-export const INPUT_CONTROL_SELECTOR = 'button,input,select,textarea,a[href],summary,[role="button"],[role="tab"],.pet-tracker-rows,.target-pet-pin-actions';
+export const INPUT_CONTROL_SELECTOR = 'button,input,select,textarea,a[href],summary,[role="button"],[role="tab"],.pet-tracker-rows,.target-pet-pin-actions,.roster-list:has(>#target-roster-strip:not([hidden]))';
 
 export function visibleInputRegions(root, viewport) {
   const view = root.ownerDocument.defaultView, styles = new Map(), regions = [];

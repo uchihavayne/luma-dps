@@ -66,6 +66,33 @@ fn end_to_end_tcp_reordering_counts_an_observed_hit_once() {
     assert_eq!(result.players[0].id, 1480);
     assert_eq!(result.diagnostics.damage_events, 1);
 }
+
+#[test]
+fn unfiltered_summary_distinguishes_accepted_tcp_damage_from_a_boss_filtered_zero() {
+    let mut engine = MeterEngine::default();
+    engine.set_target_mode("boss");
+    engine.ingest_tcp(&tcp(100, 13328, 51000, &damage()), true, 1000);
+    let state = engine.live_state(2000);
+    assert_eq!(state.diagnostics.damage_events, 1);
+    assert_eq!(state.total_damage, 0);
+    assert_eq!(state.dps, 0.0);
+    let unfiltered = &state.all_targets_summary;
+    assert_eq!(unfiltered.total_damage, 106);
+    assert_eq!(unfiltered.dps, 106.0);
+    assert_eq!(unfiltered.elapsed_ms, 1000);
+    assert_eq!(unfiltered.personal_total_damage, None);
+    assert_eq!(unfiltered.personal_dps, None);
+    assert_eq!(unfiltered.personal_elapsed_ms, None);
+    assert_eq!(unfiltered.party_total_damage, None);
+    assert_eq!(unfiltered.party_dps, None);
+    assert_eq!(unfiltered.party_elapsed_ms, None);
+
+    engine.set_target_mode("all");
+    let state = engine.live_state(2500);
+    assert_eq!(state.all_targets_summary.total_damage, state.total_damage);
+    assert_eq!(state.all_targets_summary.dps, state.dps);
+    assert_eq!(state.all_targets_summary.elapsed_ms, state.elapsed_ms);
+}
 #[test]
 fn sequence_wrap_and_overlapping_tcp_reads_do_not_duplicate_damage() {
     let mut engine = MeterEngine::default();

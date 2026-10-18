@@ -24,7 +24,8 @@ import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
-import { bossPresentation, targetVital, targetSummary, targetBoardChoices } from './bosses.mjs';
+import { worldTargetPresentation, targetVital, targetSummary, targetBoardChoices } from './bosses.mjs';
+import { combatMeasurement } from './measurement.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
@@ -108,11 +109,21 @@ if (telemetryDemo) {
   });
 }
 if (targetDemo) state = normalizeState(targetDemoState(state));
-if (targetDemo && new URLSearchParams(location.search).get('targetBoardDemo') === 'filtered') {
+let filteredTargetDemoSource = null;
+const targetBoardDemo = demo ? new URLSearchParams(location.search).get('targetBoardDemo') : null;
+if (targetDemo && ['filtered', 'shared', 'shared-no-own'].includes(targetBoardDemo)) {
+  filteredTargetDemoSource = state;
+  const target = { ...state.targets[0], is_boss: false, ...(targetBoardDemo === 'shared-no-own' ? { own_participant: null, own_rank: null } : {}) };
   state = normalizeState({ ...state, encounter_started_ms: state.targets[0].started_ms, targets: [], live_target: null, focused_target_id: null, focused_target_observed_at_ms: null,
-    observed_targets: [{ ...state.targets[0], is_boss: false }], players: [], personal_targets: [], party_targets: [], elapsed_ms: 0, personal_elapsed_ms: 0, party_elapsed_ms: 0,
+    all_targets_summary: { total_damage: state.total_damage, dps: state.dps, elapsed_ms: state.elapsed_ms, personal_total_damage: state.personal_total_damage, personal_dps: state.personal_dps, personal_elapsed_ms: state.elapsed_ms, party_total_damage: target.party_total_damage, party_dps: target.party_dps, party_elapsed_ms: target.elapsed_ms },
+    encounter_active: true, capture: { ...state.capture, status: 'capturing' }, observed_targets: [target], players: [], personal_targets: [], party_targets: [], elapsed_ms: 0, personal_elapsed_ms: 0, party_elapsed_ms: 0,
     total_damage: 0, dps: 0, personal_total_damage: 0, personal_dps: 0, party_total_damage: 0, party_dps: 0 });
-  prefs = normalizePreferences({ ...prefs, mode: 'boss', autoTargetRoster: false, displayModules: { ...prefs.displayModules, dps: true } });
+  prefs = normalizePreferences({ ...prefs, mode: 'boss', autoTargetRoster: targetBoardDemo !== 'filtered', displayModules: { ...prefs.displayModules, dps: true } });
+}
+if (targetDemo && targetBoardDemo === 'solo') {
+  const target = { ...state.targets[0], is_boss: false, participants: [state.targets[0].own_participant], participant_count: 1, own_rank: 1, damage: state.targets[0].own_participant.damage, party_total_damage: state.targets[0].own_participant.damage, party_dps: state.targets[0].own_participant.dps };
+  state = normalizeState({ ...state, targets: [], live_target: target, total_damage: 0, dps: 0, personal_total_damage: 0, personal_dps: 0, players: [], personal_targets: [], encounter_active: true, encounter_started_ms: target.started_ms, capture: { ...state.capture, status: 'capturing' } });
+  prefs = normalizePreferences({ ...prefs, mode: 'boss', autoTargetRoster: true, displayModules: { ...prefs.displayModules, dps: true } });
 }
 if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1') {
   const at = Date.now();
@@ -487,49 +498,56 @@ function renderMeter() {
   connection.title = `${status.message}\n${status.detail}`;
   renderLatency();
   const scopes = meterScopes(state, prefs);
-  const targetView = bossPresentation(state, { now: demo && targetDemo ? state.focused_target_observed_at_ms ?? Date.now() : Date.now(), autoBossRoster: prefs.autoTargetRoster, damageScope: prefs.damageScope, selectedTargetId: selectedBoardTargetId, previousFocus: automaticTargetFocus });
+  const targetView = worldTargetPresentation(state, { now: demo && targetDemo ? state.focused_target_observed_at_ms ?? state.observed_targets[0]?.last_hit_ms ?? Date.now() : Date.now(), autoBossRoster: prefs.autoTargetRoster, damageScope: prefs.damageScope, selectedTargetId: selectedBoardTargetId, previousFocus: automaticTargetFocus });
   automaticTargetFocus = targetView.focusMemory || null;
-  renderTargetBoardControls();
   const board = targetView.roster;
   renderedTargetBoard = board;
-  const scoped = board ? { ...scopes.summary, known: targetView.summary.known, damage: targetView.summary.totalDamage, dps: targetView.summary.dps, elapsed: targetView.summary.elapsedMs, targets: [targetView.target] } : scopes.summary;
+  const targetScoped = Boolean(board || prefs.autoTargetRoster && targetView.target?.damage > 0 && targetView.target.elapsed_ms !== null);
+  const targetMetrics = targetScoped ? targetSummary(targetView.target, state, prefs.damageScope) : null;
+  const measurement = combatMeasurement(state, prefs, { summary: scopes.summary, boardSummary: targetMetrics, board: targetScoped });
+  renderTargetBoardControls(measurement);
+  const selectedSummary = targetScoped ? { ...scopes.summary, known: targetMetrics.known, damage: targetMetrics.totalDamage, dps: targetMetrics.dps, elapsed: targetMetrics.elapsedMs, targets: [targetView.target] } : scopes.summary;
+  const scoped = measurement.suppressSummary ? { ...selectedSummary, known: false } : selectedSummary;
   const boardPlayers = board ? [...board.rows] : [];
   if (board?.own && board.ownRank > 10 && !boardPlayers.some(player => player.id === board.own.id)) boardPlayers.push({ ...board.own, rank: board.ownRank, beyondTopTen: true });
-  const roster = board ? { known: true, players: boardPlayers, damage: board.totalDamage, dps: board.dps, elapsed: board.elapsedMs, ranked: true } : scopes.roster;
+  const ownSummary = targetScoped ? targetSummary(targetView.target, state, 'personal') : null;
+  const solo = !board && targetScoped && ownSummary?.evidence === 'received-own' ? targetView.target.own_participant : null;
+  const roster = board ? { known: true, players: boardPlayers, damage: board.totalDamage, dps: board.dps, elapsed: board.elapsedMs, ranked: true } : solo ? { known: true, players: [{ ...solo, is_local: true }], damage: targetView.target.damage, dps: targetView.target.damage / Math.max(targetView.target.elapsed_ms / 1000, 1), elapsed: targetView.target.elapsed_ms } : scopes.roster;
   const targetOption = $('#damage-scope option[value=target]');
   targetOption.hidden = !targetView.target?.participants_available || !(targetView.target.is_boss || targetView.target.participant_count >= 2); targetOption.disabled = targetOption.hidden;
   if (board) $('#damage-scope').value = 'target';
   $('#sort').disabled = Boolean(board); $('#sort').title = board ? (prefs.locale === 'tr' ? 'Bu hedefe verilen hasara göre ilk 10' : 'Top ten by damage to this target') : t('sort');
-  $('#target-roster-strip').hidden = !board;
-  if (board) {
-    setText($('#target-roster-label'), `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Hedef' : 'Target'} · ${prefs.locale === 'tr' ? 'İlk 10' : 'Top 10'}`);
-    setText($('#target-roster-coverage'), `${prefs.locale === 'tr' ? 'Gözlenen' : 'Observed'} ${board.participantCount ?? board.rows.length}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}`);
+  $('#target-roster-strip').hidden = !targetScoped;
+  if (targetScoped) {
+    setText($('#target-roster-label'), board ? `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Ortak hedef' : 'Shared target'} · ${prefs.locale === 'tr' ? 'İlk 10' : 'Top 10'}` : prefs.locale === 'tr' ? 'Hedef DPS' : 'Target DPS');
+    setText($('#target-roster-coverage'), board ? `${prefs.locale === 'tr' ? 'Gözlenen' : 'Observed'} ${board.participantCount ?? board.rows.length}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}` : prefs.locale === 'tr' ? 'Alınan katkı' : 'Received contribution');
     $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Yalnız seçili hedefe verilen ve bağlantında alınan hasar. Parti şartı yok; bu sunucudaki herkesin doğrulanmış sıralaması değildir.' : 'Received damage to the selected target. No party is required; this is not a verified ranking of every player on the server.';
+    renderTargetDpsPanel(targetView);
   }
   for (const [scope, original] of Object.entries(scopes.summaries)) {
-    const observed = board ? targetSummary(targetView.target, state, scope) : null;
+    const observed = targetScoped ? targetSummary(targetView.target, state, scope) : null;
     const summary = observed ? { known: observed.known, dps: observed.dps, damage: observed.totalDamage } : original;
     const node = $(`[data-summary-scope="${scope}"]`);
     if (!node) continue;
     setText(node.querySelector('small'), t({personal:'shortPersonal', party:'shortParty', observed:'shortObserved'}[scope]));
-    setText(node.querySelector('strong'), summary.known ? rate(summary.dps) : '—');
+    setText(node.querySelector('strong'), summary.known && !(measurement.kind === 'boss-filter' && !summary.damage) && observed?.evidence !== 'no-observed-contribution' ? rate(summary.dps) : '—');
     node.title = `${board ? `${displayTargetName(targetView.target, prefs.locale)} · ` : ''}${t(`${scope}Dps`)}: ${summary.known ? rate(summary.dps) : t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summary.known ? num(summary.damage) : '—'}`;
   }
   const targets = prefs.mode === 'boss' ? scoped.targets.filter(target => target.is_boss) : scoped.targets;
   const topTarget = targetView.target || [...targets].sort((a, b) => b.damage - a.damage)[0];
   $('#target-name').textContent = topTarget ? displayTargetName(topTarget, prefs.locale) : '—'; $('#target-name').title = topTarget ? displayTargetName(topTarget, prefs.locale) : '';
   renderTargetVitals(topTarget, targetView.target ? targetView.vital : targetVital(topTarget, Date.now()));
-  $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : t('chooseCharacter');
-  $('#combat-time').title = prefs.locale === 'tr' ? `${board ? 'Seçili hedefin ortak süresi' : 'Seçili kapsamın savaş süresi'} · ${fullNumber(scoped.elapsed / 1000)} sn` : `${board ? 'Selected target’s common duration' : 'Selected scope’s combat duration'} · ${fullNumber(scoped.elapsed / 1000)} s`;
-  $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : t('chooseCharacter');
-  if (board) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
+  $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known && scoped.dps !== null ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : measurementMessage(measurement, targetView) || t('chooseCharacter');
+  $('#combat-time').title = prefs.locale === 'tr' ? `${targetScoped ? 'Seçili hedefin ortak süresi' : 'Seçili kapsamın savaş süresi'} · ${fullNumber(scoped.elapsed / 1000)} sn` : `${targetScoped ? 'Selected target’s common duration' : 'Selected scope’s combat duration'} · ${fullNumber(scoped.elapsed / 1000)} s`;
+  $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : measurementMessage(measurement, targetView) || t('chooseCharacter');
+  if (targetScoped) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
   for (const selector of ['#dps-value', '#damage-value']) $(selector).parentElement.style.setProperty('--metric-length', Math.max(4, $(selector).textContent.length));
-  $('#mode-caption').textContent = board ? (prefs.locale === 'tr' ? 'Seçili hedef' : 'Selected target') : t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
-  $('#boss-summary').hidden = Boolean(board) || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
+  $('#mode-caption').textContent = targetScoped ? (prefs.locale === 'tr' ? 'Seçili hedef' : 'Selected target') : t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
+  $('#boss-summary').hidden = targetScoped || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
   const notice = $('#notice'); notice.hidden = false;
   for (const tone of ['demo', 'error', 'warning']) notice.classList.toggle(tone, status.tone === tone);
-  const scopeMessage = !prefs.displayModules.dps || board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
-  setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo'].includes(status.kind) ? scopeMessage : status.message);
+  const scopeMessage = !prefs.displayModules.dps ? '' : measurementMessage(measurement, targetView) || (board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '');
+  setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo', 'paused'].includes(status.kind) ? scopeMessage : status.message);
   notice.title = `${scopeMessage ? `${scopeMessage}\n` : ''}${status.message}\n${status.detail}`;
   $('#damage-scope').title = board ? $('#target-roster-strip').title : scopes.fallback ? t('partyFallback') : t('rosterScope');
   $('#players').setAttribute('aria-label', board ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
@@ -539,9 +557,9 @@ function renderMeter() {
   notice.dataset.diagnostics = String(canDiagnose);
   notice.setAttribute('role', canDiagnose ? 'button' : 'status'); notice.tabIndex = canDiagnose ? 0 : -1;
   if (canDiagnose) setText(notice, `${notice.textContent} · ${prefs.locale === 'tr' ? 'Tanı ↗' : 'Diagnostics ↗'}`);
-  if (!canDiagnose && prefs.displayModules.dps && !board && prefs.mode === 'boss' && !state.targets.length && targetBoardChoices(state).length) {
+  if (!canDiagnose && prefs.displayModules.dps && measurement.kind === 'boss-filter') {
     notice.hidden = false; notice.classList.add('warning');
-    setText(notice, prefs.locale === 'tr' ? 'Boss etiketi alınmadı. İlk 10 için aşağıdan hedef seç veya Tümü görünümüne geç.' : 'No boss classification received. Choose a Top 10 target below or switch to All.');
+    setText(notice, measurementMessage(measurement, targetView));
   }
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
@@ -559,14 +577,55 @@ function renderMeter() {
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
 }
 
-function renderTargetBoardControls() {
+function measurementMessage(measurement, targetView) {
+  const tr = prefs.locale === 'tr';
+  const messages = tr ? {
+    'boss-filter': `${state.encounter_active ? 'Hasar alındı' : 'Karşılaşma kaydı var'}; Boss filtresi bu hedefi gizliyor. Tümü’ne geç veya hedef seç.`,
+    'identity-pending': 'Karakter kimliği bekleniyor; gözlenen hasar kişisel toplamına eklenmez.',
+    'party-pending': 'Grup üyeleri henüz doğrulanmadı; yakındaki oyuncular grup sayılmaz.',
+    'contribution-pending': 'Bu kapsamın hasar verisi henüz alınmadı.',
+    'contribution-missing': 'Bu hedefte kişisel katkın henüz alınmadı; gözlenen ilk 10 gösteriliyor.',
+    'decoding-pending': 'Oyun paketleri geliyor; çözülen savaş çerçevesi henüz yok.',
+    'damage-pending': 'Veri çözülüyor; desteklenen bir hasar olayı henüz alınmadı.',
+    'outgoing-pending': 'Bu karşılaşmada doğrulanmış giden PvE hasarı henüz yok.',
+  } : {
+    'boss-filter': `${state.encounter_active ? 'Damage received' : 'Encounter data retained'}; the Boss filter hides this target. Switch to All or select a target.`,
+    'identity-pending': 'Waiting for character identity; nearby damage is excluded from your personal total.',
+    'party-pending': 'Party membership is unconfirmed; nearby players are not treated as your party.',
+    'contribution-pending': 'Damage for this scope has not been received yet.',
+    'contribution-missing': 'Your contribution to this target has not been received; showing the observed Top 10.',
+    'decoding-pending': 'Game packets received; no decoded combat frames yet.',
+    'damage-pending': 'Data is decoding; no supported damage event received yet.',
+    'outgoing-pending': 'No confirmed outgoing PvE damage in this encounter yet.',
+  };
+  if (messages[measurement.kind]) return messages[measurement.kind];
+  if (!targetView.roster && targetView.observedCandidateCount > 1) return tr ? 'Birden fazla ortak savaş alınıyor. İlk 10 için hedef seç.' : 'Several shared fights are being received. Choose a target for Top 10.';
+  return '';
+}
+
+function renderTargetDpsPanel(view) {
+  const tr = prefs.locale === 'tr', own = targetSummary(view.target, state, 'personal'), observed = targetSummary(view.target, state, 'observed');
+  const ownKnown = own?.known && own.evidence !== 'no-observed-contribution';
+  setText($('#target-total-caption'), tr ? 'HEDEF DPS' : 'TARGET DPS');
+  setText($('#target-total-rate'), observed?.known ? rate(observed.dps) : '—');
+  setText($('#target-total-damage'), observed?.known ? `${num(observed.totalDamage)} ${tr ? 'hasar' : 'damage'}` : '—');
+  setText($('#target-personal-caption'), tr ? 'KİŞİSEL DPS' : 'PERSONAL DPS');
+  setText($('#target-personal-rate'), ownKnown ? rate(own.dps) : '—');
+  setText($('#target-personal-rank'), view.roster?.ownRank ? `${tr ? 'Sıran' : 'Your rank'} ${view.roster.ownRank} / ${view.roster.participantCount ?? '—'}` : ownKnown ? `${num(own.totalDamage)} ${tr ? 'hasar' : 'damage'}` : own?.evidence === 'no-observed-contribution' ? (tr ? 'Katkın alınmadı' : 'Contribution not received') : (tr ? 'Kimlik / katkı bekleniyor' : 'Identity / contribution pending'));
+  $('#target-dps-panel').dataset.source = view.focusSource;
+  $('#target-dps-panel').title = tr ? `Yalnız seçili hedef · ortak ${clockTime(observed?.elapsedMs ?? 0)} süre. ${view.focusSource === 'observed-shared-target' ? 'Yakında alınan tek ortak savaş; kişisel hedef veya boss sınıfı doğrulanmadı.' : 'Hedefin kendi hasarı ve katkı sıralaması.'}` : `Selected target only · common ${clockTime(observed?.elapsedMs ?? 0)} duration. ${view.focusSource === 'observed-shared-target' ? 'Single received shared fight; personal targeting and boss classification are unconfirmed.' : 'This target’s received damage and contributor ranks.'}`;
+}
+
+function renderTargetBoardControls(measurement = {}) {
   const tr = prefs.locale === 'tr', select = $('#target-board-select'), choices = targetBoardChoices(state);
-  $('#target-board-controls').hidden = !choices.length && !selectedBoardTargetId;
+  $('#target-board-controls').hidden = !choices.length && !selectedBoardTargetId && measurement.kind !== 'boss-filter';
+  $('#show-all-targets').hidden = measurement.kind !== 'boss-filter';
+  setText($('#show-all-targets'), tr ? 'Tümü’ne geç' : 'Show All');
   const value = selectedBoardTargetId ? `target:${selectedBoardTargetId}` : prefs.autoTargetRoster ? 'auto' : 'off';
   setText($('#target-board-caption'), tr ? 'Hedef · İlk 10' : 'Target · Top 10');
   setText($('#dps-view-button'), tr ? 'DPS’i aç' : 'Show DPS'); $('#dps-view-button').hidden = prefs.displayModules.dps;
   $('#dps-view-button').title = tr ? 'Pet takibini koruyarak DPS görünümünü aç' : 'Show DPS while keeping pet tracking';
-  const options = `<option value="auto">${tr ? 'Otomatik · vurduğum hedef' : 'Auto · my last target'}</option><option value="off">${tr ? 'Kapalı · oyuncu listesi' : 'Off · player roster'}</option>${choices.map((target, index) => `<option value="target:${esc(target.id)}">${esc(displayTargetName(target, prefs.locale))} · ${target.participant_count} ${tr ? 'kişi' : 'players'}${!target.name || /^#|^Target\s|^NPC\s/iu.test(target.name) ? ` · ${index + 1}` : ''}</option>`).join('')}${selectedBoardTargetId && !choices.some(target => String(target.id) === selectedBoardTargetId) ? `<option value="${esc(value)}">${tr ? 'Hedef verisi bekleniyor' : 'Waiting for target data'}</option>` : ''}`;
+  const options = `<option value="auto">${tr ? 'Otomatik · hedef / ortak savaş' : 'Auto · target / shared fight'}</option><option value="off">${tr ? 'Kapalı · oyuncu listesi' : 'Off · player roster'}</option>${choices.map((target, index) => `<option value="target:${esc(target.id)}">${esc(displayTargetName(target, prefs.locale))} · ${target.participant_count} ${tr ? 'kişi' : 'players'}${!target.name || /^#|^Target\s|^NPC\s/iu.test(target.name) ? ` · ${index + 1}` : ''}</option>`).join('')}${selectedBoardTargetId && !choices.some(target => String(target.id) === selectedBoardTargetId) ? `<option value="${esc(value)}">${tr ? 'Hedef verisi bekleniyor' : 'Waiting for target data'}</option>` : ''}`;
   if (select._options !== options && document.activeElement !== select) { select.innerHTML = options; select._options = options; }
   if (document.activeElement !== select) select.value = value;
   select.title = tr ? 'Aynı hedefe verilen gözlenen hasar. Parti gerekmez. Her hedefin kendi süresi kullanılır.' : 'Observed damage to one target. No party required. Each target uses its own duration.';
@@ -1765,6 +1824,7 @@ $('#module-home').addEventListener('click', event => {
 });
 $('#damage-scope').addEventListener('change', event => { selectedBoardTargetId = null; savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
 $('#dps-view-button').addEventListener('click', () => savePreferences({ displayModules: { ...prefs.displayModules, dps: true } }));
+$('#show-all-targets').addEventListener('click', () => chooseTargetMode('all'));
 $('#target-board-select').addEventListener('change', event => {
   const value = event.target.value;
   if (value.startsWith('target:')) { selectedBoardTargetId = value.slice(7); renderMeter(); }
@@ -1798,9 +1858,16 @@ $('#players').addEventListener('click', event => {
   snapshot = null; openDrawer('analysis', 'skills');
 });
 $('#sort').addEventListener('change', event => savePreferences({ sort: event.target.value }));
+async function chooseTargetMode(mode) {
+  try {
+    if (native) { await action('set_target_mode', { mode }); await refreshState(); }
+    else if (demo && filteredTargetDemoSource && mode !== 'boss') state = normalizeState({ ...filteredTargetDemoSource, encounter_started_ms: state.encounter_started_ms, focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, observed_targets: state.observed_targets });
+    savePreferences({ mode });
+  } catch {}
+}
 $('#target-modes').addEventListener('click', async event => {
   const mode = delegatedControl(event, event.currentTarget, 'button[data-mode]')?.dataset.mode; if (!mode) return;
-  try { if (native) await action('set_target_mode', { mode }); savePreferences({ mode }); } catch {}
+  await chooseTargetMode(mode);
 });
 $('#pause-button').addEventListener('click', async () => { try { await action('set_paused', { paused: !state.paused }, () => { state.paused = !state.paused; }); if (native) await refreshState(); else renderMeter(); } catch {} });
 $('#reset-button').addEventListener('click', async () => { try { await action('reset_encounter', undefined, () => { state = normalizeState({ status: 'demo', paused: state.paused }); }); if (native) await refreshState(); else renderMeter(); toast(t('resetDone')); } catch {} });

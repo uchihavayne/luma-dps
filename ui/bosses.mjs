@@ -110,19 +110,28 @@ export function bossRoster(target, state = {}) {
 
 export function targetSummary(target, state = {}, scope = 'personal') {
   const elapsedMs = number(target?.elapsed_ms) ?? 0;
-  if (!target) return { known: false, totalDamage: null, dps: null, elapsedMs, scope };
-  let totalDamage = null, dps = null;
-  if (scope === 'observed') totalDamage = number(target.damage);
+  if (!target) return { known: false, totalDamage: null, dps: null, elapsedMs, scope, evidence: 'target-unavailable' };
+  let totalDamage = null, dps = null, evidence = 'contribution-unavailable';
+  if (scope === 'observed') { totalDamage = number(target.damage); evidence = totalDamage === null ? 'contribution-unavailable' : 'received-target'; }
   else if (scope === 'party') {
-    if (['server', 'manual'].includes(state.party_membership_source)) { totalDamage = number(target.party_total_damage); dps = number(target.party_dps); }
+    if (['server', 'manual'].includes(state.party_membership_source)) {
+      totalDamage = number(target.party_total_damage); dps = number(target.party_dps);
+      if (totalDamage !== null) evidence = 'received-party';
+    } else evidence = 'unresolved-party';
   } else if (localIdentity(state)) {
     const ownId = actor(target.own_participant?.id);
-    if (!target.own_participant || ownId === localIdentity(state)) {
-      totalDamage = number(target.own_participant?.damage) ?? 0; dps = number(target.own_participant?.dps);
+    if (target.own_participant && ownId === localIdentity(state)) {
+      totalDamage = number(target.own_participant.damage); dps = number(target.own_participant.dps);
+      if (totalDamage !== null) evidence = 'received-own';
+    } else if (target.own_participant) evidence = 'conflicting-own-identity';
+    else if (bossRoster(target, state)) {
+      // The engine checks the full received contributor map before the top-ten
+      // cap. No own row means no received own credit, not proof of game-wide 0.
+      totalDamage = 0; dps = 0; evidence = 'no-observed-contribution';
     }
-  }
+  } else evidence = 'unresolved-identity';
   if (totalDamage !== null && dps === null) dps = totalDamage / Math.max(elapsedMs / 1000, 1);
-  return { known: totalDamage !== null, totalDamage, dps, elapsedMs, scope };
+  return { known: totalDamage !== null, totalDamage, dps, elapsedMs, scope, evidence };
 }
 
 export function targetBoardChoices(state = {}) {
@@ -141,4 +150,31 @@ export function bossPresentation(state = {}, { now = Date.now(), autoBossRoster 
     summary: roster ? targetSummary(target, state, damageScope) : null,
     automatic: Boolean(roster) && !explicit, focusSource: target ? focus.source : 'none',
     selectedTargetId: selected, selectionAvailable: !explicit || Boolean(roster), focusMemory: personal.memory };
+}
+
+export function worldTargetPresentation(state = {}, options = {}) {
+  const { now = Date.now(), autoBossRoster = true, damageScope = 'personal', selectedTargetId = null } = options;
+  let view = bossPresentation(state, { ...options, now });
+  const timestamp = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const started = timestamp(state.encounter_started_ms);
+  const live = autoBossRoster && state.encounter_active === true && state.paused !== true
+    && state.capture?.status === 'capturing' && started !== null && started <= now;
+  const candidates = live ? targetObservations(state).filter(target => Number.isSafeInteger(target.participant_count) && target.participant_count >= 10
+    && timestamp(target.started_ms) !== null && target.started_ms >= started && target.started_ms <= now
+    && fresh(target.last_hit_ms, now, 10_000) && target.last_hit_ms >= target.started_ms
+    && number(target.current_hp) !== 0 && bossRoster(target, state)) : [];
+  const explicit = selectedTargetId !== null && selectedTargetId !== undefined && selectedTargetId !== '';
+  // A single nearby received fight can be shown without claiming it is a boss
+  // or the player's target. Multiple candidates require the existing chooser.
+  // Neither this fallback nor explicit selection seeds personal focus memory.
+  if (!explicit && !view.target && candidates.length === 1) {
+    const target = candidates[0], roster = bossRoster(target, state);
+    view = { ...view, target, vital: targetVital(target, now), roster,
+      summary: targetSummary(target, state, damageScope), automatic: true,
+      focusSource: 'observed-shared-target' };
+  }
+  return { ...view, observedCandidateCount: candidates.length,
+    observedSummary: view.roster ? targetSummary(view.target, state, 'observed') : null,
+    personalSummary: view.roster ? targetSummary(view.target, state, 'personal') : null,
+    partySummary: view.roster ? targetSummary(view.target, state, 'party') : null };
 }

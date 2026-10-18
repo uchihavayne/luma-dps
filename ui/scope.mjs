@@ -29,8 +29,10 @@ export function scopedEncounter(state, scope = 'personal') {
   }
   const elapsed = elapsedFor(state, 'personal_elapsed_ms');
   const filtered = players.filter(player => sameId(player.id, localId)).map(player => ({ ...player, dps: nonnegative(state?.personal_dps) ?? scopedRate(nonnegative(player.damage), elapsed) }));
-  const known = localId !== null && localId !== undefined && String(localId) !== '' && ['server', 'manual', 'name-match'].includes(state?.local_identity_source);
-  const damage = known ? nonnegative(state?.personal_total_damage) ?? filtered.reduce((sum, player) => sum + (nonnegative(player.damage) ?? 0), 0) : null;
+  const identified = localId !== null && localId !== undefined && String(localId) !== '' && ['server', 'manual', 'name-match'].includes(state?.local_identity_source);
+  const receivedAmounts = filtered.map(player => nonnegative(player.damage)).filter(value => value !== null);
+  const damage = identified ? nonnegative(state?.personal_total_damage) ?? (receivedAmounts.length ? receivedAmounts.reduce((sum, value) => sum + value, 0) : null) : null;
+  const known = identified && damage !== null;
   return { scope: 'personal', known, players: known ? filtered : [], targets: known ? state?.personal_targets || [] : [], damage, dps: known ? nonnegative(state?.personal_dps) ?? scopedRate(damage, elapsed) : null, elapsed };
 }
 

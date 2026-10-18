@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { focusedTarget, targetVital, bossRoster, targetSummary, bossPresentation, targetBoardChoices } from '../bosses.mjs';
+import { focusedTarget, targetVital, bossRoster, targetSummary, bossPresentation, targetBoardChoices, worldTargetPresentation } from '../bosses.mjs';
 
 const player = (id, damage, extra = {}) => ({ id, name: `Player${id}`, class_name: 'Ranger', damage, dps: damage / 10, identity_confirmed: true, ...extra });
 const target = (extra = {}) => ({ id: 900, name: 'Received boss', is_boss: true, damage: 1000, elapsed_ms: 10_000,
@@ -203,4 +203,108 @@ test('a newer own target supersedes continuation and unrelated nearby activity n
   const strangers = { ...active, focused_target_id: null, focused_target_observed_at_ms: null,
     observed_targets: [{ ...shared, last_hit_ms: 1000 }, { ...next, own_participant: null, own_last_hit_ms: null }] };
   assert.equal(bossPresentation(strangers, { now: 25_000, previousFocus: previous }).target, null);
+});
+
+const nearbyTarget = (extra = {}) => target({ is_boss: false, damage: 6000, elapsed_ms: 24_000, started_ms: 1000, last_hit_ms: 24_900,
+  current_hp: null, reported_max_hp: null, participant_count: 12,
+  participants: Array.from({ length: 10 }, (_, index) => player(index + 2, 1000 - index * 100, { dps: (1000 - index * 100) / 24 })),
+  own_participant: null, own_rank: null, own_last_hit_ms: null, ...extra });
+const nearbyState = (extra = {}) => state({ focused_target_id: null, focused_target_observed_at_ms: null, targets: [],
+  encounter_started_ms: 1000, encounter_active: true, capture: { status: 'capturing' }, observed_targets: [nearbyTarget()], ...extra });
+
+test('one fresh shared fight can show its received Top 10 without an own hit or boss classification', () => {
+  const value = nearbyState(), view = worldTargetPresentation(value, { now: 25_000 });
+  assert.equal(bossPresentation(value, { now: 25_000 }).target, null);
+  assert.equal(view.target.id, 900); assert.equal(view.focusSource, 'observed-shared-target');
+  assert.equal(view.automatic, true); assert.equal(view.roster.kind, 'target'); assert.equal(view.roster.rows.length, 10);
+  assert.equal(view.observedCandidateCount, 1); assert.equal(view.focusMemory, null);
+  assert.equal(view.observedSummary.totalDamage, 6000); assert.equal(view.observedSummary.dps, 250);
+  assert.equal(view.observedSummary.evidence, 'received-target'); assert.equal(view.partySummary.known, false);
+  assert.equal(view.personalSummary.totalDamage, 0); assert.equal(view.personalSummary.evidence, 'no-observed-contribution');
+  assert.equal(view.roster.own, null); assert.equal(view.roster.ownRank, null);
+});
+
+test('missing personal identity leaves personal damage unknown while the independent shared board remains usable', () => {
+  const value = nearbyState({ local_player_id: null, local_identity_source: 'unresolved' });
+  const view = worldTargetPresentation(value, { now: 25_000 });
+  assert.equal(view.focusSource, 'observed-shared-target'); assert.equal(view.observedSummary.totalDamage, 6000);
+  assert.equal(view.personalSummary.known, false); assert.equal(view.personalSummary.totalDamage, null);
+  assert.equal(view.personalSummary.dps, null); assert.equal(view.personalSummary.evidence, 'unresolved-identity');
+  assert.ok(view.roster.rows.every(row => !row.is_local));
+});
+
+test('two fresh shared fights require a selection rather than guessing the largest or nearest fight', () => {
+  const value = nearbyState({ observed_targets: [nearbyTarget(), nearbyTarget({ id: 901, damage: 99_000 })] });
+  const view = worldTargetPresentation(value, { now: 25_000 });
+  assert.equal(view.observedCandidateCount, 2); assert.equal(view.target, null); assert.equal(view.roster, null);
+  assert.equal(view.observedSummary, null); assert.equal(view.personalSummary, null); assert.equal(view.partySummary, null);
+  assert.equal(targetBoardChoices(value).length, 2);
+  const selected = worldTargetPresentation(value, { now: 25_000, selectedTargetId: 900 });
+  assert.equal(selected.target.id, 900); assert.equal(selected.focusSource, 'user-selected-target'); assert.equal(selected.focusMemory, null);
+});
+
+test('a fresh own target including a solo target always takes precedence over the nearby shared fight', () => {
+  const solo = target({ id: 901, is_boss: false, participant_count: 1, participants: [player(1, 1000)],
+    own_participant: player(1, 1000), own_last_hit_ms: 24_000, started_ms: 22_000 });
+  const value = nearbyState({ focused_target_id: 901, focused_target_observed_at_ms: 24_000, live_target: solo });
+  const view = worldTargetPresentation(value, { now: 25_000 });
+  assert.equal(view.target.id, 901); assert.equal(view.focusSource, 'personal-hit');
+  assert.equal(view.observedCandidateCount, 1); assert.equal(view.roster, null); assert.equal(view.observedSummary, null);
+  const shared = nearbyTarget({ own_last_hit_ms: 24_000, own_participant: player(1, 500), own_rank: 11 });
+  const ownView = worldTargetPresentation(nearbyState({ focused_target_id: 900, focused_target_observed_at_ms: 24_000, observed_targets: [shared] }), { now: 25_000 });
+  assert.equal(ownView.focusSource, 'personal-hit'); assert.equal(ownView.personalSummary.totalDamage, 500);
+  assert.equal(ownView.personalSummary.evidence, 'received-own'); assert.equal(ownView.roster.ownRank, 11);
+  assert.ok(ownView.focusMemory);
+});
+
+test('an unclassified personally hit solo target keeps its received summaries when boss filtering zeroes the main encounter', () => {
+  const own = player(1, 2400, { dps: 600 });
+  const solo = target({ is_boss: false, damage: 2400, elapsed_ms: 4000, started_ms: 21_000, last_hit_ms: 24_900,
+    participant_count: 1, participants: [own], own_participant: own, own_rank: 1, own_last_hit_ms: 24_000 });
+  const value = nearbyState({ total_damage: 0, dps: 0, players: [], targets: [], observed_targets: [], live_target: solo,
+    encounter_started_ms: 21_000, all_targets_summary: { total_damage: 2400, dps: 600, elapsed_ms: 4000 },
+    focused_target_id: 900, focused_target_observed_at_ms: 24_000 });
+  for (const autoBossRoster of [true, false]) {
+    const view = worldTargetPresentation(value, { now: 25_000, autoBossRoster });
+    assert.equal(view.target.id, 900); assert.equal(view.focusSource, 'personal-hit');
+    assert.equal(view.target.is_boss, false); assert.equal(view.roster, null); assert.equal(view.automatic, false);
+    assert.equal(view.observedSummary, null); assert.equal(view.personalSummary, null);
+    for (const scope of ['personal', 'observed']) {
+      const summary = targetSummary(view.target, value, scope);
+      assert.equal(summary.known, true); assert.equal(summary.totalDamage, 2400);
+      assert.equal(summary.dps, 600); assert.equal(summary.elapsedMs, 4000);
+    }
+  }
+  assert.deepEqual(targetBoardChoices(value), []);
+  assert.equal(value.total_damage, 0); assert.equal(value.live_target.participants.length, 1);
+});
+
+test('shared fallback requires an active healthy capture and fresh same-encounter evidence', () => {
+  const values = [
+    { encounter_active: false }, { encounter_started_ms: null }, { encounter_started_ms: 26_000 }, { paused: true },
+    { capture: { status: 'error' } }, { capture: { status: 'waiting' } },
+    ...[{ started_ms: null }, { started_ms: 0 }, { started_ms: 26_000 }, { last_hit_ms: 15_000 }, { last_hit_ms: 26_000 },
+      { started_ms: 24_500, last_hit_ms: 24_000 }, { current_hp: 0 }, { participant_count: 9 }, { participant_count: '12' },
+      { participants_available: false }, { participants: [] }].map(patch => ({ observed_targets: [nearbyTarget(patch)] })),
+  ];
+  for (const patch of values) {
+    const view = worldTargetPresentation(nearbyState(patch), { now: 25_000 });
+    assert.equal(view.target, null, JSON.stringify(patch)); assert.equal(view.observedSummary, null);
+  }
+  assert.equal(worldTargetPresentation(nearbyState(), { now: 25_000, autoBossRoster: false }).target, null);
+  const invalidSelection = worldTargetPresentation(nearbyState(), { now: 25_000, selectedTargetId: '999' });
+  assert.equal(invalidSelection.target, null); assert.equal(invalidSelection.selectionAvailable, false);
+  const partial = worldTargetPresentation(nearbyState({ diagnostics: { stream_gaps: 1 }, observed_targets: [nearbyTarget({ capture_complete: false })] }), { now: 25_000 });
+  assert.equal(partial.focusSource, 'observed-shared-target'); assert.equal(partial.roster.complete, false);
+  assert.equal(partial.personalSummary.evidence, 'no-observed-contribution');
+});
+
+test('no observed contribution is distinct from an unavailable contribution source or conflicting identity', () => {
+  const local = nearbyState();
+  assert.equal(targetSummary(nearbyTarget(), local).evidence, 'no-observed-contribution');
+  const unavailable = targetSummary(nearbyTarget({ participants_available: false }), local);
+  assert.equal(unavailable.known, false); assert.equal(unavailable.totalDamage, null); assert.equal(unavailable.evidence, 'contribution-unavailable');
+  const conflict = targetSummary(nearbyTarget({ own_participant: player(99, 100) }), local);
+  assert.equal(conflict.known, false); assert.equal(conflict.evidence, 'conflicting-own-identity');
+  assert.equal(targetSummary(null, local).evidence, 'target-unavailable');
 });

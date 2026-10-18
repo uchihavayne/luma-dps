@@ -252,6 +252,41 @@ pub struct Diagnostics {
     pub stream_gaps: u64,
     pub truncated_encounter: bool,
 }
+
+/// Received outgoing damage before the overlay's target-category filter.
+/// Unknown identity or membership remains distinct from an observed zero.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AllTargetsSummary {
+    pub total_damage: u64,
+    pub dps: f64,
+    pub elapsed_ms: u64,
+    pub personal_total_damage: Option<u64>,
+    pub personal_dps: Option<f64>,
+    pub personal_elapsed_ms: Option<u64>,
+    pub party_total_damage: Option<u64>,
+    pub party_dps: Option<f64>,
+    pub party_elapsed_ms: Option<u64>,
+}
+
+impl From<&Encounter> for AllTargetsSummary {
+    fn from(record: &Encounter) -> Self {
+        Self {
+            total_damage: record.total_damage,
+            dps: record.dps,
+            elapsed_ms: record.elapsed_ms,
+            personal_total_damage: record.personal_total_damage,
+            personal_dps: record.personal_dps,
+            personal_elapsed_ms: record
+                .personal_total_damage
+                .map(|_| record.personal_elapsed_ms),
+            party_total_damage: record.party_total_damage,
+            party_dps: record.party_dps,
+            party_elapsed_ms: record.party_total_damage.map(|_| record.party_elapsed_ms),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeterState {
@@ -269,6 +304,7 @@ pub struct MeterState {
     pub targets: Vec<TargetState>,
     /// Same-encounter contribution boards, independent of the main boss filter.
     pub observed_targets: Vec<TargetState>,
+    pub all_targets_summary: AllTargetsSummary,
     pub history: Vec<Encounter>,
     pub cooldowns: Vec<serde_json::Value>,
     pub observed_casts: Vec<cooldowns::CastUse>,
@@ -2881,6 +2917,7 @@ impl MeterEngine {
         // Keep its observed board separate from filtered report totals.
         let unfiltered = (self.target_mode == "boss").then(|| self.snapshot(now, "all"));
         let live_view = unfiltered.as_ref().unwrap_or(&current);
+        let all_targets_summary = AllTargetsSummary::from(live_view);
         let encounter_started_ms =
             (self.started.is_some() || self.completed.is_some()).then_some(live_view.started_ms);
         let focused_target_id = live_view.focused_target_id;
@@ -3012,6 +3049,7 @@ impl MeterEngine {
             players: current.players,
             targets: current.targets,
             observed_targets,
+            all_targets_summary,
             history: if with_history {
                 self.history.iter().take(30).cloned().collect()
             } else {

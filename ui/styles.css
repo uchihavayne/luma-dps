@@ -233,8 +233,10 @@ body.fullscreen-overlay #meter.compact-strip{height:44px}
 .meter[data-layout=cupertino].has-target-vitals:not(.compact-strip){--header-row:calc(max(54px,calc(var(--target-size,15px)*1.2 + 29px)) + 24px)}
 .meter[data-layout=cupertino] #target-vitals{position:absolute;left:9px;right:9px;top:calc(var(--frame-top) + var(--header-row) - 22px);margin:0}
 .compact-strip #target-vitals{display:none}
-.target-roster-strip{display:flex;align-items:center;justify-content:space-between;gap:6px;flex:0 0 auto;min-height:24px;padding:4px 10px;font-size:9px;color:var(--muted);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
-.target-roster-strip strong{font-size:9px;font-weight:650;color:var(--text);overflow:hidden;text-overflow:ellipsis}.target-roster-strip>span{font-size:8px;flex-shrink:0}
+.target-roster-strip{display:flex;flex-direction:column;align-items:stretch;gap:6px;flex:0 0 auto;min-height:24px;padding:7px 10px;font-size:9px;color:var(--muted);border-bottom:1px solid var(--line);min-width:0;overflow:hidden}
+.target-roster-heading{display:flex;align-items:center;justify-content:space-between;gap:6px;min-width:0}.target-roster-heading strong{font-size:9px;font-weight:650;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.target-roster-heading>span{font-size:8px;flex-shrink:0}
+.target-dps-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.target-dps-panel>div{display:flex;flex-direction:column;gap:2px;min-width:0}.target-dps-panel small{font-size:7px;letter-spacing:.65px;font-weight:600}.target-dps-panel strong{font-size:15px;font-weight:700;letter-spacing:-.3px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.target-dps-panel>div:first-child strong{color:var(--accent)}.target-dps-panel span{font-size:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.target-board-controls>button{flex:0 0 auto;font-size:9px;color:var(--accent);white-space:nowrap}
+.roster-list:has(>#target-roster-strip:not([hidden])){overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain}.meter .roster-list:has(>#target-roster-strip:not([hidden]))>.players{flex:0 0 auto;overflow:visible}
 .meter[data-layout=cupertino]:has(>.notice:not([hidden]))>.roster-stage{padding-top:19px}
 .meter[data-layout=cupertino]:has(>.notice:not([hidden])) .players{padding-top:3px}
 .meter[data-layout=cupertino] #target-roster-strip:not([hidden])+.players{padding-top:3px}

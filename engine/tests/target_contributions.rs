@@ -118,6 +118,9 @@ fn party_summary_uses_all_target_contributors_and_confirmed_pet_damage_merges_wi
     assert_eq!(target.own_participant.as_ref().unwrap().damage, 150);
     assert_eq!(target.party_total_damage, Some(250));
     assert_eq!(target.party_dps, Some(25.0));
+    assert_eq!(state.all_targets_summary.party_total_damage, Some(250));
+    assert_eq!(state.all_targets_summary.party_dps, Some(25.0));
+    assert_eq!(state.all_targets_summary.party_elapsed_ms, Some(10_000));
     assert_eq!(state.focused_target_observed_at_ms, Some(3000));
 }
 
@@ -288,6 +291,15 @@ fn boss_filter_keeps_unmarked_live_target_separate_from_filtered_totals_and_repo
     assert_eq!(state.total_damage, 0);
     assert!(state.targets.is_empty());
     assert!(state.players.iter().all(|player| player.damage == 0));
+    assert_eq!(state.all_targets_summary.total_damage, 600);
+    assert_eq!(state.all_targets_summary.dps, 400.0);
+    assert_eq!(state.all_targets_summary.elapsed_ms, 1500);
+    assert_eq!(state.all_targets_summary.personal_total_damage, Some(100));
+    assert_eq!(state.all_targets_summary.personal_dps, Some(100.0));
+    assert_eq!(state.all_targets_summary.personal_elapsed_ms, Some(500));
+    assert_eq!(state.all_targets_summary.party_total_damage, None);
+    assert_eq!(state.all_targets_summary.party_dps, None);
+    assert_eq!(state.all_targets_summary.party_elapsed_ms, None);
     assert_eq!(state.focused_target_id, Some(900));
     let target = state.live_target.as_ref().unwrap();
     assert_eq!(state.encounter_started_ms, Some(1000));
@@ -522,4 +534,37 @@ fn finishing_a_paused_session_keeps_saved_rates_within_the_declared_end_time() {
     let current = engine.live_state(10_000);
     assert_eq!(current.elapsed_ms, record.elapsed_ms);
     assert_eq!(current.dps, record.dps);
+}
+
+#[test]
+fn unfiltered_summary_preserves_a_known_observed_zero_without_guessing_party_membership() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    hit(&mut engine, 2, 900, 100, 1000);
+    engine.set_target_mode("boss");
+    let state = engine.live_state(2000);
+    assert_eq!(state.all_targets_summary.total_damage, 100);
+    assert_eq!(state.all_targets_summary.personal_total_damage, Some(0));
+    assert_eq!(state.all_targets_summary.personal_dps, Some(0.0));
+    assert_eq!(state.all_targets_summary.personal_elapsed_ms, Some(0));
+    assert_eq!(state.all_targets_summary.party_total_damage, None);
+    assert_eq!(state.all_targets_summary.party_dps, None);
+    assert_eq!(state.all_targets_summary.party_elapsed_ms, None);
+
+    engine.ingest_event(
+        Event::PartyRoster {
+            names: vec!["Local".into()],
+        },
+        2100,
+    );
+    let state = engine.live_state(2500);
+    assert_eq!(state.all_targets_summary.party_total_damage, Some(0));
+    assert_eq!(state.all_targets_summary.party_dps, Some(0.0));
+    assert_eq!(state.all_targets_summary.party_elapsed_ms, Some(0));
+    let value = serde_json::to_value(&state.all_targets_summary).unwrap();
+    assert_eq!(value["personal_total_damage"], 0);
+    assert_eq!(value["personal_elapsed_ms"], 0);
+    assert_eq!(value["party_total_damage"], 0);
+    assert_eq!(value["party_elapsed_ms"], 0);
 }

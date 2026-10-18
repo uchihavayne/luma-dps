@@ -135,8 +135,23 @@ test('all observed actors and totals require an explicit observed scope', () => 
 test('invalid personal metrics stay unknown while a confirmed actor with no hits has measured zero', () => {
   const invalid = normalizeState({ personal_total_damage: NaN, personal_dps: Infinity });
   assert.equal(invalid.personal_total_damage, null); assert.equal(invalid.personal_dps, null);
-  const known = normalizeState({ local_player_id: 1, local_identity_source: 'server' });
+  const known = normalizeState({ local_player_id: 1, local_identity_source: 'server', personal_total_damage: 0 });
   assert.equal(scopedEncounter(known).known, true); assert.equal(scopedEncounter(known).damage, 0);
+});
+
+test('a missing personal aggregate and absent or capped own row remain unknown despite a verified identity', () => {
+  const value = normalizeState({ ...nearby(), local_player_id: 2, local_identity_source: 'server', personal_total_damage: null, personal_dps: null,
+    players: nearby().players.filter(player => player.id !== '2') });
+  for (const state of [value, { ...value, personal_dps: 123 }, { ...value, players: [] }]) {
+    const personal = scopedEncounter(state);
+    assert.equal(personal.known, false); assert.equal(personal.damage, null); assert.equal(personal.dps, null);
+    assert.deepEqual(personal.players, []); assert.deepEqual(personal.targets, []);
+    assert.equal(meterScopes(state).summaries.observed.damage, 9000);
+  }
+  const zero = scopedEncounter({ ...value, personal_total_damage: 0 });
+  assert.equal(zero.known, true); assert.equal(zero.damage, 0); assert.equal(zero.dps, 0);
+  const received = scopedEncounter({ ...value, players: [{ id: '2', damage: 2000 }] });
+  assert.equal(received.known, true); assert.equal(received.damage, 2000); assert.equal(received.dps, 200);
 });
 
 test('appearance export roundtrip includes layout but never exports identity, roster or scope preferences', () => {
