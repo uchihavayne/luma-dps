@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS } from '../cube.mjs';
+import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS, CUBE_DIRECTION_LIFETIME_MS } from '../cube.mjs';
 import { normalizePreferences, exportTheme, importTheme } from '../model.mjs';
 
 const now = 1791939600000;
@@ -37,7 +37,7 @@ test('a current stereo match displays received direction, relative level and sim
   assert.equal(view.matched, true); assert.equal(view.direction, 'left'); assert.equal(view.short, '← Cube');
   assert.equal(view.similarity, '94%'); assert.equal(view.strength, '-31.5 dBFS'); assert.equal(view.trendLabel, 'Signal getting stronger');
   assert.ok(!('distance' in view)); assert.ok(!('bearing' in view)); assert.ok(!('probability' in view));
-  assert.equal(cubePresentation(match({ direction: 'right' }), { now }).short, '→ Küp');
+  assert.equal(cubePresentation(match({ direction: 'right', pan: .5, steer_degrees: 30 }), { now }).short, '→ Küp');
 });
 
 test('mono, low confidence, balanced and invalid bearings avoid invented front/back direction', () => {
@@ -47,19 +47,19 @@ test('mono, low confidence, balanced and invalid bearings avoid invented front/b
   }
   const balanced = cubePresentation(match({ direction: 'center' }), { now, locale: 'en' });
   assert.equal(balanced.direction, 'center'); assert.equal(balanced.directionLabel, 'Stereo balanced · turn to locate');
+  assert.equal(balanced.steerDegrees, null); assert.equal(balanced.rearDegrees, null);
 });
 
 test('moderate stereo cues survive similarity-weighted pan while weak cues stay unknown', () => {
   for (const direction of ['left', 'right']) {
-    const moderate = cubePresentation(match({ direction, direction_confidence: .35 }), { now, locale: 'en' });
+    const signs = direction === 'left' ? { pan: -.5, steer_degrees: -30 } : { pan: .5, steer_degrees: 30 };
+    const moderate = cubePresentation(match({ direction, ...signs, direction_confidence: .35 }), { now, locale: 'en' });
     assert.equal(moderate.direction, direction);
     assert.equal(moderate.directionLabel, direction === 'left' ? 'Left-weighted audio' : 'Right-weighted audio');
     const lowThreshold = normalizePreferences({ cubeThreshold: .6 }).cubeThreshold;
-    const legal = cubePresentation(match({ direction, score: lowThreshold, direction_confidence: .133 }), { now });
-    assert.equal(legal.direction, direction);
-    assert.equal(legal.directionLabel, direction === 'left' ? 'Sol ses ağırlıklı' : 'Sağ ses ağırlıklı');
-    assert.equal(cubePresentation(match({ direction, direction_confidence: .12 }), { now }).direction, direction);
-    assert.equal(cubePresentation(match({ direction, direction_confidence: .119 }), { now }).direction, 'unknown');
+    const legal = cubePresentation(match({ direction, ...signs, score: lowThreshold, direction_confidence: .133 }), { now });
+    assert.equal(legal.matched, true); assert.equal(legal.direction, 'unknown');
+    assert.equal(cubePresentation(match({ direction, ...signs, direction_confidence: .349 }), { now }).direction, 'unknown');
   }
   assert.equal(cubePresentation(match({ direction: 'center', direction_confidence: .6 }), { now }).direction, 'center');
   assert.equal(cubePresentation(match({ direction: 'center', direction_confidence: .599 }), { now }).direction, 'unknown');
@@ -111,18 +111,31 @@ test('bounded reference conversion preserves binary audio and rejects oversized 
   await assert.rejects(cubeReferenceBase64({ size: 3, async arrayBuffer() { return new ArrayBuffer(2); } }), /reference_size/);
 });
 
-test('continuous audio steering preserves side and shows the equally possible rear mirror', () => {
-  for (const [pan, steer, direction, rear] of [[-1, -90, 'left', 270], [-.5, -30, 'left', 210], [0, 0, 'center', 180], [.5, 30, 'right', 150], [1, 90, 'right', 90]]) {
+test('the navigator points to the supported stereo side without inventing a world bearing', () => {
+  for (const [pan, steer, direction, arrow] of [[-1, -90, 'left', -90], [-.5, -30, 'left', -90], [0, 0, 'center', null], [.5, 30, 'right', 90], [1, 90, 'right', 90]]) {
     const state = normalizeCubeState(match({ pan, steer_degrees: steer, direction }));
     const view = cubePresentation(state, { now });
-    assert.equal(state.pan, pan); assert.equal(view.steerDegrees, steer); assert.equal(view.rearDegrees, rear); assert.equal(view.bearingAmbiguous, true);
+    assert.equal(state.pan, pan); assert.equal(view.steerDegrees, arrow); assert.equal(view.rearDegrees, null); assert.equal(view.bearingAmbiguous, true);
   }
   assert.equal(cubePresentation(match({ bearing_ambiguous: false }), { now }).bearingAmbiguous, true);
   const view = cubePresentation(match(), { now });
   assert.equal(view.relativeStrength, '64%'); assert.equal(view.snr, '17.4 dB');
 });
 
+test('a held sound match cannot retain an old direction after a camera turn or inconsistent stereo data', () => {
+  const stale = cubePresentation(match({ last_detection_ms: now - CUBE_DIRECTION_LIFETIME_MS - 1 }), { now });
+  assert.equal(stale.matched, true); assert.equal(cubeDockVisible(stale), true);
+  assert.equal(stale.direction, 'unknown'); assert.equal(stale.steerDegrees, null);
+  for (const bad of [{ direction: 'right' }, { pan: .5 }, { pan: null }, { pan: -.02 }, { steer_degrees: 30 }]) {
+    const view = cubePresentation(match(bad), { now });
+    assert.equal(view.matched, true); assert.equal(view.steerDegrees, null);
+  }
+});
+
 test('invalid steering and relative signal values remain unknown instead of becoming a compass bearing', () => {
+  const faint = cubePresentation(match({ analysis_window_ms: 2048 }), { now });
+  assert.equal(faint.matched, true); assert.equal(faint.sensitive, true);
+  assert.equal(faint.direction, 'unknown'); assert.equal(faint.steerDegrees, null);
   for (const value of [-Infinity, Infinity, NaN, -1.01, 1.01, '0', null]) assert.equal(normalizeCubeState({ pan: value }).pan, null);
   for (const value of [-Infinity, Infinity, NaN, -90.01, 90.01, '30', null]) {
     const view = cubePresentation(match({ steer_degrees: value }), { now });

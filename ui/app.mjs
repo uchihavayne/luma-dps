@@ -1,4 +1,4 @@
-import { THEMES, FONTS, LAYOUTS, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
+import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
@@ -23,11 +23,14 @@ import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture } from './overlay.mjs';
+import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
+import { targetDemoState } from './target-demo.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const native = Boolean(window.__TAURI__?.core?.invoke);
 const demo = !native && new URLSearchParams(location.search).get('demo') === '1';
+const targetDemo = demo && new URLSearchParams(location.search).get('targetDemo') === '1';
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const uid = () => globalThis.crypto?.randomUUID?.() || `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -35,6 +38,7 @@ let prefs = normalizePreferences();
 try { prefs = normalizePreferences(JSON.parse(localStorage.getItem('luma-independent-preferences') || '{}')); } catch {}
 let state = normalizeState(demo ? new URLSearchParams(location.search).get('partyDemo') === '1' ? DEMO_PARTY_STATE : DEMO_STATE : {});
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
+let skillsFromTargetBoard = false;
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
 let receivedStateCount = 0;
@@ -82,6 +86,7 @@ if (telemetryDemo) {
       pets: [{ pet_id: 1042, level: 2, progress: 34, progress_source: 'server-delta', session_gained: 2, observed_at_ms: at }, { pet_id: 1124, level: 3, progress: null, progress_source: 'unknown', session_gained: 0, observed_at_ms: at }] },
   });
 }
+if (targetDemo) state = normalizeState(targetDemoState(state));
 if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '1') {
   const at = Date.now();
   roomIntent = true; teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
@@ -356,9 +361,9 @@ function localizeControls() {
   $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
   $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
-  for (const option of $('#damage-scope').options) option.textContent = t({personal:'rosterPersonal', party:'rosterParty', observed:'rosterObserved'}[option.value]);
+  for (const option of $('#damage-scope').options) option.textContent = option.value === 'target' ? (prefs.locale === 'tr' ? 'Hedef · 10' : 'Target · 10') : t({personal:'rosterPersonal', party:'rosterParty', observed:'rosterObserved'}[option.value]);
   const own = ownPlayer(state);
-  $('#identity-name').textContent = state.local_player_name || own?.name || prefs.characterName || t('character');
+  $('#identity-name').textContent = state.local_player_name || (own ? displayPlayerName(own, prefs.locale) : '') || prefs.characterName || t('character');
   $('#identity-button').classList.toggle('identified', ['server', 'manual', 'name-match'].includes(state.local_identity_source));
   $('#identity-button').title = `${t('character')}: ${state.local_player_name || own?.name || prefs.characterName || t('autoDetect')}`;
   $('#identity-button').setAttribute('aria-label', t('chooseCharacter'));
@@ -392,6 +397,22 @@ function renderLatency() {
   chip.setAttribute('aria-label', `TCP RTT · ${view.label} · ${view.detail}`);
 }
 
+function renderTargetVitals(target, vital) {
+  const tr = prefs.locale === 'tr', box = $('#target-vitals'), track = $('#target-hp-track');
+  const visible = Boolean(target && (target.is_boss || vital.current !== null || target.participant_count >= 2));
+  box.hidden = !visible; $('#meter').classList.toggle('has-target-vitals', visible);
+  if (!visible) return;
+  box.dataset.status = vital.status; box.dataset.maximumKnown = String(vital.percent !== null);
+  const value = vital.current === null ? (tr ? 'Can bilgisi bekleniyor' : 'Waiting for HP') : `${num(vital.current)}${vital.max > 0 ? ` / ${num(vital.max)}` : ''}`;
+  const suffix = vital.status === 'stale' ? (tr ? ' · son alınan' : ' · last received') : vital.status === 'unknown' && vital.current !== null ? (tr ? ' · güncelliği bilinmiyor' : ' · freshness unknown') : vital.status === 'dead' ? (tr ? ' · yenildi' : ' · defeated') : vital.percent !== null ? ` · ${vital.percent.toFixed(1)}%` : '';
+  setText($('#target-hp'), `${value}${suffix}`);
+  box.title = `${displayTargetName(target, prefs.locale)} · ${vital.current === null ? value : fullNumber(vital.current)}${vital.max > 0 ? ` / ${fullNumber(vital.max)}` : ` · ${t('maxUnknown')}`}${vital.observedAtMs ? ` · ${dateText(vital.observedAtMs)}` : ''}`;
+  track.hidden = false; track.setAttribute('aria-label', tr ? 'Hedef canı' : 'Target HP');
+  track.setAttribute('aria-valuetext', $('#target-hp').textContent);
+  if (vital.percent !== null) track.setAttribute('aria-valuenow', vital.percent.toFixed(2)); else track.removeAttribute('aria-valuenow');
+  track.querySelector('b').style.width = `${vital.percent ?? 100}%`;
+}
+
 function renderMeter() {
   if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   localizeControls();
@@ -402,35 +423,49 @@ function renderMeter() {
   setText(connection.querySelector('span'), status.label);
   connection.title = `${status.message}\n${status.detail}`;
   renderLatency();
-  const scopes = meterScopes(state, prefs), scoped = scopes.summary, roster = scopes.roster;
-  for (const [scope, summary] of Object.entries(scopes.summaries)) {
+  const scopes = meterScopes(state, prefs);
+  const targetView = bossPresentation(state, { now: demo && targetDemo ? state.focused_target_observed_at_ms : Date.now(), autoBossRoster: prefs.autoTargetRoster, damageScope: prefs.damageScope });
+  const board = targetView.roster;
+  const scoped = board ? { ...scopes.summary, known: targetView.summary.known, damage: targetView.summary.totalDamage, dps: targetView.summary.dps, elapsed: targetView.summary.elapsedMs, targets: [targetView.target] } : scopes.summary;
+  const boardPlayers = board ? [...board.rows] : [];
+  if (board?.own && board.ownRank > 10 && !boardPlayers.some(player => player.id === board.own.id)) boardPlayers.push({ ...board.own, rank: board.ownRank, beyondTopTen: true });
+  const roster = board ? { known: true, players: boardPlayers, damage: board.totalDamage, dps: board.dps, elapsed: board.elapsedMs, ranked: true } : scopes.roster;
+  const targetOption = $('#damage-scope option[value=target]');
+  targetOption.hidden = !targetView.target?.participants_available || !(targetView.target.is_boss || targetView.target.participant_count >= 2); targetOption.disabled = targetOption.hidden;
+  if (board) $('#damage-scope').value = 'target';
+  $('#sort').disabled = Boolean(board); $('#sort').title = board ? (prefs.locale === 'tr' ? 'Bu hedefe verilen hasara göre ilk 10' : 'Top ten by damage to this target') : t('sort');
+  $('#target-roster-strip').hidden = !board;
+  if (board) {
+    setText($('#target-roster-label'), `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Hedef' : 'Target'} · ${prefs.locale === 'tr' ? 'İlk 10' : 'Top 10'}`);
+    setText($('#target-roster-coverage'), `${prefs.locale === 'tr' ? 'Gözlenen' : 'Observed'} ${board.participantCount ?? board.rows.length}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}`);
+    $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Yalnız vurduğun hedefe verilen ve bağlantında alınan hasar. Parti şartı yok; bu sunucudaki herkesin doğrulanmış sıralaması değildir.' : 'Received damage to the target you hit. No party is required; this is not a verified ranking of every player on the server.';
+  }
+  for (const [scope, original] of Object.entries(scopes.summaries)) {
+    const observed = board ? targetSummary(targetView.target, state, scope) : null;
+    const summary = observed ? { known: observed.known, dps: observed.dps, damage: observed.totalDamage } : original;
     const node = $(`[data-summary-scope="${scope}"]`);
     if (!node) continue;
     setText(node.querySelector('small'), t({personal:'shortPersonal', party:'shortParty', observed:'shortObserved'}[scope]));
     setText(node.querySelector('strong'), summary.known ? rate(summary.dps) : '—');
-    node.title = `${t(`${scope}Dps`)}: ${summary.known ? rate(summary.dps) : t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summary.known ? num(summary.damage) : '—'}`;
+    node.title = `${board ? `${displayTargetName(targetView.target, prefs.locale)} · ` : ''}${t(`${scope}Dps`)}: ${summary.known ? rate(summary.dps) : t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summary.known ? num(summary.damage) : '—'}`;
   }
   const targets = prefs.mode === 'boss' ? scoped.targets.filter(target => target.is_boss) : scoped.targets;
-  const topTarget = [...targets].sort((a, b) => b.damage - a.damage)[0];
-  $('#target-name').textContent = topTarget?.name || '—'; $('#target-name').title = topTarget?.name || '';
-  const currentHp = topTarget?.current_hp, maximumHp = topTarget?.reported_max_hp;
-  $('#target-vitals').hidden = currentHp === null || currentHp === undefined;
-  $('#target-hp').textContent = `${t('receivedHp')}: ${num(currentHp)}${maximumHp > 0 ? ` / ${num(maximumHp)}` : ''}`;
-  $('#target-hp').title = `${fullNumber(currentHp)}${maximumHp > 0 ? ` / ${fullNumber(maximumHp)}` : ` · ${t('maxUnknown')}`}${topTarget?.health_observed_at_ms ? ` · ${dateText(topTarget.health_observed_at_ms)}` : ''}`;
-  $('#target-hp-track').hidden = !(maximumHp > 0);
-  $('#target-hp-track b').style.width = `${maximumHp > 0 ? Math.max(0, Math.min(100, currentHp / maximumHp * 100)) : 0}%`;
+  const topTarget = targetView.target || [...targets].sort((a, b) => b.damage - a.damage)[0];
+  $('#target-name').textContent = topTarget ? displayTargetName(topTarget, prefs.locale) : '—'; $('#target-name').title = topTarget ? displayTargetName(topTarget, prefs.locale) : '';
+  renderTargetVitals(topTarget, targetView.target ? targetView.vital : targetVital(topTarget, Date.now()));
   $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : t('chooseCharacter');
   $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : t('chooseCharacter');
+  if (board) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
   for (const selector of ['#dps-value', '#damage-value']) $(selector).parentElement.style.setProperty('--metric-length', Math.max(4, $(selector).textContent.length));
   $('#mode-caption').textContent = t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
-  $('#boss-summary').hidden = prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
+  $('#boss-summary').hidden = Boolean(board) || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
   const notice = $('#notice'); notice.hidden = false;
   for (const tone of ['demo', 'error', 'warning']) notice.classList.toggle(tone, status.tone === tone);
-  const scopeMessage = scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
+  const scopeMessage = board ? '' : scopes.fallback ? t('partyFallback') : !roster.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : '';
   setText(notice, scopes.fallback ? `${scopeMessage} ${status.message}` : scopeMessage && ['traffic', 'combat', 'combat_active', 'demo'].includes(status.kind) ? scopeMessage : status.message);
   notice.title = `${scopeMessage ? `${scopeMessage}\n` : ''}${status.message}\n${status.detail}`;
-  $('#damage-scope').title = scopes.fallback ? t('partyFallback') : t('rosterScope');
-  $('#players').setAttribute('aria-label', t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
+  $('#damage-scope').title = board ? $('#target-roster-strip').title : scopes.fallback ? t('partyFallback') : t('rosterScope');
+  $('#players').setAttribute('aria-label', board ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
   if (state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
   renderPlayers(status, roster);
@@ -450,6 +485,7 @@ function renderMeter() {
 }
 
 function renderPlayers(status, scoped) {
+  scoped = { ...scoped, players: scoped.players.filter(rosterEligible) };
   const container = $('#players');
   const cooldownMembers = new Map(automaticTeamState(state).members.map(member => [member.actor_id, member]));
   if (!scoped.players.length) {
@@ -462,7 +498,7 @@ function renderPlayers(status, scoped) {
   }
   const maxDps = Math.max(...scoped.players.map(player => player.dps), 1), minimumDps = Math.min(...scoped.players.map(player => player.dps));
   const occurrences = new Map();
-  const players = sortedPlayers(scoped.players, prefs.sort).map(player => {
+  const players = (scoped.ranked ? scoped.players : sortedPlayers(scoped.players, prefs.sort)).map(player => {
     const base = player.id || `${player.name}:${player.class_name}`;
     const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
     return { player, key: `player:${base}:${occurrence}` };
@@ -481,16 +517,18 @@ function renderPlayers(status, scoped) {
       if (row.style.getPropertyValue('--class-color') !== color) row.style.setProperty('--class-color', color);
       if (row.style.getPropertyValue('--share') !== share) row.style.setProperty('--share', share);
       setAttribute(row, 'data-player', player.id);
+      row.dataset.targetScoped = String(Boolean(scoped.ranked));
       const own = player.is_local || player.id === state.local_player_id;
       row.classList.toggle('is-own', own); row.querySelector('.own-tag').hidden = !own; setText(row.querySelector('.own-tag'), t('me'));
       const classLabel = /^unknown$/i.test(player.class_name) || player.class_name === '—' ? (prefs.locale === 'tr' ? 'Sınıf bekleniyor' : 'Class pending') : player.class_name;
-      const visibleName = prefs.hidePlayerNames && !own ? `${classLabel} #${index + 1}` : player.name;
+      const pendingName = player.identity_pending === true || player.identity_confirmed !== true && /^#\d+$/u.test(player.name);
+      const visibleName = prefs.hidePlayerNames && !own ? `${classLabel} · ${index + 1}` : displayPlayerName(player, prefs.locale);
       const symbol = ({ gladiator: 'G', templar: 'T', assassin: 'A', ranger: 'R', sorcerer: 'S', spiritmaster: 'SM', cleric: 'C', chanter: 'CH' })[player.class_name.toLowerCase()] || '•';
       setText(row.querySelector('.player-class-icon'), symbol); row.querySelector('.player-class-icon').title = classLabel;
-      row.classList.toggle('identity-pending', player.identity_pending === true);
-      row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : player.identity_pending ? (prefs.locale === 'tr' ? 'Oyuncu adı paketi bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name packet; updates automatically when received.') : player.name;
+      row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true);
+      row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : pendingName ? (prefs.locale === 'tr' ? 'Oyuncu adı kaydı bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name record; updates automatically when received.') : player.name;
       setAttribute(row, 'aria-label', `${visibleName}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
-      setText(row.querySelector('.rank'), index + 1); setText(row.querySelector('.player-name'), visibleName);
+      setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
       const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.showTeamCooldowns || !member?.cooldowns.length;
@@ -555,7 +593,7 @@ function appearanceSettingsContent() {
 }
 
 function combatSettingsContent() {
-  return `<h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
+  return `<label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
 function controlsContent() {
@@ -646,7 +684,7 @@ function renderCubeLive() {
   setText($('#cube-nav-source'), view.sourceLabel);
   $('#cube-nav-source').hidden = native;
   setText($('#cube-nav-direction'), view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : view.label);
-  setText($('#cube-nav-guidance'), t('cubeStereoAmbiguity'));
+  setText($('#cube-nav-guidance'), view.sensitive && view.direction === 'unknown' ? (prefs.locale === 'tr' ? 'Zayıf sinyal · yön dinleniyor' : 'Faint signal · checking direction') : t('cubeStereoAmbiguity'));
   setText($('#cube-nav-trend'), view.matched ? view.trendLabel : t('cubeTurn'));
   setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
   setText($('#cube-nav-similarity-label'), t('cubeSimilarity')); setText($('#cube-nav-strength-label'), t('cubeRelativeStrength'));
@@ -747,7 +785,7 @@ async function cubeCommand(command, args, successMessage = '') {
 
 function characterContent() {
   const currentId = state.local_player_id || '';
-  const players = sortedPlayers(state.players, 'name');
+  const players = sortedPlayers(state.players.filter(rosterEligible), 'name');
   const identityLabel = state.local_identity_source === 'server' ? t('identityServer') : state.local_identity_source === 'manual' ? t('identityManual') : state.local_identity_source === 'name-match' ? t('identityNameMatch') : t('autoDetect');
   return `<h3 class="section-title">${t('character')} ${source(identityLabel)}</h3><p class="help">${t('characterHelp')}</p><form id="character-form"><label class="field"><span>${t('characterId')}</span><select name="localPlayerId"><option value="">${t('autoDetect')}</option>${players.map(player => `<option value="${esc(player.id)}" ${player.id === currentId ? 'selected' : ''}>${esc(player.name)} · ${esc(player.class_name)} · #${esc(player.id)}</option>`).join('')}</select></label>${field('characterName', 'characterName', 'text', state.local_player_name || prefs.characterName, 'maxlength="64" autocomplete="off"')}<p class="help">${t('nameOnlyHelp')}</p><div class="button-row"><button class="action-button" type="submit">${t('saveCharacter')}</button>${button('clear-character', 'clearCharacter', '', true)}</div></form><hr class="divider"><h3 class="section-title">${t('manualParty')}</h3><p class="help">${t('partyHelp')}</p><form id="party-form"><div class="profile-roster">${players.length ? players.map(player => `<label class="check-field"><input name="partyMember" type="checkbox" value="${esc(player.id)}" ${state.party_member_ids.includes(player.id) || player.in_party ? 'checked' : ''}><span>${esc(player.name)}<small>${esc(player.class_name)} · #${esc(player.id)}</small></span></label>`).join('') : empty('noPlayers')}</div><button class="action-button" type="submit" ${players.length ? '' : 'disabled'}>${t('saveParty')}</button></form>`;
 }
@@ -831,7 +869,8 @@ function overviewContent() {
 }
 
 function skillsContent() {
-  const picker = playerPicker(), p = analysisPlayer();
+  const context = skillsFromTargetBoard && !snapshot ? `<p class="status-card">${prefs.locale === 'tr' ? 'İlk 10 listesi yalnız vurduğun hedefi kapsar. Buradaki yetenek ayrıntıları seçili karşılaşmanın tüm hedeflerine aittir; alınmayan ayrıntılar gösterilmez.' : 'The Top 10 board covers the target you hit. Skill details here cover all targets in the selected encounter; unavailable details are not shown.'}</p>` : '';
+  const picker = context + playerPicker(), p = analysisPlayer();
   if (!p) return `${source()}${picker}`;
   const skills = sortedSkills(p.skills, skillSort), summary = skillSummary(p);
   const sum = skills.reduce((total, skill) => total + skill.damage, 0);
@@ -1355,7 +1394,7 @@ function openDrawer(kind, requestedTab = 'overview') {
 
 function closeDrawer() {
   if (!drawer) return;
-  drawer = ''; snapshot = null; teamInviteCopy = ''; teamInviteDraft = ''; teamConsent = false;
+  drawer = ''; snapshot = null; skillsFromTargetBoard = false; teamInviteCopy = ''; teamInviteDraft = ''; teamConsent = false;
   $('#drawer').hidden = true; $('#drawer-backdrop').hidden = true;
   for (const element of [...$('#meter').children]) element.inert = false;
   if (restoreFocus?.isConnected && restoreFocus.getClientRects().length && !restoreFocus.disabled) restoreFocus.focus(); else $('#analysis-button').focus();
@@ -1419,7 +1458,7 @@ $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
 $('#team-chip').addEventListener('click', () => openDrawer('analysis', 'team'));
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
-$('#damage-scope').addEventListener('change', event => { savePreferences({ rosterScope: event.target.value }); });
+$('#damage-scope').addEventListener('change', event => { savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
 $('#drag-region').addEventListener('pointerdown', event => { if (startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
 $('.drawer-header').addEventListener('pointerdown', event => {
@@ -1436,7 +1475,7 @@ $('#cube-entry').addEventListener('click', () => openDrawer('settings', 'hiddenC
 $('#cube-nav-size').addEventListener('click', () => savePreferences({ cubeNavigatorSize: prefs.cubeNavigatorSize === 'full' ? 'compact' : 'full' }));
 $('#combat-warning').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'effects'); });
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
-$('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; snapshot = null; openDrawer('analysis', 'skills'); } });
+$('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; skillsFromTargetBoard = player.dataset.targetScoped === 'true'; snapshot = null; openDrawer('analysis', 'skills'); } });
 $('#sort').addEventListener('change', event => savePreferences({ sort: event.target.value }));
 $('#target-modes').addEventListener('click', async event => {
   const mode = delegatedControl(event, event.currentTarget, 'button[data-mode]')?.dataset.mode; if (!mode) return;
@@ -1487,7 +1526,7 @@ $('#drawer-content').addEventListener('change', async event => {
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
   if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
-  if (['showClass', 'showShares', 'showTeamCooldowns'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
+  if (['showClass', 'showShares', 'showTeamCooldowns', 'autoTargetRoster'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
   if (name === 'calendarHorizonDays') { calendarHorizonDays = Number(element.value); return; }
@@ -1731,7 +1770,10 @@ function receiveState(value) {
 
 window.addEventListener('resize', syncOverlayGeometry);
 window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
-if (typeof ResizeObserver === 'function') new ResizeObserver(scheduleOverlayRegions).observe($('#meter'));
+if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
+  $('#meter').classList.toggle('short-frame', $('#meter').getBoundingClientRect().height <= 280);
+  scheduleOverlayRegions();
+}).observe($('#meter'));
 applyAppearance(); renderMeter();
 if (native) {
   invoke('get_app_info').then(info => { if (typeof info?.version === 'string') appVersion = info.version.slice(0, 40); if (drawer === 'settings' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer(); }).catch(() => {});

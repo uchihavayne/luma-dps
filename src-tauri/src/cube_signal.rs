@@ -16,6 +16,9 @@ const SILENCE_RMS: f32 = 0.000_025;
 const EXPIRY_FRAMES: usize = 35;
 const EVIDENCE_FRAMES: usize = 24;
 const REQUIRED_EVIDENCE: usize = 14;
+const LONG_FFT_SIZE: usize = 32768;
+const LONG_HOP_SIZE: usize = 8192;
+const MIN_COHERENT_RMS: f32 = 0.000_001;
 
 /// A small spectral reference, without the original recording or personal audio.
 /// Scores are similarities to this reference, not calibrated probabilities.
@@ -105,6 +108,7 @@ pub struct CubeDetection {
     pub bearing_ambiguous: bool,
     pub snr_db: Option<f32>,
     pub signal_strength: Option<f32>,
+    pub analysis_window_ms: u32,
 }
 
 impl Default for CubeDetection {
@@ -121,6 +125,7 @@ impl Default for CubeDetection {
             bearing_ambiguous: true,
             snr_db: None,
             signal_strength: None,
+            analysis_window_ms: 0,
         }
     }
 }
@@ -141,6 +146,7 @@ struct ToneCluster {
     weight: f32,
 }
 
+#[derive(Clone)]
 struct LocalMatch {
     valid: bool,
     signature: Vec<f32>,
@@ -149,6 +155,10 @@ struct LocalMatch {
     left: f32,
     right: f32,
     pan_consistency: f32,
+    peak_bins: Vec<usize>,
+    phases: Vec<f32>,
+    frequencies: Vec<f32>,
+    anchor_channel: usize,
 }
 
 struct Resampler {
@@ -375,10 +385,20 @@ pub struct CubeDetector {
     group_count: usize,
     history: VecDeque<Vec<f32>>,
     evidence: VecDeque<bool>,
+    direction_evidence: VecDeque<bool>,
     missed_frames: usize,
     frame_number: u64,
     strengths: VecDeque<(u64, f32)>,
     steering_energies: Option<[f32; 2]>,
+    long_window: VecDeque<[f32; 2]>,
+    long_since_analysis: usize,
+    long_match: Option<LocalMatch>,
+    long_valid_updates: usize,
+    long_update_frame: u64,
+    mean_window: VecDeque<[Vec<f32>; 2]>,
+    mean_sum: [Vec<f64>; 2],
+    mean_match: Option<LocalMatch>,
+    mean_valid_updates: usize,
     output: CubeDetection,
 }
 
@@ -426,10 +446,20 @@ impl CubeDetector {
             group_count: 0,
             history: VecDeque::new(),
             evidence: VecDeque::new(),
+            direction_evidence: VecDeque::new(),
             missed_frames: EXPIRY_FRAMES,
             frame_number: 0,
             strengths: VecDeque::new(),
             steering_energies: None,
+            long_window: VecDeque::new(),
+            long_since_analysis: 0,
+            long_match: None,
+            long_valid_updates: 0,
+            long_update_frame: 0,
+            mean_window: VecDeque::new(),
+            mean_sum: [vec![0.0; BIN_COUNT], vec![0.0; BIN_COUNT]],
+            mean_match: None,
+            mean_valid_updates: 0,
             output: CubeDetection::default(),
         })
     }
@@ -442,10 +472,22 @@ impl CubeDetector {
         self.group_count = 0;
         self.history.clear();
         self.evidence.clear();
+        self.direction_evidence.clear();
         self.missed_frames = EXPIRY_FRAMES;
         self.frame_number = 0;
         self.strengths.clear();
         self.steering_energies = None;
+        self.long_window.clear();
+        self.long_since_analysis = 0;
+        self.long_match = None;
+        self.long_valid_updates = 0;
+        self.long_update_frame = 0;
+        self.mean_window.clear();
+        for sum in &mut self.mean_sum {
+            sum.fill(0.0);
+        }
+        self.mean_match = None;
+        self.mean_valid_updates = 0;
         self.output = CubeDetection::default();
         self.output.clone()
     }
@@ -497,7 +539,56 @@ impl CubeDetector {
                 let window: Vec<_> = self.pending.iter().take(FFT_SIZE).copied().collect();
                 let analysis = spectrum(&window);
                 for _ in 0..HOP_SIZE {
-                    self.pending.pop_front();
+                    if let Some(sample) = self.pending.pop_front() {
+                        self.long_window.push_back(sample);
+                    }
+                }
+                while self.long_window.len() > LONG_FFT_SIZE {
+                    self.long_window.pop_front();
+                }
+                self.long_since_analysis += HOP_SIZE;
+                if self.long_window.len() == LONG_FFT_SIZE
+                    && self.long_since_analysis >= LONG_HOP_SIZE
+                {
+                    self.long_since_analysis = 0;
+                    let coherent = self.coherent_match();
+                    let stable = self.long_match.as_ref().is_some_and(|previous| {
+                        previous.valid
+                            && previous.peak_bins.len() == coherent.peak_bins.len()
+                            && previous.anchor_channel == coherent.anchor_channel
+                            && previous
+                                .peak_bins
+                                .iter()
+                                .zip(&coherent.peak_bins)
+                                .all(|(a, b)| a.abs_diff(*b) <= 1)
+                            && previous
+                                .phases
+                                .iter()
+                                .zip(&coherent.phases)
+                                .zip(previous.frequencies.iter().zip(&coherent.frequencies))
+                                .all(|((before, after), (old_hz, new_hz))| {
+                                    let advance = std::f32::consts::TAU
+                                        * (old_hz + new_hz)
+                                        * 0.5
+                                        * LONG_HOP_SIZE as f32
+                                        / ANALYSIS_RATE as f32;
+                                    let error = (after - before - advance + std::f32::consts::PI)
+                                        .rem_euclid(std::f32::consts::TAU)
+                                        - std::f32::consts::PI;
+                                    error.abs() <= 1.0
+                                })
+                    });
+                    self.long_valid_updates = if coherent.valid {
+                        if stable {
+                            (self.long_valid_updates + 1).min(8)
+                        } else {
+                            1
+                        }
+                    } else {
+                        0
+                    };
+                    self.long_match = Some(coherent);
+                    self.long_update_frame = self.frame_number;
                 }
                 self.analyze(analysis, channels == 2);
             }
@@ -507,7 +598,98 @@ impl CubeDetector {
 
     fn analyze(&mut self, spectrum: Spectrum, stereo: bool) {
         self.frame_number += 1;
-        let local = self.local_match(&spectrum);
+        let powers = [spectrum.left_power.clone(), spectrum.right_power.clone()];
+        for channel in 0..2 {
+            for (sum, value) in self.mean_sum[channel].iter_mut().zip(&powers[channel]) {
+                *sum += f64::from(*value);
+            }
+        }
+        self.mean_window.push_back(powers);
+        if self.mean_window.len() > 128 {
+            if let Some(old) = self.mean_window.pop_front() {
+                for channel in 0..2 {
+                    for (sum, value) in self.mean_sum[channel].iter_mut().zip(&old[channel]) {
+                        *sum -= f64::from(*value);
+                    }
+                }
+            }
+        }
+        // Power averaging needs the within-tone spectral shape of at least
+        // two distinct reference clusters. Sparse one-bin references retain
+        // the stricter phase-coherent path instead of accepting nearby tones.
+        let rich_reference = self
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.end > cluster.start)
+            .count()
+            >= 2;
+        if rich_reference && self.mean_window.len() == 128 && self.frame_number % 8 == 0 {
+            let averaged = Spectrum {
+                features: Vec::new(),
+                excess: Vec::new(),
+                tonal_fraction: 0.0,
+                rms: spectrum.rms,
+                left_power: self.mean_sum[0]
+                    .iter()
+                    .map(|value| (*value / 128.0).max(0.0) as f32)
+                    .collect(),
+                right_power: self.mean_sum[1]
+                    .iter()
+                    .map(|value| (*value / 128.0).max(0.0) as f32)
+                    .collect(),
+            };
+            // Overlapping Hann frames supply about half as many independent
+            // power estimates. Require a three-standard-error excess in each
+            // separate tone, not a lowered instantaneous similarity threshold.
+            let minimum_excess = 3.0 / (64.0_f32 * 2.0).sqrt();
+            let value = self.local_match_with_bounds(
+                &averaged,
+                1.05,
+                10.0 * minimum_excess.log10(),
+                MIN_COHERENT_RMS,
+            );
+            let stable = self
+                .mean_match
+                .as_ref()
+                .is_some_and(|last| last.valid && dot(&last.signature, &value.signature) >= 0.98);
+            self.mean_valid_updates = if value.valid {
+                if stable {
+                    (self.mean_valid_updates + 1).min(8)
+                } else {
+                    1
+                }
+            } else {
+                0
+            };
+            self.mean_match = Some(value);
+        }
+        let short = self.local_match(&spectrum);
+        // A long, frequency-resolved window can reveal a persistent quiet
+        // component that never clears the short-window noise floor. It must
+        // independently pass all tone/shape tests over three fresh windows;
+        // cached evidence is never allowed to survive a stream gap or silence.
+        let use_mean = !short.valid
+            && self.mean_valid_updates >= 3
+            && self.mean_match.as_ref().is_some_and(|value| value.valid)
+            && spectrum.rms >= MIN_COHERENT_RMS;
+        let use_coherent = !short.valid
+            && !use_mean
+            && self.long_valid_updates >= 3
+            && self.frame_number.saturating_sub(self.long_update_frame)
+                <= (LONG_HOP_SIZE / HOP_SIZE + 1) as u64
+            && self.long_match.as_ref().is_some_and(|value| value.valid)
+            && spectrum.rms >= MIN_COHERENT_RMS;
+        let use_long = use_mean || use_coherent;
+        let local = if use_mean {
+            self.mean_match.clone().unwrap_or(short)
+        } else if use_coherent {
+            self.long_match
+                .clone()
+                .filter(|value| value.valid)
+                .unwrap_or(short)
+        } else {
+            short
+        };
         let signature_score = dot(&local.signature, &self.template.signature);
         // The sound can be quiet inside a loud game mix. Its contribution to
         // the whole mix is deliberately not an acceptance gate; each separate
@@ -526,6 +708,10 @@ impl CubeDetector {
             similarity.min(0.59)
         };
         let matched = valid && similarity >= self.threshold;
+        self.direction_evidence.push_back(matched && !use_long);
+        if self.direction_evidence.len() > 8 {
+            self.direction_evidence.pop_front();
+        }
         self.evidence.push_back(matched);
         if self.evidence.len() > EVIDENCE_FRAMES {
             self.evidence.pop_front();
@@ -561,7 +747,19 @@ impl CubeDetector {
             {
                 self.missed_frames = 0;
                 self.output.detected = true;
-                self.update_location(&local, stereo, similarity);
+                self.output.analysis_window_ms = if use_long {
+                    LONG_FFT_SIZE as u32 * 1000 / ANALYSIS_RATE
+                } else {
+                    FFT_SIZE as u32 * 1000 / ANALYSIS_RATE
+                };
+                let fresh_direction = !use_long
+                    && self
+                        .direction_evidence
+                        .iter()
+                        .filter(|value| **value)
+                        .count()
+                        >= 6;
+                self.update_location(&local, stereo && fresh_direction, similarity);
             } else {
                 self.missed_frames += 1;
             }
@@ -574,6 +772,20 @@ impl CubeDetector {
             }
         }
         if self.missed_frames >= EXPIRY_FRAMES {
+            if self.output.detected {
+                // Once a cue expires, old long-window energy cannot revive it
+                // when unrelated output audio resumes after a quiet interval.
+                self.long_window.clear();
+                self.long_since_analysis = 0;
+                self.long_match = None;
+                self.long_valid_updates = 0;
+                self.mean_window.clear();
+                for sum in &mut self.mean_sum {
+                    sum.fill(0.0);
+                }
+                self.mean_match = None;
+                self.mean_valid_updates = 0;
+            }
             self.output.detected = false;
             self.output.direction = "unknown".into();
             self.output.direction_confidence = 0.0;
@@ -583,18 +795,33 @@ impl CubeDetector {
             self.output.steer_degrees = None;
             self.output.snr_db = None;
             self.output.signal_strength = None;
+            self.output.analysis_window_ms = 0;
             self.strengths.clear();
             self.steering_energies = None;
         }
     }
 
     fn local_match(&self, spectrum: &Spectrum) -> LocalMatch {
+        self.local_match_with_bounds(
+            spectrum,
+            1.4,
+            1.0 + (self.threshold - 0.6) * 8.0,
+            SILENCE_RMS,
+        )
+    }
+
+    fn local_match_with_bounds(
+        &self,
+        spectrum: &Spectrum,
+        floor_factor: f32,
+        required_snr: f32,
+        minimum_rms: f32,
+    ) -> LocalMatch {
         let mut covered = [0.0; 2];
         let mut strong_clusters = [0; 2];
         let mut channel_bins = [vec![0.0; BIN_COUNT], vec![0.0; BIN_COUNT]];
         let mut weakest_snr = [60.0_f32; 2];
         let mut cluster_energies = Vec::new();
-        let required_snr = 1.0 + (self.threshold - 0.6) * 8.0;
         for cluster in &self.clusters {
             let mut energies = [0.0; 2];
             for (channel, power) in [&spectrum.left_power, &spectrum.right_power]
@@ -611,7 +838,7 @@ impl CubeDetector {
                 // local noise estimate. The upper median is conservative for
                 // broadband noise while resisting isolated neighboring tones.
                 neighbors.sort_by(f32::total_cmp);
-                let floor_per_bin = neighbors[neighbors.len() * 3 / 5] * 1.4;
+                let floor_per_bin = neighbors[neighbors.len() * 3 / 5] * floor_factor;
                 let floor = floor_per_bin * (cluster.end - cluster.start + 1) as f32;
                 let signal =
                     (power[cluster.start..=cluster.end].iter().sum::<f32>() - floor).max(0.0);
@@ -693,7 +920,7 @@ impl CubeDetector {
             })
             .sum::<f32>();
         LocalMatch {
-            valid: channel_valid.iter().any(|valid| *valid) && matched_rms >= SILENCE_RMS,
+            valid: channel_valid.iter().any(|valid| *valid) && matched_rms >= minimum_rms,
             signature,
             features,
             snr_db: [0, 1]
@@ -704,6 +931,211 @@ impl CubeDetector {
             left,
             right,
             pan_consistency: (1.0 - variance * 4.0).clamp(0.0, 1.0),
+            peak_bins: Vec::new(),
+            phases: Vec::new(),
+            frequencies: Vec::new(),
+            anchor_channel: 0,
+        }
+    }
+
+    fn coherent_match(&self) -> LocalMatch {
+        #[derive(Clone, Copy, Default)]
+        struct Peak {
+            bin: usize,
+            floor: f32,
+            energy: f32,
+            snr: f32,
+            valid: bool,
+        }
+        let ratio = LONG_FFT_SIZE / FFT_SIZE;
+        let mut powers = [Vec::new(), Vec::new()];
+        let mut phases = [Vec::new(), Vec::new()];
+        for (channel, power) in powers.iter_mut().enumerate() {
+            let mut real: Vec<_> = self
+                .long_window
+                .iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    value[channel]
+                        * (0.5
+                            - 0.5 * (std::f32::consts::TAU * i as f32 / LONG_FFT_SIZE as f32).cos())
+                })
+                .collect();
+            let mut imaginary = vec![0.0; LONG_FFT_SIZE];
+            fft(&mut real, &mut imaginary);
+            *power = (0..=LONG_FFT_SIZE / 2)
+                .map(|i| real[i].powi(2) + imaginary[i].powi(2))
+                .collect();
+            phases[channel] = (0..=LONG_FFT_SIZE / 2)
+                .map(|i| imaginary[i].atan2(real[i]))
+                .collect();
+        }
+        let required_snr = 1.0 + (self.threshold - 0.6) * 8.0;
+        let mut peaks = Vec::with_capacity(self.clusters.len());
+        let mut coverage = [0.0; 2];
+        let mut counts = [0; 2];
+        for cluster in &self.clusters {
+            let strongest = (cluster.start..=cluster.end)
+                .max_by(|a, b| self.template.signature[*a].total_cmp(&self.template.signature[*b]))
+                .unwrap();
+            let adjacent = if strongest < cluster.end
+                && self.template.signature[strongest + 1]
+                    > self.template.signature[strongest.saturating_sub(1)]
+            {
+                Some((strongest + 1, 1.0))
+            } else if strongest > cluster.start {
+                Some((strongest - 1, -1.0))
+            } else {
+                None
+            };
+            let offset = adjacent.map_or(0.0, |(bin, side)| {
+                let amplitude_ratio =
+                    self.template.signature[bin] / self.template.signature[strongest].max(1e-20);
+                side * ((2.0 * amplitude_ratio - 1.0) / (1.0 + amplitude_ratio)).clamp(0.0, 0.5)
+            });
+            let center = (strongest as f32 + offset) * ratio as f32;
+            let tolerance = (2.5 * LONG_FFT_SIZE as f32 / ANALYSIS_RATE as f32).ceil() as usize;
+            let start = (center.round() as usize).saturating_sub(tolerance);
+            let end = center.round() as usize + tolerance;
+            let mut pair = [Peak::default(); 2];
+            for channel in 0..2 {
+                let power = &powers[channel];
+                let bin = (start..=end)
+                    .max_by(|a, b| power[*a].total_cmp(&power[*b]))
+                    .unwrap();
+                let mut neighbors: Vec<_> = (bin - 24..=bin + 24)
+                    .filter(|i| i.abs_diff(bin) > 4)
+                    .map(|i| power[i])
+                    .collect();
+                neighbors.sort_by(f32::total_cmp);
+                let floor = neighbors[neighbors.len() * 3 / 5] * 1.4;
+                let narrow = power[bin - 1..=bin + 1].iter().sum::<f32>();
+                let energy = (narrow - floor * 3.0).max(0.0);
+                let snr = (10.0 * (energy / (floor * 3.0).max(1e-20)).max(1e-12).log10())
+                    .clamp(-120.0, 60.0);
+                let wide =
+                    (power[bin - 10..=bin + 10].iter().sum::<f32>() - floor * 21.0).max(energy);
+                let concentration = energy / wide.max(1e-20);
+                let nearby_peak = power[start - ratio * 2..=end + ratio * 2]
+                    .iter()
+                    .copied()
+                    .fold(0.0_f32, f32::max);
+                let valid = bin > start
+                    && bin < end
+                    && snr >= required_snr
+                    && power[bin] >= nearby_peak * 0.85
+                    && concentration >= 0.60;
+                pair[channel] = Peak {
+                    bin,
+                    floor,
+                    energy,
+                    snr,
+                    valid,
+                };
+                if valid {
+                    coverage[channel] += cluster.weight;
+                    counts[channel] += 1;
+                }
+            }
+            peaks.push(pair);
+        }
+        let reference: Vec<_> = self
+            .clusters
+            .iter()
+            .map(|cluster| cluster.weight.sqrt())
+            .collect();
+        let valid = [0, 1].map(|channel| {
+            let mut query: Vec<_> = peaks
+                .iter()
+                .map(|pair| {
+                    if pair[channel].valid {
+                        pair[channel].energy.sqrt()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            normalize(&mut query);
+            coverage[channel] >= 0.8
+                && counts[channel] >= self.clusters.len().min(2)
+                && dot(&query, &reference) >= self.threshold - 0.08
+        });
+        let anchor = if valid[0] && (!valid[1] || coverage[0] >= coverage[1]) {
+            0
+        } else {
+            1
+        };
+        let mut signature = vec![0.0; BIN_COUNT];
+        let mut features = vec![0.0; BAND_COUNT];
+        let mut ears = [0.0; 2];
+        let mut pans = Vec::with_capacity(self.clusters.len());
+        let mut weakest_snr = 60.0_f32;
+        let mut peak_bins = Vec::with_capacity(self.clusters.len());
+        let mut peak_phases = Vec::with_capacity(self.clusters.len());
+        let mut frequencies = Vec::with_capacity(self.clusters.len());
+        for (cluster, pair) in self.clusters.iter().zip(&peaks) {
+            let peak = pair[anchor];
+            peak_bins.push(peak.bin);
+            peak_phases.push(phases[anchor][peak.bin]);
+            let logs = [peak.bin - 1, peak.bin, peak.bin + 1]
+                .map(|bin| powers[anchor][bin].max(1e-20).ln());
+            let denominator = logs[0] - 2.0 * logs[1] + logs[2];
+            let fraction = if denominator.abs() > 1e-12 {
+                (0.5 * (logs[0] - logs[2]) / denominator).clamp(-0.5, 0.5)
+            } else {
+                0.0
+            };
+            frequencies
+                .push((peak.bin as f32 + fraction) * ANALYSIS_RATE as f32 / LONG_FFT_SIZE as f32);
+            weakest_snr = weakest_snr.min(peak.snr);
+            let mut energies = [0.0; 2];
+            for channel in 0..2 {
+                energies[channel] = (powers[channel][peak.bin - 1..=peak.bin + 1]
+                    .iter()
+                    .sum::<f32>()
+                    - pair[channel].floor * 3.0)
+                    .max(0.0)
+                    / (ratio * ratio) as f32;
+                ears[channel] += energies[channel];
+            }
+            let energy = if valid[0] && valid[1] {
+                (energies[0] + energies[1]) * 0.5
+            } else {
+                energies[anchor]
+            };
+            for bin in cluster.start..=cluster.end {
+                let amount =
+                    energy * self.template.signature[bin].powi(2) / cluster.weight.max(1e-20);
+                signature[bin] = amount.sqrt();
+                features[band_for_bin(bin)] += amount;
+            }
+            pans.push((energies[1] - energies[0]) / (energies[1] + energies[0]).max(1e-20));
+        }
+        normalize(&mut signature);
+        let total = features.iter().sum::<f32>().max(1e-20);
+        for feature in &mut features {
+            *feature = (*feature / total * 100.0).ln_1p();
+        }
+        normalize(&mut features);
+        let pan = (ears[1] - ears[0]) / (ears[1] + ears[0]).max(1e-20);
+        let variance = pans
+            .iter()
+            .zip(&self.clusters)
+            .map(|(value, cluster)| cluster.weight * (value - pan).powi(2))
+            .sum::<f32>();
+        let rms = (((ears[0] + ears[1]) * 0.5) * 2.0 / (FFT_SIZE * FFT_SIZE) as f32 / 0.375).sqrt();
+        LocalMatch {
+            valid: valid.iter().any(|value| *value) && rms >= MIN_COHERENT_RMS,
+            signature,
+            features,
+            snr_db: weakest_snr,
+            left: ears[0],
+            right: ears[1],
+            pan_consistency: (1.0 - variance * 4.0).clamp(0.0, 1.0),
+            peak_bins,
+            phases: peak_phases,
+            frequencies,
+            anchor_channel: anchor,
         }
     }
 
@@ -741,7 +1173,17 @@ impl CubeDetector {
             });
         let pan =
             ((energies[1] - energies[0]) / (energies[1] + energies[0]).max(1e-20)).clamp(-1.0, 1.0);
-        if stereo && local.pan_consistency >= 0.65 {
+        let noise_reliability =
+            (1.0 - (-(10.0_f32.powf(local.snr_db / 10.0)) / 6.0).exp()).clamp(0.0, 1.0);
+        let confidence = similarity
+            * local.pan_consistency
+            * noise_reliability
+            * if pan.abs() > 0.22 {
+                pan.abs()
+            } else {
+                1.0 - pan.abs()
+            };
+        if stereo && local.pan_consistency >= 0.65 && confidence >= 0.35 {
             self.steering_energies = Some(energies);
             self.output.direction =
                 if pan > 0.22 || (self.output.direction == "right" && pan > 0.12) {
@@ -752,18 +1194,13 @@ impl CubeDetector {
                     "center"
                 }
                 .into();
-            self.output.direction_confidence = similarity
-                * local.pan_consistency
-                * if pan.abs() > 0.22 {
-                    pan.abs()
-                } else {
-                    1.0 - pan.abs()
-                };
+            self.output.direction_confidence = confidence;
             self.output.pan = pan;
             // This is an audio-balance steering control, not a world heading.
             // Stereo cannot distinguish equally panned front/back positions.
             self.output.steer_degrees = Some(pan.asin().to_degrees());
         } else {
+            self.steering_energies = None;
             self.output.direction = "unknown".into();
             self.output.direction_confidence = 0.0;
             self.output.pan = 0.0;
@@ -1002,7 +1439,7 @@ mod tests {
                 let white = (seed as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32;
                 wind = wind * 0.94 + white * 0.06;
                 let cube = ((std::f32::consts::TAU * 1677.0 * t).sin() * 0.003
-                    + (std::f32::consts::TAU * 3540.0 * t).sin() * 0.0025)
+                    + (std::f32::consts::TAU * 3534.7 * t).sin() * 0.0025)
                     * cube_gain;
                 let background = if music {
                     let root = [261.6256, 329.6276, 391.9954, 440.0][(t as usize) % 4];
@@ -1306,6 +1743,9 @@ mod tests {
             assert!(stream.history.len() <= 6);
             assert!(stream.strengths.len() <= 125);
             assert!(stream.resampler.as_ref().unwrap().filter_input.len() <= 63);
+            assert!(stream.long_window.len() <= LONG_FFT_SIZE);
+            assert!(stream.mean_window.len() <= 128);
+            assert!(stream.direction_evidence.len() <= 8);
         }
     }
 
@@ -1477,6 +1917,187 @@ mod tests {
                 assert_eq!(center.direction, "center");
                 assert!(center.pan.abs() < 0.12);
             }
+        }
+    }
+
+    #[test]
+    fn coherent_window_recovers_persistent_chime_below_short_absolute_gate() {
+        let samples = signal(16_000, 4.0, 0.000_025, 0.000_005, 0.0);
+        let results = streaming_detections(detector(), &samples);
+        assert!(results.iter().any(|value| value.detected), "{results:?}");
+        assert!(results.iter().all(|value| value.direction != "right"));
+        assert!(results
+            .iter()
+            .filter(|value| value.detected)
+            .all(|value| value.bearing_ambiguous));
+    }
+
+    #[test]
+    fn coherent_builtin_recovery_inside_much_louder_game_mix() {
+        for gain in [0.10, 0.05] {
+            let results = streaming_detections(builtin_detector(), &game_mix(5.0, gain, false));
+            assert!(results.iter().any(|value| value.detected), "gain {gain}");
+            assert!(
+                results.iter().all(|value| value.direction != "right"),
+                "gain {gain}"
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_midstream_chime_burst_cannot_borrow_long_window_evidence() {
+        let mut samples = vec![0.0; 16_000 * 2];
+        samples.extend(signal(16_000, 0.10, 0.000_1, 0.000_1, 0.0));
+        samples.resize(16_000 * 2 * 3, 0.0);
+        assert!(streaming_detections(detector(), &samples)
+            .iter()
+            .all(|value| !value.detected));
+    }
+
+    #[test]
+    fn weak_coherent_evidence_expires_and_cannot_bridge_discontinuity() {
+        let mut stream = detector();
+        for chunk in signal(16_000, 4.0, 0.000_025, 0.000_005, 0.0).chunks(1600) {
+            stream.push(chunk, 16_000, 2, false);
+        }
+        assert!(stream.status().detected);
+        assert_eq!(stream.push(&[], 16_000, 2, true), CubeDetection::default());
+        let short = stream.push(
+            &signal(16_000, 0.4, 0.000_025, 0.000_005, 0.0),
+            16_000,
+            2,
+            false,
+        );
+        assert!(!short.detected);
+        let expired = stream.push(&vec![0.0; 32_000], 16_000, 2, false);
+        assert!(!expired.detected);
+        assert!(expired.steer_degrees.is_none());
+        assert!(stream.long_window.len() <= LONG_FFT_SIZE);
+    }
+
+    #[test]
+    fn weak_mono_chime_recovers_without_any_direction_claim() {
+        let mono: Vec<_> = signal(16_000, 4.0, 0.000_025, 0.000_025, 0.0)
+            .chunks_exact(2)
+            .map(|frame| frame[0])
+            .collect();
+        let mut stream = detector();
+        let mut detected = false;
+        for chunk in mono.chunks(800) {
+            let value = stream.push(chunk, 16_000, 1, false);
+            detected |= value.detected;
+            assert_eq!(value.direction, "unknown");
+            assert_eq!(value.direction_confidence, 0.0);
+            assert!(value.steer_degrees.is_none());
+        }
+        assert!(detected);
+    }
+
+    #[test]
+    fn long_only_detection_never_reuses_an_averaged_direction() {
+        let results =
+            streaming_detections(detector(), &signal(16_000, 4.0, 0.000_025, 0.000_005, 0.0));
+        let detected: Vec<_> = results.iter().filter(|value| value.detected).collect();
+        assert!(!detected.is_empty());
+        assert!(detected
+            .iter()
+            .all(|value| value.analysis_window_ms == 2048));
+        assert!(detected.iter().all(|value| value.direction == "unknown"
+            && value.direction_confidence == 0.0
+            && value.steer_degrees.is_none()));
+    }
+
+    #[test]
+    fn changing_nearby_weak_tones_do_not_supply_phase_coherent_evidence() {
+        let mut phase = [0.0_f32; 2];
+        let samples: Vec<_> = (0..16_000 * 6)
+            .flat_map(|i| {
+                let offset = [0.0, 4.0, -4.0, 2.5, -2.5][(i / 2400) % 5];
+                phase[0] += std::f32::consts::TAU * (625.0 + offset) / 16_000.0;
+                phase[1] += std::f32::consts::TAU * (1875.0 - offset) / 16_000.0;
+                let value = (phase[0].sin() * 0.18 + phase[1].sin() * 0.15) * 0.000_025;
+                [value, value]
+            })
+            .collect();
+        assert!(streaming_detections(detector(), &samples)
+            .iter()
+            .all(|value| !value.detected));
+    }
+
+    #[test]
+    fn expired_long_cue_cannot_return_when_unrelated_audio_resumes() {
+        let mut stream = detector();
+        for chunk in signal(16_000, 4.0, 0.000_025, 0.000_005, 0.0).chunks(1600) {
+            stream.push(chunk, 16_000, 2, false);
+        }
+        assert!(stream.status().detected);
+        assert!(!stream.push(&vec![0.0; 24_000], 16_000, 2, false).detected);
+        for chunk in game_mix(4.0, 0.0, false).chunks(1600) {
+            let value = stream.push(chunk, 16_000, 2, false);
+            assert!(!value.detected);
+            assert_eq!(value.direction_confidence, 0.0);
+            assert!(value.steer_degrees.is_none());
+        }
+    }
+
+    #[test]
+    fn quiet_repeated_chimes_survive_phase_restarts_in_loud_game_ambience() {
+        let mut samples = game_mix(6.0, 0.0, false);
+        for (i, frame) in samples.chunks_exact_mut(2).enumerate() {
+            let cycle = (i / 6400) as f32;
+            let t = (i % 6400) as f32 / 16_000.0;
+            let envelope = if t < 0.28 {
+                (std::f32::consts::PI * t / 0.28).sin().powi(2)
+            } else {
+                0.0
+            };
+            let value = ((std::f32::consts::TAU * 1677.0 * t + cycle * 1.7).sin() * 0.000_45
+                + (std::f32::consts::TAU * 3534.7 * t + cycle * 2.9).sin() * 0.000_38)
+                * envelope;
+            frame[0] += value;
+            frame[1] += value * 0.15;
+        }
+        let results = streaming_detections(builtin_detector(), &samples);
+        assert!(results
+            .iter()
+            .any(|value| value.detected && value.analysis_window_ms == 2048));
+        assert!(results.iter().all(|value| value.direction != "right"));
+    }
+
+    #[test]
+    fn rich_reference_rejects_multiple_noise_seeds_with_speech_harmonics_and_impulses() {
+        for initial in [0x8143_95a1_u32, 0x2c6e_8f17, 0xc5f8_123b] {
+            let mut seed = initial;
+            let mut colored = 0.0;
+            let samples: Vec<_> = (0..16_000 * 6)
+                .flat_map(|i| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    let white = (seed as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32;
+                    colored = colored * 0.96 + white * 0.04;
+                    let t = i as f32 / 16_000.0;
+                    let pitch = [173.0, 231.0, 287.0][(i / 7000) % 3];
+                    let speech = (1..=20)
+                        .map(|harmonic| {
+                            (std::f32::consts::TAU * pitch * harmonic as f32 * t).sin() * 0.02
+                                / harmonic as f32
+                        })
+                        .sum::<f32>()
+                        * (0.5 + 0.5 * (t * 19.0).sin());
+                    let impulse = if i % 4103 < 8 { white * 0.8 } else { 0.0 };
+                    [
+                        white * 0.012 + colored * 0.1 + speech + impulse,
+                        white * 0.03 + speech * 0.4 - impulse,
+                    ]
+                })
+                .collect();
+            assert!(
+                streaming_detections(builtin_detector(), &samples)
+                    .iter()
+                    .all(|value| !value.detected),
+                "seed {initial:x}"
+            );
         }
     }
 }

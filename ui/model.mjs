@@ -43,7 +43,7 @@ export const DEFAULTS = Object.freeze({
   alerts: { dpsGoal: 0, eventLeadMinutes: 5, sound: false, incomingWarnings: true }, importedHistory: [],
   damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'cupertino', density: 'compact', showClass: true, showShares: true, showTeamCooldowns: true, rowMetric: 'both',
   numberPrecision: 2,
-  summaryMetric: 'both',
+  summaryMetric: 'both', autoTargetRoster: true,
   onlyAboveGame: false, clickThroughWhenLocked: false, fadeWhenIdle: false, hidePlayerNames: false, compactStrip: false, autoCheckUpdates: true, hotkeys: [],
   fullscreenOverlay: false, overlayX: 24, overlayY: 24, overlayWidth: 420, overlayHeight: 340,
   calendarVersion: 1, calendarRegion: 'EU', builtInReminders: {},
@@ -86,7 +86,7 @@ export function normalizePreferences(input = {}) {
     layout: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
-    summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'),
+    summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'), autoTargetRoster: p.autoTargetRoster !== false,
     onlyAboveGame: p.onlyAboveGame === true, clickThroughWhenLocked: p.clickThroughWhenLocked === true, fadeWhenIdle: p.fadeWhenIdle === true, hidePlayerNames: p.hidePlayerNames === true, compactStrip: p.compactStrip === true, autoCheckUpdates: p.autoCheckUpdates !== false,
     fullscreenOverlay: p.fullscreenOverlay === true, overlayX: bounded(p.overlayX, 0, 20000, 24), overlayY: bounded(p.overlayY, 0, 20000, 24), overlayWidth: bounded(p.overlayWidth, 280, 1200, 420), overlayHeight: bounded(p.overlayHeight, 200, 1200, 340),
     hotkeys: (Array.isArray(p.hotkeys) && p.hotkeys.length ? p.hotkeys : ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'].map((action, index) => ({ action, shortcut: `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`, enabled: true }))).slice(0, 7).filter(row => row && ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'].includes(row.action)).map(row => ({ action: row.action, shortcut: str(row.shortcut, 80), enabled: row.enabled !== false })),
@@ -167,6 +167,23 @@ export function observedPlayerName(player = {}) {
   return placeholder ? `#${id}` : name;
 }
 
+export function displayPlayerName(player = {}, locale = 'tr') {
+  const name = observedPlayerName(player);
+  return player.identity_pending === true || player.identity_confirmed !== true && /^#\d+$/u.test(name)
+    ? locale === 'en' ? 'Name pending' : 'İsim bekleniyor'
+    : name;
+}
+
+export function displayTargetName(target = {}, locale = 'tr') {
+  const name = str(target.name, 100).trim();
+  if (name && !/^(?:#\d+|(?:Target|NPC)\s+#?\d+)$/iu.test(name)) return name;
+  return locale === 'en' ? target.is_boss ? 'Boss name pending' : 'Target name pending' : target.is_boss ? 'Boss adı bekleniyor' : 'Hedef adı bekleniyor';
+}
+
+export function rosterEligible(player = {}) {
+  return player.damage > 0 || player.identity_confirmed === true || player.is_local === true || player.in_party === true;
+}
+
 export function normalizePlayer(player = {}) {
   const received = Object.fromEntries(['damage_taken', 'damage_taken_per_second', 'healing', 'hps', 'unclassified_player_target_amount', 'unclassified_player_target_events'].map(key => [key, typeof player[key] === 'number' && Number.isFinite(player[key]) && player[key] >= 0 ? player[key] : null]));
   return { ...received, identity_confirmed: player.identity_confirmed === true, healing_coverage: str(player.healing_coverage, 40), healing_skills: (Array.isArray(player.healing_skills) ? player.healing_skills : []).slice(0, 500).map(normalizeSkill), damage_taken_complete: typeof player.damage_taken_complete === 'boolean' ? player.damage_taken_complete : null, id: identifier(player.id), name: observedPlayerName(player), identity_pending: player.identity_confirmed !== true && observedPlayerName(player) === `#${identifier(player.id) || '?'}`, class_name: str(player.class_name, 60) || '—', is_local: player.is_local === true, in_party: player.in_party === true, damage: Math.max(0, finite(player.damage)), dps: Math.max(0, finite(player.dps)), share: bounded(player.share, 0, 100), skills: (Array.isArray(player.skills) ? player.skills : []).slice(0, 500).map(normalizeSkill) };
@@ -175,6 +192,9 @@ export function normalizePlayer(player = {}) {
 function identityState(value = {}) {
   const nullableMetric = metric => typeof metric === 'number' && Number.isFinite(metric) ? Math.max(0, metric) : null;
   return {
+    focused_target_id: value.focused_target_id === null || value.focused_target_id === undefined ? null : identifier(value.focused_target_id),
+    focused_target_observed_at_ms: nullableMetric(value.focused_target_observed_at_ms),
+    live_target: value.live_target && typeof value.live_target === 'object' && !Array.isArray(value.live_target) ? normalizeTarget(value.live_target) : null,
     local_player_id: value.local_player_id === null || value.local_player_id === undefined ? null : identifier(value.local_player_id),
     local_player_name: str(value.local_player_name, 80), local_identity_source: oneOf(value.local_identity_source, ['server', 'manual', 'name-match', 'unresolved'], 'unresolved'),
     personal_total_damage: nullableMetric(value.personal_total_damage), personal_dps: nullableMetric(value.personal_dps), personal_elapsed_ms: Math.max(0, finite(value.personal_elapsed_ms)), personal_started_ms: nullableMetric(value.personal_started_ms),
@@ -215,7 +235,20 @@ export function normalizeEncounter(value) {
   return { assist: encounterAssistance(value.assist), context: encounterContext(value.context), healing_samples: healingSamples, healing_sample_complete: value.healing_sample_complete === true && healingSamples.length === (value.healing_samples?.length || 0), source: oneOf(value.source, ['captured', 'imported', 'demo'], 'unknown'), stream_gaps: Math.max(0, finite(value.stream_gaps ?? value.diagnostics?.stream_gaps)), truncated: value.truncated === true || value.diagnostics?.truncated_encounter === true, ...identityState(value), timing_valid: value.timing_valid !== false && !(finite(value.elapsed_ms) <= 0 && finite(value.total_damage ?? value.damage) > 0), network_latency: normalizeLatencyHistory(value.network_latency, value), character_build: characterSnapshot({ own: value.character_build }).own, actor_scope: actorScope, provenance: value.provenance === 'imported-unverified' || value.source === 'imported' ? 'imported-unverified' : value.provenance === 'demo' ? 'demo' : 'received', id: identifier(value.id), name: str(value.name ?? value.target_name ?? value.targets?.[0]?.name, 100) || 'Encounter', timestamp, started_ms: Number.isFinite(value.started_ms) ? Math.max(0, value.started_ms) : null, ended_ms: Number.isFinite(value.ended_ms) ? Math.max(0, value.ended_ms) : null, sample_complete: value.sample_complete === true && damageSamples.length === samples.length, damage_samples: damageSamples, elapsed_ms: Math.max(0, finite(value.elapsed_ms)), total_damage: unknownScopedTotal ? null : Math.max(0, finite(value.total_damage ?? value.damage)), dps: unknownScopedTotal && value.dps === null ? null : Math.max(0, finite(value.dps)), players: (Array.isArray(value.players) ? value.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(value.targets) ? value.targets : []).slice(0, 100).map(normalizeTarget) };
 }
 
-function normalizeTarget(target = {}) { const hp = key => typeof target[key] === 'number' && Number.isFinite(target[key]) && target[key] >= 0 ? target[key] : null; return { id: identifier(target.id), name: str(target.name, 100) || `#${identifier(target.id) || '?'}`, is_boss: Boolean(target.is_boss), damage: Math.max(0, finite(target.damage)), current_hp: hp('current_hp'), reported_max_hp: hp('reported_max_hp'), observed_peak_hp: hp('observed_peak_hp'), health_observed_at_ms: hp('health_observed_at_ms') }; }
+function normalizeTarget(target = {}) {
+  const hp = key => typeof target[key] === 'number' && Number.isFinite(target[key]) && target[key] >= 0 ? target[key] : null;
+  const participant = value => normalizePlayer({ ...value, skills: [] });
+  return { id: identifier(target.id), name: str(target.name, 100) || `#${identifier(target.id) || '?'}`, is_boss: target.is_boss === true, damage: Math.max(0, finite(target.damage)), current_hp: hp('current_hp'), reported_max_hp: hp('reported_max_hp'), observed_peak_hp: hp('observed_peak_hp'), health_observed_at_ms: hp('health_observed_at_ms'), current_hp_observed_at_ms: hp('current_hp_observed_at_ms'),
+    participants: (Array.isArray(target.participants) ? target.participants : []).slice(0, 10).map(participant), participant_count: Math.max(0, finite(target.participant_count)), participants_available: target.participants_available === true,
+    own_participant: target.own_participant && typeof target.own_participant === 'object' && !Array.isArray(target.own_participant) ? participant(target.own_participant) : null,
+    own_rank: hp('own_rank'), party_total_damage: hp('party_total_damage'), party_dps: hp('party_dps'), started_ms: hp('started_ms'), elapsed_ms: hp('elapsed_ms'), last_hit_ms: hp('last_hit_ms'), own_last_hit_ms: hp('own_last_hit_ms'), capture_complete: target.capture_complete === true };
+}
+
+function liveTargets(values, focusedId) {
+  const targets = Array.isArray(values) ? values : [];
+  const focused = focusedId === null || focusedId === undefined ? null : targets.find(target => String(target?.id) === String(focusedId));
+  return (focused ? [focused, ...targets.filter(target => target !== focused).slice(0, 99)] : targets.slice(0, 100)).map(normalizeTarget);
+}
 
 export function normalizeState(value) {
   const s = value && typeof value === 'object' ? value : {};
@@ -224,7 +257,7 @@ export function normalizeState(value) {
   const historyCount = Number.isSafeInteger(s.history_count) && s.history_count >= 0 ? s.history_count : (Array.isArray(s.history) ? s.history.length : 0);
   const encounterActive = typeof s.encounter_active === 'boolean' ? s.encounter_active : null;
   const metadata = { state_revision: Number.isSafeInteger(s.state_revision) && s.state_revision >= 0 ? s.state_revision : null, character_revision: Number.isSafeInteger(s.character_revision) && s.character_revision >= 0 ? s.character_revision : 0, character_available: s.character_available === true, field_boss_revision: Number.isSafeInteger(s.field_boss_revision) && s.field_boss_revision >= 0 ? s.field_boss_revision : 0, field_boss_available: s.field_boss_available === true };
-  return { ...identityState(s), ...metadata, live_team_identity: s.live_team_identity && typeof s.live_team_identity === 'object' && !Array.isArray(s.live_team_identity) ? s.live_team_identity : null, party_identity_roster: s.party_identity_roster && typeof s.party_identity_roster === 'object' && !Array.isArray(s.party_identity_roster) ? s.party_identity_roster : null, resources: s.resources && typeof s.resources === 'object' && !Array.isArray(s.resources) ? s.resources : null, actor_cooldowns: Array.isArray(s.actor_cooldowns) ? s.actor_cooldowns.slice(0, 1024).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], observed_casts: Array.isArray(s.observed_casts) ? s.observed_casts.slice(0, 512) : [], training: trainingState(s.training), assist: assistanceState(s.assist), history_revision: historyRevision, history_count: historyCount, encounter_active: encounterActive, status: str(s.status, 120) || 'disconnected', elapsed_ms: Math.max(0, finite(s.elapsed_ms)), total_damage: Math.max(0, finite(s.total_damage)), dps: Math.max(0, finite(s.dps)), paused: Boolean(s.paused), players: (Array.isArray(s.players) ? s.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(s.targets) ? s.targets : []).slice(0, 100).map(normalizeTarget), history: (Array.isArray(s.history) ? s.history : []).slice(0, 200).map(normalizeEncounter).filter(Boolean), cooldowns: Array.isArray(s.cooldowns) ? s.cooldowns.slice(0, 256).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], diagnostics: { stream_gaps: Math.max(0, finite(s.diagnostics?.stream_gaps)), ambiguous_periodic_events: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_events)), ambiguous_periodic_amount: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_amount)) }, capture: { network_latency: networkLatency(capture.network_latency), status: str(capture.status, 120), detail: str(capture.detail, 500), error_code: str(capture.error_code, 80), packets: Math.max(0, finite(capture.packets)), missed_packets: Math.max(0, finite(capture.missed_packets)), game_processes: Number.isFinite(capture.game_processes) ? Math.max(0, capture.game_processes) : null, game_connections: Number.isFinite(capture.game_connections) ? Math.max(0, capture.game_connections) : null, last_packet_at_ms: Number.isFinite(capture.last_packet_at_ms) ? Math.max(0, capture.last_packet_at_ms) : null, admin: { required: admin.required === true, elevated: typeof admin.elevated === 'boolean' ? admin.elevated : null, status: str(admin.status, 80), detail: str(admin.detail, 300) } } };
+  return { ...identityState(s), ...metadata, live_team_identity: s.live_team_identity && typeof s.live_team_identity === 'object' && !Array.isArray(s.live_team_identity) ? s.live_team_identity : null, party_identity_roster: s.party_identity_roster && typeof s.party_identity_roster === 'object' && !Array.isArray(s.party_identity_roster) ? s.party_identity_roster : null, resources: s.resources && typeof s.resources === 'object' && !Array.isArray(s.resources) ? s.resources : null, actor_cooldowns: Array.isArray(s.actor_cooldowns) ? s.actor_cooldowns.slice(0, 1024).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], observed_casts: Array.isArray(s.observed_casts) ? s.observed_casts.slice(0, 512) : [], training: trainingState(s.training), assist: assistanceState(s.assist), history_revision: historyRevision, history_count: historyCount, encounter_active: encounterActive, status: str(s.status, 120) || 'disconnected', elapsed_ms: Math.max(0, finite(s.elapsed_ms)), total_damage: Math.max(0, finite(s.total_damage)), dps: Math.max(0, finite(s.dps)), paused: Boolean(s.paused), players: (Array.isArray(s.players) ? s.players : []).slice(0, 100).map(normalizePlayer), targets: liveTargets(s.targets, s.focused_target_id), history: (Array.isArray(s.history) ? s.history : []).slice(0, 200).map(normalizeEncounter).filter(Boolean), cooldowns: Array.isArray(s.cooldowns) ? s.cooldowns.slice(0, 256).filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [], diagnostics: { stream_gaps: Math.max(0, finite(s.diagnostics?.stream_gaps)), ambiguous_periodic_events: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_events)), ambiguous_periodic_amount: Math.max(0, finite(s.diagnostics?.ambiguous_periodic_amount)) }, capture: { network_latency: networkLatency(capture.network_latency), status: str(capture.status, 120), detail: str(capture.detail, 500), error_code: str(capture.error_code, 80), packets: Math.max(0, finite(capture.packets)), missed_packets: Math.max(0, finite(capture.missed_packets)), game_processes: Number.isFinite(capture.game_processes) ? Math.max(0, capture.game_processes) : null, game_connections: Number.isFinite(capture.game_connections) ? Math.max(0, capture.game_connections) : null, last_packet_at_ms: Number.isFinite(capture.last_packet_at_ms) ? Math.max(0, capture.last_packet_at_ms) : null, admin: { required: admin.required === true, elevated: typeof admin.elevated === 'boolean' ? admin.elevated : null, status: str(admin.status, 80), detail: str(admin.detail, 300) } } };
 }
 
 const CONNECTION_TEXT = Object.freeze({

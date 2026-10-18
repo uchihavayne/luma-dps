@@ -2,6 +2,18 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.18.0 preview · 2026-10-18
+
+- Decode supported canonical variable-length prefixes in own/nearby character snapshots and retain received class suffixes. Read structurally validated member-profile names before or without a party roster, while keeping exact home-server matching, local identity and party membership separate. Missing received names remain explicitly pending; not every anonymous actor is claimed to be resolved.
+- Remove unconfirmed zero-damage participant artifacts without discarding uncertainty counters, real confirmed zero-DPS support actors or received positive-damage contributors. Do not relabel saved reports with guessed names or distribute private captured records as fixtures.
+- Verify supported summon ownership against both the spawn's varint owner and its tagged `u16` repetition. Stop treating an unverified bare `04 8D` prefix as ownership; decode the exact short death shape separately. Freeze prior attribution when a pet/NPC actor ID respawns, then reset stale owner/name/class/health metadata.
+- Add an integrated recently attacked personal-target HP view, preserved across boss filtering. Track actual-current HP timestamps separately from maximum updates; clear freshness after capture gaps and leave missing maximum/percentage unavailable.
+- Open a bounded **Observed Top 10** automatically for a boss or a shared PvE target with at least two observed contributors, without party membership. Retain the own rank beyond the first ten and separately known party totals. These are received same-target contributions, not official server-wide or world rankings.
+- Improve faint Cube-reference evidence with a longer analysis path while requiring fresh stereo support for a side arrow. A weak match may take about two seconds and still leave direction unavailable. Balanced, mono, stale or uncertain direction does not produce an arrow; stereo does not establish GPS position, distance or an absolute bearing.
+- Keep target HP, Top 10 and the inline Cube dock clear of connection notices. Match header and footer totals to the selected target, preserve access to personal/party/nearby lists, and retain scrollable contributors in short windows with dark and light themes.
+
+Replay and UI checks cover the implemented cases. Live EU name recovery, shared-target totals and HP transitions, actual pointer behavior over AION2, and real faint Cube detection/steering remain pending. The 0.17 fullscreen implementation retains its native game-interaction validation limits. No full premium parity, complete protocol/catalog coverage or perfect detection is claimed; see [feature coverage](docs/feature-parity.md).
+
 ## 0.17.0 preview · 2026-10-18
 
 - Recover received nearby player names from typed `04 8D` appearance records instead of discarding the acting character's name as an ownership notice. Hold early structural profiles briefly for an exact current party name/home-server match; clear pending bindings after loss, reconnect, despawn, clock reversal or party changes.

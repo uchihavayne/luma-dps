@@ -1,5 +1,6 @@
 export const CUBE_REFERENCE_MAX_BYTES = 8 * 1024 * 1024;
 export const CUBE_MATCH_LIFETIME_MS = 3000;
+export const CUBE_DIRECTION_LIFETIME_MS = 900;
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const bounded = (value, minimum, maximum, fallback) => finite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
@@ -14,6 +15,7 @@ export function normalizeCubeState(value = {}) {
     enabled, status, source: input.source === 'system' ? 'system' : 'game', message: text(input.message),
     reference: { name: text(input.reference?.name, 100), seconds: bounded(input.reference?.seconds, 0, 30, 0) },
     score: bounded(input.score, 0, 1, 0),
+    analysis_window_ms: Math.round(bounded(input.analysis_window_ms, 0, 4096, 0)),
     direction: ['left', 'right', 'center'].includes(input.direction) ? input.direction : 'unknown',
     direction_confidence: bounded(input.direction_confidence, 0, 1, 0),
     pan: finite(input.pan) && input.pan >= -1 && input.pan <= 1 ? input.pan : null,
@@ -49,8 +51,10 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
   const tr = locale !== 'en';
   const age = state.last_detection_ms === null ? Infinity : now - state.last_detection_ms;
   const matched = !readError && state.enabled && state.status === 'detected' && Number.isFinite(age) && age >= -250 && age <= CUBE_MATCH_LIFETIME_MS;
-  const directionFloor = ['left', 'right'].includes(state.direction) ? .12 : .6;
-  const direction = matched && state.audio_channels === 2 && state.direction_confidence >= directionFloor ? state.direction : 'unknown';
+  const side = state.steer_degrees !== null && (state.direction === 'left' && state.pan !== null && state.pan < -.04 && state.steer_degrees < 0 || state.direction === 'right' && state.pan !== null && state.pan > .04 && state.steer_degrees > 0);
+  const directionFresh = matched && age <= CUBE_DIRECTION_LIFETIME_MS && state.analysis_window_ms < 1024;
+  const directionFloor = ['left', 'right'].includes(state.direction) ? .35 : .6;
+  const direction = directionFresh && state.audio_channels === 2 && state.direction_confidence >= directionFloor && (side || state.direction === 'center') ? state.direction : 'unknown';
   const status = readError ? 'error' : state.status === 'detected' && !matched ? 'listening' : state.status;
   const labels = tr
     ? { off: 'Dinleme kapalı', waiting_game: 'AION2 bekleniyor', listening: 'Küp sesi bekleniyor', detected: 'Küp sesi eşleşti', error: 'Ses bağlantısı yok' }
@@ -65,9 +69,11 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
   const quietInput = !readError && state.enabled && status === 'listening' && !state.audio_present && state.sample_rate > 0 && state.received_audio_frames >= state.sample_rate * 2;
   const short = matched ? `${{ left: '←', right: '→', center: '↔', unknown: '◇' }[direction]} ${prefix}` : `${prefix} · ${tr ? { off: 'kapalı', waiting_game: 'bekliyor', listening: 'ara', error: 'hata' }[status] : { off: 'off', waiting_game: 'wait', listening: 'listen', error: 'error' }[status]}`;
   return {
-    status, matched, direction, label: labels[status], short, quietInput,
-    steerDegrees: direction !== 'unknown' ? state.steer_degrees : null,
-    rearDegrees: direction !== 'unknown' && state.steer_degrees !== null && state.bearing_ambiguous ? 180 - state.steer_degrees : null,
+    status, matched, direction, label: labels[status], short, quietInput, sensitive: matched && state.analysis_window_ms >= 1024,
+    // A stereo balance establishes a side, not a calibrated world bearing.
+    // Balanced audio cannot prove that a Cube is in front of the player.
+    steerDegrees: direction === 'left' ? -90 : direction === 'right' ? 90 : null,
+    rearDegrees: null,
     bearingAmbiguous: state.bearing_ambiguous,
     signalStrength: matched ? state.signal_strength : null,
     relativeStrength: matched && state.signal_strength !== null ? `${Math.round(state.signal_strength * 100)}%` : '—',

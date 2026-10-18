@@ -36,6 +36,7 @@ pub struct CubeState {
     bearing_ambiguous: bool,
     snr_db: Option<f32>,
     signal_strength: Option<f32>,
+    analysis_window_ms: u32,
     input_level_db: Option<f32>,
     audio_present: bool,
     received_audio_frames: u64,
@@ -67,6 +68,7 @@ impl CubeState {
             bearing_ambiguous: true,
             snr_db: None,
             signal_strength: None,
+            analysis_window_ms: 0,
             input_level_db: None,
             audio_present: false,
             received_audio_frames: 0,
@@ -90,6 +92,7 @@ impl CubeState {
         self.bearing_ambiguous = true;
         self.snr_db = None;
         self.signal_strength = None;
+        self.analysis_window_ms = 0;
         self.strength_db = None;
         self.trend = "unknown".into();
     }
@@ -341,7 +344,7 @@ impl Service {
                                     .sqrt()
                                     .max(1e-6)
                                     .log10()) as f32;
-                            let audio_present = window_peak > 0.000_05;
+                            let audio_present = window_peak > 0.000_05 || detection.detected;
                             window_power = 0.0;
                             window_samples = 0;
                             window_peak = 0.0;
@@ -364,6 +367,7 @@ impl Service {
                                 state.bearing_ambiguous = detection.bearing_ambiguous;
                                 state.snr_db = detection.snr_db;
                                 state.signal_strength = detection.signal_strength;
+                                state.analysis_window_ms = detection.analysis_window_ms;
                                 state.input_level_db = Some(input_db.clamp(-120.0, 0.0));
                                 state.audio_present = audio_present;
                                 state.received_audio_frames = received_frames;

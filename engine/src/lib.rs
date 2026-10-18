@@ -113,6 +113,19 @@ pub struct PlayerState {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct TargetParticipant {
+    pub id: u64,
+    pub name: String,
+    pub class_name: String,
+    pub damage: u64,
+    pub dps: f64,
+    pub share: f64,
+    pub identity_confirmed: bool,
+    pub is_local: bool,
+    pub in_party: bool,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TargetState {
     pub id: u64,
     pub name: String,
@@ -122,10 +135,25 @@ pub struct TargetState {
     pub observed_peak_hp: Option<u64>,
     pub reported_max_hp: Option<u64>,
     pub health_observed_at_ms: Option<u64>,
+    pub current_hp_observed_at_ms: Option<u64>,
+    pub participants: Vec<TargetParticipant>,
+    pub participants_available: bool,
+    pub participant_count: usize,
+    pub own_participant: Option<TargetParticipant>,
+    pub own_rank: Option<usize>,
+    pub own_last_hit_ms: Option<u64>,
+    pub party_total_damage: Option<u64>,
+    pub party_dps: Option<f64>,
+    pub started_ms: Option<u64>,
+    pub elapsed_ms: u64,
+    pub last_hit_ms: Option<u64>,
+    pub capture_complete: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
+    pub focused_target_id: Option<u64>,
+    pub focused_target_observed_at_ms: Option<u64>,
     pub context: EncounterContext,
     pub healing_samples: Vec<DamageSample>,
     pub healing_sample_complete: bool,
@@ -193,6 +221,9 @@ pub struct Diagnostics {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeterState {
+    pub focused_target_id: Option<u64>,
+    pub focused_target_observed_at_ms: Option<u64>,
+    pub live_target: Option<TargetState>,
     pub status: String,
     pub elapsed_ms: u64,
     pub total_damage: u64,
@@ -247,7 +278,9 @@ pub struct MeterState {
 #[derive(Clone, Debug, Default)]
 struct Identity {
     removed: bool,
+    spawned: bool,
     name: Option<String>,
+    home_server: Option<u16>,
     class: Option<String>,
     player: bool,
     npc: bool,
@@ -257,6 +290,7 @@ struct Identity {
     peak_hp: Option<u64>,
     reported_max_hp: Option<u64>,
     health_observed_at_ms: Option<u64>,
+    current_hp_observed_at_ms: Option<u64>,
 }
 type Aggregate = BTreeMap<(u64, u64), BTreeMap<u32, SkillState>>;
 struct Completed {
@@ -273,6 +307,7 @@ struct SourceActivity {
     first: u64,
     last: u64,
     paused_at_start: u64,
+    last_focus_epoch: u64,
 }
 #[derive(Default)]
 struct StreamPrefix {
@@ -282,6 +317,7 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    focus_epoch: u64,
     current_context: EncounterContext,
     party_id: Option<u32>,
     healing_samples: Vec<DamageSample>,
@@ -336,11 +372,14 @@ pub struct MeterEngine {
     encounter_id: u64,
     diagnostics: Diagnostics,
     revision: u64,
-    cache: RefCell<Option<(u64, String, Encounter)>>,
+    // "all" and "both" have the same aggregate. Keep exactly two slots so
+    // the independent live target does not evict the boss-filtered snapshot.
+    cache: RefCell<[Option<(u64, Encounter)>; 2]>,
 }
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            focus_epoch: 0,
             current_context: EncounterContext::default(),
             party_id: None,
             healing_samples: Vec::new(),
@@ -395,14 +434,14 @@ impl Default for MeterEngine {
             encounter_id: 1,
             diagnostics: Default::default(),
             revision: 0,
-            cache: RefCell::new(None),
+            cache: RefCell::new([None, None]),
         }
     }
 }
 impl MeterEngine {
     fn dirty(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-        self.cache.get_mut().take();
+        *self.cache.get_mut() = [None, None];
     }
     fn refresh_wire_party(&mut self) {
         let mut counts = BTreeMap::<String, usize>::new();
@@ -479,6 +518,10 @@ impl MeterEngine {
         let previous_gaps = self.streams.gaps;
         let chunk = self.streams.push(&segment, now);
         if segment.syn || segment.reset || self.streams.gaps != previous_gaps {
+            self.focus_epoch = self.focus_epoch.wrapping_add(1);
+            for identity in self.identities.values_mut() {
+                identity.current_hp_observed_at_ms = None;
+            }
             self.frames.discard(&segment.connection);
             self.prefixes.remove(&segment.connection);
             self.cooldowns.clear();
@@ -506,6 +549,7 @@ impl MeterEngine {
             if segment.syn {
                 self.frames.mark_start(&segment.connection)
             }
+            self.dirty();
         }
         self.diagnostics.stream_gaps = self
             .diagnostics
@@ -730,6 +774,7 @@ impl MeterEngine {
                     let entry = self.identities.entry(*actor_id).or_default();
                     entry.health_observed_at_ms = Some(now);
                     if let Some(current) = current_hp {
+                        entry.current_hp_observed_at_ms = Some(now);
                         entry.hp = Some(*current);
                         entry.peak_hp = Some(entry.peak_hp.unwrap_or(0).max(*current));
                     }
@@ -929,7 +974,14 @@ impl MeterEngine {
             } => {
                 self.pending_profiles
                     .retain(|(profile, _)| profile.id != id);
-                if self.identities.get(&id).is_some_and(|entry| entry.player)
+                let replaces_entity = self
+                    .identities
+                    .get(&id)
+                    .is_some_and(|entry| entry.player || entry.spawned);
+                if self
+                    .identities
+                    .get(&id)
+                    .is_some_and(|entry| entry.player || entry.spawned)
                     && self
                         .aggregates
                         .keys()
@@ -938,7 +990,14 @@ impl MeterEngine {
                     self.finish(now);
                 }
                 self.prepare_entity(id, now);
+                if replaces_entity {
+                    self.identities.insert(id, Identity::default());
+                    self.pending_owners.remove(&id);
+                    self.cooldowns.remove_actor(id);
+                    self.assistance.remove_actor(id, now);
+                }
                 let entry = self.identities.entry(id).or_default();
+                entry.spawned = true;
                 entry.player = false;
                 entry.npc = matches!(kind, 0x0c | 0x0d | 0x1c);
                 entry.pet = kind == 0x5f;
@@ -952,17 +1011,18 @@ impl MeterEngine {
                 if let Some(name) = name {
                     entry.name = Some(name)
                 }
-                if entry.npc || entry.pet {
-                    if self.own_id == Some(id) {
-                        self.own_id = None;
-                        self.alias_bound_id = None;
-                        self.cancel_training()
-                    }
-                    if self.manual_own_id == Some(id) {
-                        self.manual_own_id = None;
-                        self.alias_bound_id = None;
-                        self.cancel_training()
-                    }
+                if self.own_id == Some(id) {
+                    self.own_id = None;
+                    self.alias_bound_id = None;
+                    self.resources.clear();
+                    self.character.clear();
+                    self.character_revision = self.character_revision.wrapping_add(1);
+                    self.cancel_training()
+                }
+                if self.manual_own_id == Some(id) {
+                    self.manual_own_id = None;
+                    self.alias_bound_id = None;
+                    self.cancel_training()
                 }
                 self.dirty();
             }
@@ -1065,6 +1125,55 @@ impl MeterEngine {
             }
             Event::MemberProfiles { members } => {
                 for profile in members.into_iter().take(12) {
+                    let changed_server = self
+                        .identities
+                        .get(&profile.id)
+                        .and_then(|row| row.home_server)
+                        .is_some_and(|server| server != profile.server);
+                    if changed_server {
+                        if self.own_id == Some(profile.id) {
+                            continue;
+                        }
+                        self.ingest_event(
+                            Event::Removed {
+                                id: profile.id,
+                                death: false,
+                            },
+                            now,
+                        );
+                    }
+                    // The structured profile itself supplies the combat actor
+                    // ID and name. A missing party roster must not discard that
+                    // identity; it supplies neither self nor party membership.
+                    self.ingest_event(
+                        Event::Identity {
+                            id: profile.id,
+                            name: profile.name.clone(),
+                            class: None,
+                            own: false,
+                        },
+                        now,
+                    );
+                    if let Some(identity) = self.identities.get_mut(&profile.id).filter(|row| {
+                        row.player && row.name.as_deref() == Some(profile.name.as_str())
+                    }) {
+                        identity.home_server = Some(profile.server);
+                    }
+                    if let Some(identity) = self
+                        .completed
+                        .as_mut()
+                        .filter(|record| record.generation == self.generation)
+                        .and_then(|record| record.identities.get_mut(&profile.id))
+                        .filter(|row| {
+                            row.player
+                                && row.name.as_deref() == Some(profile.name.as_str())
+                                && row
+                                    .home_server
+                                    .is_none_or(|server| server == profile.server)
+                        })
+                    {
+                        identity.home_server = Some(profile.server);
+                    }
                     self.pending_profiles
                         .retain(|(old, _)| old.id != profile.id);
                     if self.pending_profiles.len() == MAX_PENDING_PROFILES {
@@ -1115,6 +1224,7 @@ impl MeterEngine {
             Event::Health { id, current } => {
                 let entry = self.identities.entry(id).or_default();
                 entry.health_observed_at_ms = Some(now);
+                entry.current_hp_observed_at_ms = Some(now);
                 entry.hp = Some(current);
                 entry.peak_hp = Some(entry.peak_hp.unwrap_or(0).max(current));
                 self.dirty();
@@ -1196,11 +1306,15 @@ impl MeterEngine {
                     }
                     self.pair_activity
                         .entry((hit.source, hit.target))
-                        .and_modify(|span| span.last = now)
+                        .and_modify(|span| {
+                            span.last = now;
+                            span.last_focus_epoch = self.focus_epoch;
+                        })
                         .or_insert(SourceActivity {
                             first: now,
                             last: now,
                             paused_at_start: self.paused_ms,
+                            last_focus_epoch: self.focus_epoch,
                         });
                     self.alive_targets.insert(hit.target);
                     let row = self
@@ -1400,6 +1514,7 @@ impl MeterEngine {
         }
     }
     pub fn connection_changed(&mut self) {
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.finish(self.last_hit);
         self.current_context = EncounterContext::default();
         self.party_id = None;
@@ -1439,6 +1554,10 @@ impl MeterEngine {
         self.dirty();
     }
     pub fn capture_loss(&mut self) {
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        for identity in self.identities.values_mut() {
+            identity.current_hp_observed_at_ms = None;
+        }
         self.streams.invalidate();
         self.frames = Default::default();
         // A loss does not create a new TCP generation. Keep established TLS/game
@@ -1474,6 +1593,7 @@ impl MeterEngine {
             self.sample_complete = false
         }
         self.diagnostics.stream_gaps = self.diagnostics.stream_gaps.saturating_add(1);
+        self.dirty();
     }
     pub fn pause(&mut self, paused: bool) {
         self.set_paused_at(paused, self.last_hit)
@@ -1558,6 +1678,17 @@ impl MeterEngine {
         }
         (None, "unresolved")
     }
+    fn party_name_matches(&self, identity: &Identity, name: &str) -> bool {
+        identity.player
+            && identity.name.as_deref() == Some(name)
+            && identity.home_server.is_none_or(|server| {
+                self.party_wire_members.is_empty()
+                    || self
+                        .party_wire_members
+                        .values()
+                        .any(|member| member.name == name && member.server == server)
+            })
+    }
     fn party_in(
         &self,
         identities: &HashMap<u64, Identity>,
@@ -1568,9 +1699,7 @@ impl MeterEngine {
             for name in names {
                 let mut matches = identities
                     .iter()
-                    .filter(|(_, identity)| {
-                        identity.player && identity.name.as_deref() == Some(name.as_str())
-                    })
+                    .filter(|(_, identity)| self.party_name_matches(identity, name))
                     .map(|(id, _)| *id);
                 if let Some(id) = matches.next() {
                     if matches.next().is_none() {
@@ -1853,6 +1982,7 @@ impl MeterEngine {
         };
         let mut players = BTreeMap::<u64, BTreeMap<u32, SkillState>>::new();
         let mut targets = BTreeMap::<u64, TargetState>::new();
+        let mut target_contributors = BTreeMap::<u64, BTreeMap<u64, u64>>::new();
         let same_generation = self
             .completed
             .as_ref()
@@ -1935,8 +2065,19 @@ impl MeterEngine {
                 reported_max_hp: target_identity.and_then(|entry| entry.reported_max_hp),
                 health_observed_at_ms: target_identity
                     .and_then(|entry| entry.health_observed_at_ms),
+                current_hp_observed_at_ms: target_identity
+                    .and_then(|entry| entry.current_hp_observed_at_ms),
+                ..Default::default()
             });
             target_row.damage = target_row.damage.saturating_add(damage);
+            if damage > 0 {
+                let contribution = target_contributors
+                    .entry(*target)
+                    .or_default()
+                    .entry(owner)
+                    .or_default();
+                *contribution = contribution.saturating_add(damage);
+            }
             if local == Some(owner) {
                 personal_damage = personal_damage.saturating_add(damage);
                 let row = personal_targets.entry(*target).or_insert_with(|| {
@@ -2008,7 +2149,9 @@ impl MeterEngine {
                                 .values()
                                 .filter(|entry| entry.player && entry.name.as_ref() == Some(name))
                                 .count();
-                            if count != 1 {
+                            if count != 1
+                                || !identity.is_some_and(|row| self.party_name_matches(row, name))
+                            {
                                 return None;
                             }
                             self.party_classes
@@ -2068,6 +2211,12 @@ impl MeterEngine {
                 }
             })
             .collect();
+        // An unclassified amount aimed at a player does not prove its source
+        // was another player. Keep the uncertainty in encounter diagnostics,
+        // without manufacturing a zero-DPS anonymous participant. Confirmed
+        // support players and explicitly selected current members remain.
+        player_rows
+            .retain(|row| row.damage > 0 || row.identity_confirmed || row.is_local || row.in_party);
         player_rows.sort_by_key(|row| std::cmp::Reverse(row.damage));
         let mut record = Encounter {
             id: self.encounter_id,
@@ -2118,6 +2267,7 @@ impl MeterEngine {
                 .fold(0, u64::saturating_add),
             ..Default::default()
         };
+        self.populate_target_boards(&mut record, &target_contributors, identities);
         if let Some(completed) = &self.completed {
             record.id = completed.record.id;
             record.started_ms = completed.record.started_ms;
@@ -2130,14 +2280,126 @@ impl MeterEngine {
             .unwrap_or_else(|| self.current_context.clone());
         record
     }
+    fn populate_target_boards(
+        &self,
+        record: &mut Encounter,
+        contributions: &BTreeMap<u64, BTreeMap<u64, u64>>,
+        identities: &HashMap<u64, Identity>,
+    ) {
+        let pairs = self
+            .completed
+            .as_ref()
+            .map(|value| &value.pair_activity)
+            .unwrap_or(&self.pair_activity);
+        let focus = record.local_player_id.and_then(|local| {
+            pairs
+                .iter()
+                .filter(|((source, target), span)| {
+                    Self::owner_in(identities, *source) == local
+                        && pve_pair(identities, *source, *target, Some(local))
+                        && span.last_focus_epoch == self.focus_epoch
+                })
+                .max_by_key(|((_, target), span)| (span.last, std::cmp::Reverse(*target)))
+                .map(|((_, target), _)| *target)
+        });
+        let mut priority: Vec<_> = record.targets.iter().collect();
+        priority.sort_by_key(|target| {
+            (
+                Some(target.id) != focus,
+                !target.is_boss,
+                std::cmp::Reverse(target.damage),
+                target.id,
+            )
+        });
+        let board_ids: std::collections::BTreeSet<_> = priority
+            .into_iter()
+            .take(64)
+            .map(|target| target.id)
+            .collect();
+        let metadata: BTreeMap<_, _> = record
+            .players
+            .iter()
+            .map(|player| (player.id, player))
+            .collect();
+        let local = record.local_player_id;
+        let party: std::collections::BTreeSet<_> =
+            record.party_member_ids.iter().copied().collect();
+        let party_known = record.party_membership_source != "unresolved";
+        let capture_complete = self
+            .completed
+            .as_ref()
+            .map(|value| value.capture_complete)
+            .unwrap_or(self.diagnostics.stream_gaps == 0 && !self.diagnostics.truncated_encounter);
+        let participant = |id: u64, damage: u64, total: u64| {
+            let player = metadata.get(&id);
+            TargetParticipant {
+                id,
+                name: player
+                    .map(|row| row.name.clone())
+                    .unwrap_or_else(|| self.display_name(id, identities.get(&id))),
+                class_name: player
+                    .map(|row| row.class_name.clone())
+                    .unwrap_or_else(|| "Unknown".into()),
+                damage,
+                dps: 0.0,
+                share: if total == 0 {
+                    0.0
+                } else {
+                    damage as f64 / total as f64 * 100.0
+                },
+                identity_confirmed: identities.get(&id).is_some_and(|row| row.player),
+                is_local: local == Some(id),
+                in_party: party.contains(&id),
+            }
+        };
+        for target in &mut record.targets {
+            let Some(rows) = contributions.get(&target.id) else {
+                continue;
+            };
+            target.participant_count = rows.len();
+            target.capture_complete = capture_complete;
+            target.party_total_damage = party_known.then(|| {
+                rows.iter()
+                    .filter(|(id, _)| party.contains(id))
+                    .map(|(_, amount)| *amount)
+                    .fold(0, u64::saturating_add)
+            });
+            if let Some((id, amount)) =
+                local.and_then(|id| rows.get(&id).map(|amount| (id, *amount)))
+            {
+                target.own_participant = Some(participant(id, amount, target.damage));
+                target.own_rank = Some(
+                    1 + rows
+                        .iter()
+                        .filter(|(other, damage)| {
+                            **damage > amount || **damage == amount && **other < id
+                        })
+                        .count(),
+                );
+            }
+            if board_ids.contains(&target.id) {
+                let mut ordered: Vec<_> = rows.iter().collect();
+                ordered.sort_by_key(|(id, amount)| (std::cmp::Reverse(**amount), **id));
+                target.participants = ordered
+                    .into_iter()
+                    .take(10)
+                    .map(|(id, amount)| participant(*id, *amount, target.damage))
+                    .collect();
+                target.participants_available = true;
+            }
+        }
+    }
     fn snapshot(&self, now: u64, mode: &str) -> Encounter {
         let mut cache = self.cache.borrow_mut();
-        if cache.as_ref().is_none_or(|(revision, cached_mode, _)| {
-            *revision != self.revision || cached_mode != mode
-        }) {
-            *cache = Some((self.revision, mode.into(), self.build_totals(mode)))
+        let slot = &mut cache[usize::from(mode == "boss")];
+        if slot
+            .as_ref()
+            .is_none_or(|(revision, _)| *revision != self.revision)
+        {
+            *slot = Some((self.revision, self.build_totals(mode)))
         }
-        let mut record = cache.as_ref().unwrap().2.clone();
+        let mut record = slot.as_ref().unwrap().1.clone();
+        drop(cache);
         record.elapsed_ms = self.duration(now);
         let pairs = self
             .completed
@@ -2224,6 +2486,81 @@ impl MeterEngine {
         record.party_dps = record
             .party_total_damage
             .map(|damage| damage as f64 / (record.party_elapsed_ms as f64 / 1000.0).max(1.0));
+        // Target windows share the first received hit on that target. Building
+        // them in one pass avoids scanning all encounter pairs per target.
+        let mut target_activity = BTreeMap::<u64, (u64, u64, u64, Option<u64>)>::new();
+        let live_focus = self.completed.is_none() && self.started.is_some();
+        for ((source, target), span) in pairs {
+            if !outgoing(*source, *target) {
+                continue;
+            }
+            let own_last = (live_focus
+                && span.last_focus_epoch == self.focus_epoch
+                && local == Some(Self::owner_in(identities, *source))
+                && !identities.get(target).is_some_and(|entry| entry.removed))
+            .then_some(span.last);
+            target_activity
+                .entry(*target)
+                .and_modify(|row| {
+                    if span.first < row.0 {
+                        row.0 = span.first;
+                        row.2 = span.paused_at_start;
+                    }
+                    row.1 = row.1.max(span.last);
+                    row.3 = row.3.max(own_last);
+                })
+                .or_insert((span.first, span.last, span.paused_at_start, own_last));
+        }
+        let paused_ms = self
+            .completed
+            .as_ref()
+            .map(|value| value.paused_ms)
+            .unwrap_or(self.paused_ms);
+        for target in &mut record.targets {
+            let Some((first, last, paused_at_start, own_last)) =
+                target_activity.get(&target.id).copied()
+            else {
+                continue;
+            };
+            let end = if let Some(completed) = &self.completed {
+                completed.record.ended_ms.min(last.saturating_add(IDLE_MS))
+            } else if self.paused {
+                self.pause_at
+                    .unwrap_or(last)
+                    .min(last.saturating_add(IDLE_MS))
+            } else {
+                now.min(last.saturating_add(IDLE_MS))
+            };
+            target.started_ms = Some(first);
+            target.elapsed_ms = end
+                .saturating_sub(first)
+                .saturating_sub(paused_ms.saturating_sub(paused_at_start));
+            target.last_hit_ms = Some(last);
+            target.own_last_hit_ms = own_last;
+            let divisor = (target.elapsed_ms as f64 / 1000.0).max(1.0);
+            for player in &mut target.participants {
+                player.dps = player.damage as f64 / divisor;
+            }
+            if let Some(player) = &mut target.own_participant {
+                player.dps = player.damage as f64 / divisor;
+            }
+            target.party_dps = target
+                .party_total_damage
+                .map(|damage| damage as f64 / divisor);
+        }
+        let candidates: Vec<_> = record
+            .targets
+            .iter()
+            .filter_map(|target| {
+                let at = target.own_last_hit_ms?;
+                (now.checked_sub(at).is_some_and(|age| age < IDLE_MS)).then_some((target.id, at))
+            })
+            .collect();
+        let latest = candidates.iter().map(|(_, at)| *at).max();
+        let mut newest = candidates.into_iter().filter(|(_, at)| Some(*at) == latest);
+        let focused = newest.next().filter(|_| newest.next().is_none());
+        record.focused_target_id = focused.map(|(id, _)| id);
+        record.focused_target_observed_at_ms = focused.map(|(_, at)| at);
         let incoming_span = |id: u64| {
             span_for(&|source, target| target == id && verified_npc_source(identities, source))
         };
@@ -2338,6 +2675,19 @@ impl MeterEngine {
     }
     fn state_inner(&self, now: u64, with_history: bool) -> MeterState {
         let current = self.snapshot(now, &self.target_mode);
+        // A category filter must not hide the actual target being attacked.
+        // Keep its observed board separate from filtered report totals.
+        let unfiltered = (self.target_mode == "boss").then(|| self.snapshot(now, "all"));
+        let live_view = unfiltered.as_ref().unwrap_or(&current);
+        let focused_target_id = live_view.focused_target_id;
+        let focused_target_observed_at_ms = live_view.focused_target_observed_at_ms;
+        let live_target = focused_target_id.and_then(|id| {
+            live_view
+                .targets
+                .iter()
+                .find(|target| target.id == id)
+                .cloned()
+        });
         let mut assist = self.assistance.live_snapshot(now);
         assist.casts.sort_by_key(|cast| {
             (
@@ -2414,6 +2764,9 @@ impl MeterEngine {
         );
         cooldowns.sort_by_key(|row| row["skill_id"].as_u64().unwrap_or(0));
         MeterState {
+            focused_target_id,
+            focused_target_observed_at_ms,
+            live_target,
             status: if self.paused {
                 "paused"
             } else if self.diagnostics.stream_gaps > 0 {
@@ -2682,7 +3035,7 @@ impl MeterEngine {
                     .identities
                     .iter()
                     .filter(|(_, identity)| {
-                        identity.player && !identity.removed && identity.name.as_ref() == Some(name)
+                        !identity.removed && self.party_name_matches(identity, name)
                     })
                     .collect();
                 let actor = (matches.len() == 1).then(|| matches[0]);
@@ -2948,7 +3301,59 @@ fn record_details_bounded(record: &Encounter) -> bool {
                     .iter()
                     .all(|skill| skill.name.len() <= 256)
         })
-        && record.targets.iter().all(|target| target.name.len() <= 512)
+        && record
+            .targets
+            .iter()
+            .chain(&record.personal_targets)
+            .chain(&record.party_targets)
+            .filter(|target| target.participants_available || !target.participants.is_empty())
+            .take(65)
+            .count()
+            <= 64
+        && record
+            .targets
+            .iter()
+            .chain(&record.personal_targets)
+            .chain(&record.party_targets)
+            .all(|target| {
+                let participant_valid = |row: &TargetParticipant| {
+                    (1..=u64::from(u32::MAX)).contains(&row.id)
+                        && row.name.len() <= 512
+                        && row.class_name.len() <= 128
+                        && row.damage <= target.damage
+                        && row.dps.is_finite()
+                        && row.dps >= 0.0
+                        && row.share.is_finite()
+                        && (0.0..=100.0).contains(&row.share)
+                };
+                target.name.len() <= 512
+                    && target.participants.len() <= 10
+                    && target.participant_count <= MAX_HITS
+                    && target.participant_count >= target.participants.len()
+                    && target.participants.iter().all(participant_valid)
+                    && target
+                        .own_participant
+                        .as_ref()
+                        .is_none_or(participant_valid)
+                    && target
+                        .own_rank
+                        .is_none_or(|rank| rank > 0 && rank <= target.participant_count)
+                    && target
+                        .party_total_damage
+                        .is_none_or(|damage| damage <= target.damage)
+                    && target
+                        .party_dps
+                        .is_none_or(|dps| dps.is_finite() && dps >= 0.0)
+                    && target
+                        .started_ms
+                        .is_none_or(|at| (record.started_ms..=record.ended_ms).contains(&at))
+                    && target
+                        .last_hit_ms
+                        .is_none_or(|at| (record.started_ms..=record.ended_ms).contains(&at))
+                    && target
+                        .own_last_hit_ms
+                        .is_none_or(|at| (record.started_ms..=record.ended_ms).contains(&at))
+            })
 }
 
 fn class_name(code: u32) -> Option<&'static str> {

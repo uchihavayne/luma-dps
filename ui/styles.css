@@ -222,3 +222,31 @@ body.fullscreen-overlay #meter.compact-strip{height:44px}
 }
 @media(max-width:360px){.topbar>.icon-button{width:22px;height:24px}.topbar>.cube-entry{width:21px}.topbar>.connection{max-width:55px}.topbar>.identity-button{max-width:62px}}
 @media(prefers-reduced-motion:reduce){.meter[data-layout=cupertino] .player,.meter[data-layout=cupertino] .player-bar,.meter[data-layout=cupertino] .target-vitals b{transition:none}}
+
+/* The focused target keeps its health and contribution scope visible. */
+#target-vitals{height:18px;position:relative;margin-top:6px;display:block}
+#target-vitals>span{display:block;position:absolute;inset:0 5px;z-index:1;text-align:center;font-size:9px;font-weight:650;line-height:18px;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#target-hp-track{display:block;height:18px;margin:0;border:1px solid var(--line);border-radius:5px;background:color-mix(in srgb,var(--panel) 85%,transparent);overflow:hidden}
+#target-hp-track b{height:100%;background:color-mix(in srgb,#34c759 32%,transparent);border-radius:4px;transition:width .3s ease}
+#target-vitals[data-maximum-known=false] #target-hp-track b{background:repeating-linear-gradient(115deg,color-mix(in srgb,var(--accent) 10%,transparent) 0 8px,transparent 8px 16px)}
+#target-vitals[data-status=stale]{opacity:.65}#target-vitals[data-status=dead] #target-hp-track{border-color:color-mix(in srgb,#ff453a 35%,var(--line))}
+.meter[data-layout=cupertino].has-target-vitals:not(.compact-strip){--header-row:calc(max(54px,calc(var(--target-size,15px)*1.2 + 29px)) + 24px)}
+.meter[data-layout=cupertino] #target-vitals{position:absolute;left:9px;right:9px;top:calc(var(--frame-top) + var(--header-row) - 22px);margin:0}
+.compact-strip #target-vitals{display:none}
+.target-roster-strip{display:flex;align-items:center;justify-content:space-between;gap:6px;flex:0 0 auto;min-height:24px;padding:4px 10px;font-size:9px;color:var(--muted);border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden}
+.target-roster-strip strong{font-size:9px;font-weight:650;color:var(--text);overflow:hidden;text-overflow:ellipsis}.target-roster-strip>span{font-size:8px;flex-shrink:0}
+.meter[data-layout=cupertino]:has(>.notice:not([hidden]))>.roster-stage{padding-top:19px}
+.meter[data-layout=cupertino]:has(>.notice:not([hidden])) .players{padding-top:3px}
+.meter[data-layout=cupertino] #target-roster-strip:not([hidden])+.players{padding-top:3px}
+.player.beyond-top-ten{border-top:1px dashed var(--accent);margin-top:7px}.player.identity-pending .player-name{color:var(--muted);font-style:italic}
+@media(max-height:340px){.meter:not([data-layout=cupertino]).has-target-vitals:not(.compact-strip){--header-row:56px}.meter:not([data-layout=cupertino]) #target-vitals{position:absolute;left:9px;right:9px;top:calc(var(--frame-top) + var(--header-row) - 22px);margin:0}}
+@media(max-height:340px){.meter:not([data-layout=cupertino]):has(>.notice:not([hidden]))>.roster-stage{padding-top:19px}.meter:not([data-layout=cupertino]):has(>.notice:not([hidden])) .players{padding-top:3px}}
+@media(prefers-reduced-motion:reduce){#target-hp-track b{transition:none}}
+.meter[data-layout=cupertino].short-frame:not(.compact-strip){--frame-top:24px;--header-row:44px;--frame-controls:24px;--frame-footer:24px;--live-tools-row:18px}
+.meter[data-layout=cupertino].short-frame.has-target-vitals:not(.compact-strip){--header-row:64px}
+.meter[data-layout=cupertino].short-frame>.metrics{align-items:start;padding-top:6px}
+.meter[data-layout=cupertino].short-frame>.topbar>.icon-button,.meter[data-layout=cupertino].short-frame>.topbar>.cube-entry{height:22px}
+.meter[data-layout=cupertino].short-frame>.live-tools{padding-bottom:2px}
+.meter[data-layout=cupertino].short-frame>.live-tools button{font-size:7px;line-height:10px;padding-block:1px}
+.meter[data-layout=cupertino].short-frame .target-roster-strip{min-height:20px;padding-block:2px}
+.meter[data-layout=cupertino].short-frame .cube-navigator>.cube-compass,.meter[data-layout=cupertino].short-frame[data-cube-size=full] .cube-navigator>.cube-compass{width:clamp(26px,calc(100cqh - 55px),62px);height:clamp(26px,calc(100cqh - 55px),62px)}

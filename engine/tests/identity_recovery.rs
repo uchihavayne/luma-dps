@@ -169,10 +169,7 @@ fn incomplete_or_malformed_appearance_does_not_become_a_name_or_owner_guess() {
     let mut short_owner = vec![4, 0x8d, 3];
     short_owner.extend(14_090_000u32.to_le_bytes());
     short_owner.push(2);
-    assert_eq!(
-        decode(&short_owner).unwrap(),
-        Some(Event::Owner { id: 3, owner: 2 })
-    );
+    assert_eq!(decode(&short_owner).unwrap(), None);
 }
 
 #[test]
@@ -191,13 +188,15 @@ fn midstream_framing_recovers_real_nearby_names_after_damage_has_started() {
 }
 
 #[test]
-fn early_structural_profile_waits_for_exact_current_server_roster_without_guessing_self() {
+fn early_structural_profile_names_nearby_actor_but_membership_waits_for_matching_server_roster() {
     let mut engine = MeterEngine::default();
     profile(&mut engine, 2, 1304, "Healer", 1000);
     hit(&mut engine, 2, 1100);
-    assert_eq!(engine.live_state(1200).players[0].name, "#2");
+    assert_eq!(engine.live_state(1200).players[0].name, "Healer");
+    assert_eq!(engine.live_state(1200).party_total_damage, None);
     roster(&mut engine, 1401, "Healer", 1300);
-    assert_eq!(engine.live_state(1400).players[0].name, "#2");
+    assert_eq!(engine.live_state(1400).players[0].name, "Healer");
+    assert!(!engine.live_state(1400).players[0].in_party);
     roster(&mut engine, 1304, "Healer", 1500);
     let state = engine.live_state(2000);
     assert_eq!(state.players[0].name, "Healer");
@@ -207,7 +206,7 @@ fn early_structural_profile_waits_for_exact_current_server_roster_without_guessi
 }
 
 #[test]
-fn pending_profiles_expire_and_never_cross_loss_reconnect_despawn_or_clock_reversal() {
+fn received_profile_names_persist_but_do_not_rebind_removed_reused_or_reconnected_actors() {
     for scenario in 0..6 {
         let mut engine = MeterEngine::default();
         profile(&mut engine, 2, 1304, "Healer", 1000);
@@ -227,15 +226,17 @@ fn pending_profiles_expire_and_never_cross_loss_reconnect_despawn_or_clock_rever
             _ => identity(&mut engine, 2, "Other", false, 1500),
         }
         roster(&mut engine, 1304, "Healer", at);
-        assert!(
-            engine.party_identity_roster()["members"][0]["actor_id"].is_null(),
-            "scenario {scenario}"
-        );
+        let actor = &engine.party_identity_roster()["members"][0]["actor_id"];
+        if [2, 3, 5].contains(&scenario) {
+            assert!(actor.is_null(), "scenario {scenario}");
+        } else {
+            assert_eq!(actor, 2, "scenario {scenario}");
+        }
     }
 }
 
 #[test]
-fn pending_profile_does_not_survive_a_known_party_change() {
+fn a_known_party_change_preserves_received_names_without_preserving_old_membership() {
     let mut engine = MeterEngine::default();
     engine.ingest_event(
         Event::PartyContext {
@@ -252,8 +253,9 @@ fn pending_profile_does_not_survive_a_known_party_change() {
         },
         1100,
     );
+    assert_eq!(engine.party_identity_roster()["source"], "unknown");
     roster(&mut engine, 1304, "Healer", 1200);
-    assert!(engine.party_identity_roster()["members"][0]["actor_id"].is_null());
+    assert_eq!(engine.party_identity_roster()["members"][0]["actor_id"], 2);
 }
 
 #[test]

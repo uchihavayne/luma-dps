@@ -123,6 +123,15 @@ impl<'a> Bytes<'a> {
     fn variable(&mut self) -> Result<u32, ReadError> {
         varint(self.data, &mut self.offset)
     }
+    fn canonical_variable(&mut self) -> Result<u32, ReadError> {
+        let start = self.offset;
+        let value = self.variable()?;
+        let width = self.offset - start;
+        if width > 1 && value < (1u32 << ((width - 1) * 7)) {
+            return Err(ReadError::Invalid);
+        }
+        Ok(value)
+    }
     fn skip(&mut self, n: usize) -> Result<(), ReadError> {
         if self
             .offset
@@ -176,6 +185,38 @@ impl<'a> Bytes<'a> {
     }
 }
 
+fn character_identity(
+    frame: &[u8],
+    id: u64,
+    name_at: usize,
+    own: bool,
+    require_class: bool,
+) -> Result<Event, ReadError> {
+    let mut bytes = Bytes {
+        data: frame,
+        offset: name_at,
+    };
+    let name = bytes.character_text()?;
+    let class = if own {
+        let server = u16::from(bytes.byte()?) | u16::from(bytes.byte()?) << 8;
+        if !(1000..3000).contains(&server) {
+            return Err(ReadError::Invalid);
+        }
+        Some(bytes.word()?)
+    } else {
+        bytes.word().ok().filter(|code| (5..=64).contains(code))
+    };
+    if require_class && class.is_none_or(|code| !(5..=64).contains(&code)) {
+        return Err(ReadError::Invalid);
+    }
+    Ok(Event::Identity {
+        id,
+        name,
+        class,
+        own,
+    })
+}
+
 // The subtree position has two documented mask widths. Names at any other
 // position in an opaque packet are not a source of entity identity.
 fn npc_subtree(
@@ -198,6 +239,44 @@ fn npc_subtree(
         return Err(ReadError::Invalid);
     }
     Ok((name, model))
+}
+
+fn explicit_spawn_owner(frame: &[u8], id: u64) -> Option<u64> {
+    if frame.len() > 16_384 {
+        return None;
+    }
+    let mut markers = frame
+        .windows(8)
+        .enumerate()
+        .filter(|(_, bytes)| bytes.iter().all(|value| *value == 0xff))
+        .map(|(offset, _)| offset);
+    let marker = markers.next()?;
+    if markers.next().is_some() {
+        return None;
+    }
+    let mut leading = Bytes {
+        data: frame,
+        offset: marker.checked_add(16)?,
+    };
+    let owner = u64::from(leading.canonical_variable().ok()?);
+    if owner == 0 || owner == id || owner > u64::from(u16::MAX) {
+        return None;
+    }
+    // The spawn's varint owner is independently repeated as u16 in a tagged
+    // owner subrecord. Both must agree; a self-valued monster record, unrelated
+    // 07 02 01 field or an old tag cannot establish player-summon ownership.
+    let tail = frame.get(leading.offset..leading.offset.saturating_add(256).min(frame.len()))?;
+    for tag in [6, 1] {
+        let candidates: Vec<_> = tail
+            .windows(5)
+            .filter(|bytes| bytes[..3] == [7, 2, tag])
+            .map(|bytes| u64::from(u16::from_le_bytes([bytes[3], bytes[4]])))
+            .collect();
+        if !candidates.is_empty() {
+            return (candidates.len() == 1 && candidates[0] == owner).then_some(owner);
+        }
+    }
+    None
 }
 
 /// Read only complete framed 02 97 rosters. Optional member tails are bounded;
@@ -616,26 +695,36 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
         [0x33, 0x36] | [0x45, 0x36] | [0x44, 0x36] => {
             let own = opcode[0] == 0x33;
             let id = u64::from(bytes.variable()?);
-            bytes.word()?;
-            let mask = bytes.byte()?;
-            if mask & 1 == 0 || id == 0 {
+            if id == 0 {
                 return Ok(None);
             }
-            let name = bytes.character_text()?;
-            let class = if own {
-                let server = u16::from(bytes.byte()?) | u16::from(bytes.byte()?) << 8;
-                if !(1000..3000).contains(&server) {
-                    return Err(ReadError::Invalid);
+            let prefix = bytes.offset;
+            let fixed = (|| {
+                bytes.word()?;
+                let mask = bytes.byte()?;
+                if mask & 1 == 0 {
+                    return Ok(None);
                 }
-                Some(bytes.word()?)
-            } else {
-                None
-            };
-            let identity = Event::Identity {
-                id,
-                name,
-                class,
-                own,
+                character_identity(frame, id, bytes.offset, own, false).map(Some)
+            })();
+            // The two opaque prefix values are variable-length on supported
+            // character snapshots. A fixed four-byte skip misses names when
+            // either width changes. Decode this typed prefix, with a required
+            // profile class suffix, rather than searching body/guild strings.
+            let variable = (|| {
+                let mut header = Bytes {
+                    data: frame,
+                    offset: prefix,
+                };
+                header.canonical_variable()?;
+                header.canonical_variable()?;
+                header.byte()?;
+                character_identity(frame, id, header.offset, own, true).map(Some)
+            })();
+            let identity = match (fixed, variable) {
+                (Ok(Some(a)), Ok(Some(b))) if a != b => return Err(ReadError::Invalid),
+                (Ok(Some(a)), _) | (_, Ok(Some(a))) => a,
+                (fixed, _) => return fixed,
             };
             if own {
                 if let Some(wing) = crate::character::decode_own_wing(frame) {
@@ -670,19 +759,35 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 (Some(a), _) | (_, Some(a)) => a,
                 _ => return Ok(None),
             };
-            Ok(Some(Event::Npc {
+            let owner = [0x1f, 0x5f]
+                .contains(&kind)
+                .then(|| explicit_spawn_owner(frame, id))
+                .flatten();
+            let spawn = Event::Npc {
                 id,
                 name,
                 model,
-                kind,
+                kind: if owner.is_some() { 0x5f } else { kind },
+            };
+            Ok(Some(if let Some(owner) = owner {
+                Event::Updates(vec![spawn, Event::Owner { id, owner }])
+            } else {
+                spawn
             }))
         }
         [4, 0x8d] => {
             let id = u64::from(bytes.variable()?);
+            // Some supported regions use this opcode for a death notice with
+            // exactly one actor varint. Its complete shape is distinct from
+            // appearance/ownership; a partial longer frame is never dispatched
+            // by the length-framing layer as this short record.
+            if bytes.offset == frame.len() {
+                return Ok((id > 0).then_some(Event::Removed { id, death: true }));
+            }
             bytes.skip(4)?;
             let owner = u64::from(bytes.variable()?);
-            // A player acting nearby is announced with the same prefix as
-            // the short ownership notice, followed by home server and name.
+            // A longer record may announce an acting nearby player, followed
+            // by the acting character's home server and name.
             // Read that typed tail in place: scanning arbitrary later bytes
             // can mistake a guild name for the acting character's name.
             if bytes.offset < frame.len() {
@@ -701,10 +806,9 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                     own: false,
                 }));
             }
-            if id == 0 || owner == 0 || id == owner {
-                return Ok(None);
-            }
-            Ok(Some(Event::Owner { id, owner }))
+            // A bare target/skill/actor prefix is not verified ownership.
+            // Real ownership is decoded only from a complete spawn above.
+            Ok(None)
         }
         [0x47, 0x38] => {
             let count = bytes.byte()? as usize;

@@ -24,7 +24,7 @@
       <div class="target-label" id="target-label">HEDEF</div>
       <div class="target-line"><h1 id="target-name">—</h1><span id="combat-time" class="combat-time">00:00</span></div>
       <button id="event-chip" class="event-chip" hidden><span id="event-name"></span><time id="event-time"></time><span aria-hidden="true">↗</span></button>
-      <div id="target-vitals" class="target-vitals" hidden><span id="target-hp"></span><i id="target-hp-track" hidden><b></b></i></div>
+      <div id="target-vitals" class="target-vitals" hidden><span id="target-hp"></span><i id="target-hp-track" role="progressbar" aria-label="Hedef canı" aria-valuemin="0" aria-valuemax="100"><b></b></i></div>
     </section>
     <section class="metrics" aria-label="Hasar özeti">
       <div class="primary-metric"><span class="metric-label" id="dps-label">KİŞİSEL DPS</span><strong id="dps-value">0/sn</strong><span id="mode-caption" class="metric-caption"></span></div>
@@ -33,7 +33,7 @@
     <div id="notice" class="notice" role="status" hidden></div>
     <button id="combat-warning" class="combat-warning" hidden aria-live="polite"><span aria-hidden="true">◇</span><span id="combat-warning-text"></span><time id="combat-warning-time"></time></button>
     <section class="roster-controls" aria-label="Liste kontrolleri">
-      <label class="scope-label"><span class="sr-only" id="scope-label">Ölçüm kapsamı</span><select id="damage-scope" aria-labelledby="scope-label"><option value="personal">Kişisel</option><option value="party">Grup</option><option value="observed">Gözlenen</option></select></label>
+      <label class="scope-label"><span class="sr-only" id="scope-label">Ölçüm kapsamı</span><select id="damage-scope" aria-labelledby="scope-label"><option value="personal">Kişisel</option><option value="party">Grup</option><option value="observed">Gözlenen</option><option value="target" hidden disabled>Hedef · 10</option></select></label>
       <div class="segmented" id="target-modes" role="group" aria-label="Hedef modu">
         <button data-mode="all" aria-pressed="true">Tümü</button><button data-mode="boss" aria-pressed="false">Boss</button><button data-mode="both" aria-pressed="false">İkisi</button>
       </div>
@@ -41,7 +41,7 @@
     </section>
     <div id="live-tools" class="live-tools" hidden><button id="odyle-chip" hidden></button><button id="team-chip" hidden></button></div>
     <section class="roster-stage" aria-label="Oyuncular ve yakın Küp sinyali">
-      <div class="roster-list"><div class="list-heading"><span id="player-label">OYUNCU</span><span class="heading-total" id="heading-total">TOPLAM HASAR · DPS</span></div><section id="players" class="players" aria-label="Oyuncular"></section></div>
+      <div class="roster-list"><div class="list-heading"><span id="player-label">OYUNCU</span><span class="heading-total" id="heading-total">TOPLAM HASAR · DPS</span></div><div id="target-roster-strip" class="target-roster-strip" hidden><strong id="target-roster-label"></strong><span id="target-roster-coverage"></span></div><section id="players" class="players" aria-label="Oyuncular"></section></div>
       <aside id="cube-navigator" class="cube-navigator" aria-label="Hidden Cube pusulası" hidden>
         <div class="cube-nav-heading"><strong>HIDDEN CUBE</strong><button id="cube-nav-size" class="icon-button" aria-label="Pusulayı büyüt" title="Pusulayı büyüt">⤢</button></div>
         <span id="cube-nav-source" class="cube-nav-source"></span>
