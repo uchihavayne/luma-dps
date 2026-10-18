@@ -66,6 +66,20 @@ test('received registration level zero survives native and character snapshot no
   assert.deepEqual(petProgress(characterSnapshot({ pet_progress: input }).pet_progress, { localPlayerId: '7' }), first);
 });
 
+test('an explicit received level-reset zero survives snapshot normalization without accepting invented reset progress', () => {
+  const input = pets();
+  input.pets = [{ pet_id: 1042, level: 2, progress: 0, progress_source: 'server-level-reset', progress_stale: false, observed_at_ms: 2000 }];
+  const value = characterSnapshot({ pet_progress: input }).pet_progress;
+  assert.equal(value.pets[0].level, 2); assert.equal(value.pets[0].progress, 0);
+  assert.equal(value.pets[0].progress_source, 'server-level-reset');
+  assert.deepEqual(petProgress(value, { localPlayerId: '7' }), value);
+  for (const patch of [{ progress: 3 }, { level: null }, { level: undefined }]) {
+    const malformed = petProgress({ ...input, pets: [{ ...input.pets[0], ...patch }] });
+    assert.equal(malformed.pets[0].progress, null);
+    assert.equal(malformed.pets[0].progress_source, 'unknown');
+  }
+});
+
 test('interrupted pet snapshots retain last received counters with stale ownership and no farming rate', () => {
   const original = pets();
   Object.assign(original.pets[0], { session_started_at_ms: 100, session_baseline_gained: 0, session_gain_events: 3, last_gain_at_ms: 1900 });

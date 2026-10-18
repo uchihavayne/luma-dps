@@ -2,8 +2,10 @@
 //! catalog or game image is bundled. Structural gear coverage stays partial;
 //! absent enchants, stones and rolled stats are unknown rather than zero.
 //! Wire provenance and supported boundaries: docs/observed-character-and-bosses.md.
-//! Own pet list (00 90), gain (0d 90) and level (14 90) layouts are independently
-//! implemented from AionDPS protocol observations at 72417dc72457844f514729fd2680fcbbd4423a93.
+//! Own pet list/gain layouts are independently implemented from AionDPS
+//! observations at 72417dc72457844f514729fd2680fcbbd4423a93. Level (14 90)
+//! and registration (09 90) prefixes/reset semantics were rechecked against
+//! 29c416ff96fb1b798e17391974816842897e1a18; opaque suffixes are not decoded.
 //! No pet name/icon/spawn catalog or soul thresholds are bundled.
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,7 @@ const MAX_NODES: usize = 255;
 const MAX_INSPECTIONS: usize = 16;
 const PENDING_MS: u64 = 30_000;
 const MAX_PETS: usize = 2_000;
+const MAX_PET_CHANGE_FRAME: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CharacterError {
@@ -168,6 +171,10 @@ pub enum CharacterEvent {
         gains: Vec<(u32, u32)>,
     },
     PetLevel {
+        pet_id: u32,
+        level: u32,
+    },
+    PetAdded {
         pet_id: u32,
         level: u32,
     },
@@ -948,13 +955,9 @@ fn pet_gains(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     Ok(Some(CharacterEvent::PetGains { gains }))
 }
 
-fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
-    if !zeros(frame, 2, 2) {
-        return Err(if frame.len() < 4 {
-            CharacterError::Truncated
-        } else {
-            CharacterError::Invalid
-        });
+fn pet_change_prefix(frame: &[u8]) -> Result<(u32, u32), CharacterError> {
+    if frame.len() > MAX_PET_CHANGE_FRAME {
+        return Err(CharacterError::Limit);
     }
     let mut reader = Reader {
         bytes: frame,
@@ -965,8 +968,29 @@ fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
     if !(1_000..=99_999).contains(&pet_id) || !(1..=3).contains(&level) {
         return Err(CharacterError::Invalid);
     }
-    reader.end()?;
+    // Both event families carry independently documented fixed fields followed
+    // by additional opaque data. The enclosing frame provides their boundary;
+    // those unneeded suffix fields must not invalidate a received level.
+    Ok((pet_id, level))
+}
+
+fn pet_level(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    if !zeros(frame, 2, 2) {
+        return Err(if frame.len() < 4 {
+            CharacterError::Truncated
+        } else {
+            CharacterError::Invalid
+        });
+    }
+    let (pet_id, level) = pet_change_prefix(frame)?;
     Ok(Some(CharacterEvent::PetLevel { pet_id, level }))
+}
+
+fn pet_added(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
+    // The two bytes following 09 90 are opaque in the published capture
+    // layout. They are not the reserved-zero field of the 14 90 family.
+    let (pet_id, level) = pet_change_prefix(frame)?;
+    Ok(Some(CharacterEvent::PetAdded { pet_id, level }))
 }
 
 fn valid_pet_event(event: &CharacterEvent) -> bool {
@@ -998,7 +1022,9 @@ fn valid_pet_event(event: &CharacterEvent) -> bool {
                     valid_id(*id) && (1..1_000).contains(gained) && ids.insert(*id)
                 })
         }
-        CharacterEvent::PetLevel { pet_id, level } => valid_id(*pet_id) && (1..=3).contains(level),
+        CharacterEvent::PetLevel { pet_id, level } | CharacterEvent::PetAdded { pet_id, level } => {
+            valid_id(*pet_id) && (1..=3).contains(level)
+        }
         _ => false,
     }
 }
@@ -1014,6 +1040,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
             | [0, 0x90]
             | [0x0d, 0x90]
             | [0x14, 0x90]
+            | [9, 0x90]
             | [0x56, 0x36]
     ) {
         return Ok(None);
@@ -1029,6 +1056,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<CharacterEvent>, CharacterError> {
         [0, 0x90] => pet_inventory_prefix(frame).map(|(event, _)| Some(event)),
         [0x0d, 0x90] => pet_gains(frame),
         [0x14, 0x90] => pet_level(frame),
+        [9, 0x90] => pet_added(frame),
         [0x56, 0x36] => combat_power(frame),
         _ => Ok(None),
     }
@@ -1171,9 +1199,27 @@ impl CharacterStore {
             CharacterEvent::PetInventory { .. }
                 | CharacterEvent::PetGains { .. }
                 | CharacterEvent::PetLevel { .. }
+                | CharacterEvent::PetAdded { .. }
         ) {
             if !valid_pet_event(&event) {
                 return;
+            }
+            if let CharacterEvent::PetAdded { pet_id, .. } = &event {
+                let snapshot = if self.own.is_some() {
+                    self.pets.as_ref()
+                } else {
+                    self.unbound_pets.as_ref()
+                };
+                // Registration notifications are not upgrades for a pet that
+                // is already registered. A duplicate must preserve its current
+                // tier counter, observation time and rate baseline.
+                if snapshot.is_some_and(|snapshot| {
+                    snapshot.pets.iter().any(|pet| {
+                        pet.pet_id == *pet_id && pet.level.is_some_and(|level| level > 0)
+                    })
+                }) {
+                    return;
+                }
             }
             self.clock(now);
             self.ingest_pets(event, now);
@@ -1262,7 +1308,8 @@ impl CharacterStore {
             CharacterEvent::Inspection(_)
             | CharacterEvent::PetInventory { .. }
             | CharacterEvent::PetGains { .. }
-            | CharacterEvent::PetLevel { .. } => {}
+            | CharacterEvent::PetLevel { .. }
+            | CharacterEvent::PetAdded { .. } => {}
         }
     }
 
@@ -1353,7 +1400,8 @@ impl CharacterStore {
                     }
                 }
             }
-            CharacterEvent::PetLevel { pet_id, level } => {
+            CharacterEvent::PetLevel { pet_id, level }
+            | CharacterEvent::PetAdded { pet_id, level } => {
                 let index = match state.pets.binary_search_by_key(&pet_id, |pet| pet.pet_id) {
                     Ok(index) => index,
                     Err(index) => {
@@ -1373,10 +1421,17 @@ impl CharacterStore {
                 let pet = &mut state.pets[index];
                 let level_changed = pet.level != Some(level);
                 if level_changed {
-                    // The level event has no remaining/overflow progress. The
-                    // next absolute list can supply that; do not assume zero.
-                    pet.progress = None;
-                    pet.progress_source = "unknown".into();
+                    // The observed server level event starts that tier at
+                    // zero. This is a new received baseline, not a level
+                    // inferred from locally counted souls or an old overflow.
+                    // Repeated same-level notifications must not reset it.
+                    pet.progress = Some(0);
+                    pet.progress_source = "server-level-reset".into();
+                    pet.progress_stale = false;
+                    if pet.session_started_at_ms.is_none() {
+                        pet.session_started_at_ms = Some(now);
+                        pet.session_baseline_gained = pet.session_gained;
+                    }
                 }
                 pet.level = Some(level);
                 if level_changed || !pet.progress_stale {

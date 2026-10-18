@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from '../model.mjs';
 import { ANALYSIS_SECTIONS, SETTINGS_SECTIONS } from '../navigation.mjs';
-import { recentPetTarget, normalizeRecentPersonalTarget } from '../model.mjs';
+import { recentPetTarget, normalizeRecentPersonalTarget, petTargetStatus } from '../model.mjs';
+import { PET_CATALOG } from '../pet-catalog.mjs';
+import { normalizePetCatalog, petTargetMatches } from '../pets.mjs';
 
 const petTargetState = (overrides = {}) => ({
   local_player_id: '7', local_player_name: 'Center', local_identity_source: 'server',
@@ -54,13 +56,13 @@ test('capture discontinuity and character changes clear target pinning and never
 test('an actual one-shot self-hit DTO supplies a pet target after death without an earlier rendered focus', () => {
   const hit = { actor_id: 7, target_id: 960, target_name: 'Krall Armed Soldier', hit_at_ms: 1000, source: 'server-self-hit' };
   const dead = normalizeState(petTargetState({ focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, encounter_active: false, recent_personal_target: hit }));
-  assert.deepEqual(dead.recent_personal_target, { ...hit, actor_id: '7', target_id: '960' });
+  assert.deepEqual(dead.recent_personal_target, { ...hit, actor_id: '7', target_id: '960', target_npc_id: null });
   const first = recentPetTarget(null, dead, 1500);
   assert.equal(first.target.name, 'Krall Armed Soldier'); assert.equal(first.at, 1000);
   assert.equal(recentPetTarget(first, dead, 10999).at, 1000);
   assert.equal(recentPetTarget(first, dead, 11000).target, null);
   const unnamed = { ...dead, recent_personal_target: { ...hit, target_id: 961, target_name: null, hit_at_ms: 2000 } };
-  assert.deepEqual(recentPetTarget(first, unnamed, 2500).target, { id: '961', name: '' });
+  assert.deepEqual(recentPetTarget(first, unnamed, 2500).target, { id: '961', name: '', npc_id: null });
   assert.equal(recentPetTarget(first, { ...dead, recent_personal_target: null }, 1500).target, null);
   const gap = { ...dead, diagnostics: { stream_gaps: 1 } }, invalidated = recentPetTarget(first, gap, 1500);
   assert.equal(invalidated.target, null);
@@ -75,6 +77,22 @@ test('received-hit normalization never turns arbitrary IDs, sources, actors or f
     const value = petTargetState({ focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, recent_personal_target: { ...hit, ...patch } });
     assert.equal(recentPetTarget(null, value, 1500).target, null);
   }
+});
+
+test('a nameless Black Claw NPC keeps its numeric template through the native contract and matches the actual pet catalog', () => {
+  const catalog = normalizePetCatalog(PET_CATALOG);
+  const state = normalizeState(petTargetState({ focused_target_id: null, focused_target_observed_at_ms: null, live_target: null,
+    recent_personal_target: { actor_id: 7, target_id: 23791, target_name: null, target_npc_id: 2400617, hit_at_ms: 1000, source: 'server-self-hit' } }));
+  const observation = recentPetTarget(null, state, 1200), matches = petTargetMatches(observation.target, catalog);
+  assert.equal(observation.target.name, ''); assert.equal(observation.target.npc_id, 2400617);
+  assert.deepEqual(matches.map(pet => pet.id), [1010]); assert.equal(matches[0].name, 'Manduri Fighter');
+  assert.equal(petTargetStatus(state, observation, matches), 'matched');
+  const unmapped = { ...observation, target: { ...observation.target, npc_id: 9999999, name: 'Black Claw Manduri Combatant' } };
+  assert.deepEqual(petTargetMatches(unmapped.target, catalog), []);
+  assert.equal(petTargetStatus(state, unmapped, []), 'catalog-no-match');
+  assert.equal(petTargetStatus(state, { target: { id: '23791', name: 'Target #23791', npc_id: null } }, []), 'npc-metadata-pending');
+  assert.equal(petTargetStatus(state, null, []), 'waiting-personal-hit');
+  assert.equal(petTargetStatus({ ...state, live_team_identity: { local: null } }, null, []), 'self-identity-pending');
 });
 
 test('display modules persist a recoverable pet-only view independently of capture and listening settings', () => {

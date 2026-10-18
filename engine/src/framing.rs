@@ -202,7 +202,9 @@ fn decoded_anchor(frame: &[u8]) -> bool {
                 CharacterEvent::PetInventory { pets, .. } => !pets.is_empty(),
                 CharacterEvent::CombatPower { .. } => true,
                 CharacterEvent::Wing { .. } | CharacterEvent::Species { .. } => false,
-                CharacterEvent::PetGains { .. } | CharacterEvent::PetLevel { .. } => false,
+                CharacterEvent::PetGains { .. }
+                | CharacterEvent::PetLevel { .. }
+                | CharacterEvent::PetAdded { .. } => false,
             }
         }
         _ => false,

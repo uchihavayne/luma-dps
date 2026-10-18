@@ -36,8 +36,10 @@ export function petProgress(value, { localPlayerId } = {}) {
     const row = object(input), pet = integer(row.pet_id, 1000, 99999);
     if (pet === null || seen.has(pet)) continue;
     seen.add(pet);
-    const progress = ['server-absolute', 'server-delta'].includes(row.progress_source) ? integer(row.progress) : null;
-    pets.push({ pet_id: pet, level: integer(row.level, 0, 3), progress,
+    const level = integer(row.level, 0, 3);
+    const supportedProgress = ['server-absolute', 'server-delta'].includes(row.progress_source) || row.progress_source === 'server-level-reset' && level !== null && row.progress === 0;
+    const progress = supportedProgress ? integer(row.progress) : null;
+    pets.push({ pet_id: pet, level, progress,
       progress_source: progress === null ? 'unknown' : row.progress_source,
       required_progress: null, session_gained: integer(row.session_gained) ?? 0,
       session_started_at_ms: integer(row.session_started_at_ms), session_baseline_gained: integer(row.session_baseline_gained) ?? 0,

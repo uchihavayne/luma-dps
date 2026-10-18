@@ -42,6 +42,49 @@ fn engine_with_target() -> MeterEngine {
 }
 
 #[test]
+fn unnamed_spawn_template_is_preserved_through_wire_decode_hit_death_and_json() {
+    // IDs are public NPC table identities: Black Claw Manduri Combatant's
+    // 2400617 map source and Krall Armed Soldier's 2100075 source. They are
+    // independent from each connection's short-lived scene handle.
+    for (scene, template) in [(77u32, 2_400_617u32), (78, 2_100_075)] {
+        let mut frame = vec![0x41, 0x36, scene as u8, 0x0c, 0, 0];
+        frame.extend(template.to_le_bytes());
+        let event = luma_engine::packets::decode(&frame).unwrap().unwrap();
+        assert!(
+            matches!(&event, Event::Npc { id, name: None, model, .. } if *id == u64::from(scene) && *model == template)
+        );
+        let mut engine = MeterEngine::default();
+        engine.ingest_event(identity(1, "Local", true), 100);
+        engine.ingest_event(event, 200);
+        engine.ingest_event(
+            Event::Updates(vec![
+                damage(1, u64::from(scene)),
+                Event::Removed {
+                    id: u64::from(scene),
+                    death: true,
+                },
+            ]),
+            1_000,
+        );
+        let state = engine.live_state(1_100);
+        assert!(state.live_target.is_none());
+        let recent = state.recent_personal_target.unwrap();
+        assert_eq!(recent.target_name, None);
+        assert_eq!(recent.target_npc_id, Some(template));
+        assert_eq!(recent.target_id, u64::from(scene));
+        assert_eq!(recent.hit_at_ms, 1_000);
+        assert_eq!(
+            serde_json::to_value(&recent).unwrap()["target_npc_id"],
+            template
+        );
+        assert_eq!(
+            engine.live_state(2_000).recent_personal_target.unwrap(),
+            recent
+        );
+    }
+}
+
+#[test]
 fn one_shot_and_death_in_one_batch_survive_first_ui_poll_without_refreshing_hit_time() {
     let mut engine = engine_with_target();
     engine.ingest_event(

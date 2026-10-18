@@ -38,6 +38,15 @@ fn level(pet_id: u32, level: u32) -> Vec<u8> {
     frame
 }
 
+fn registration(pet_id: u32, level: u32) -> Vec<u8> {
+    // 09 90 carries two opaque bytes before the independently documented ID
+    // and level fields; those bytes are not 14 90's reserved-zero field.
+    let mut frame = vec![9, 0x90, 0xa5, 0x5a];
+    frame.extend(pet_id.to_le_bytes());
+    frame.extend(level.to_le_bytes());
+    frame
+}
+
 fn receive(engine: &mut MeterEngine, frame: &[u8], at: u64) {
     engine.ingest_event(packets::decode(frame).unwrap().unwrap(), at);
 }
@@ -178,7 +187,7 @@ fn pet_deltas_are_automatic_and_absolute_refresh_does_not_double_count_session_g
 }
 
 #[test]
-fn level_change_invalidates_unknown_rollover_without_guessing_required_souls() {
+fn received_level_change_starts_the_new_tier_at_zero_without_inventing_old_overflow() {
     let mut engine = MeterEngine::default();
     own(&mut engine, 7, 100);
     receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 24)]), 200);
@@ -189,10 +198,10 @@ fn level_change_invalidates_unknown_rollover_without_guessing_required_souls() {
     receive(&mut engine, &level, 400);
     let state = engine.character_snapshot().pet_progress.unwrap();
     assert_eq!(state.pets[0].level, Some(2));
-    assert_eq!(state.pets[0].progress, None);
+    assert_eq!(state.pets[0].progress, Some(0));
     assert_eq!(state.pets[0].required_progress, None);
     assert_eq!(state.pets[0].session_gained, 2);
-    assert_eq!(state.pets[0].progress_source, "unknown");
+    assert_eq!(state.pets[0].progress_source, "server-level-reset");
     receive(&mut engine, &inventory(0, &[(1042, 2)], &[(1042, 1)]), 500);
     assert_eq!(
         engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
@@ -483,7 +492,7 @@ fn first_received_gain_has_no_pre_arrival_rate_and_refresh_cannot_create_one() {
 }
 
 #[test]
-fn a_level_transition_preserves_observed_gains_but_never_assumes_rollover() {
+fn server_level_reset_allows_next_tier_gains_and_duplicate_level_never_erases_them() {
     let mut engine = MeterEngine::default();
     own(&mut engine, 7, 100);
     receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 24)]), 200);
@@ -494,7 +503,7 @@ fn a_level_transition_preserves_observed_gains_but_never_assumes_rollover() {
     let snapshot = engine.character_snapshot().pet_progress.unwrap();
     let pet = &snapshot.pets[0];
     assert_eq!(pet.level, Some(2));
-    assert_eq!(pet.progress, None);
+    assert_eq!(pet.progress, Some(1));
     assert_eq!(pet.required_progress, None);
     assert_eq!(pet.session_started_at_ms, Some(200));
     assert_eq!(pet.session_baseline_gained, 0);
@@ -512,6 +521,155 @@ fn a_level_transition_preserves_observed_gains_but_never_assumes_rollover() {
         engine.character_snapshot().pet_progress.unwrap().pets[0].progress,
         Some(1)
     );
+}
+
+#[test]
+fn real_registration_and_level_events_reopen_each_tier_but_thresholds_alone_never_do() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &inventory(0, &[(1042, 0)], &[(1042, 4)]), 200);
+    receive(&mut engine, &gains(&[(1042, 1)]), 300);
+    let pending = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(pending.pets[0].level, Some(0));
+    assert_eq!(pending.pets[0].progress, Some(5));
+    receive(&mut engine, &registration(1042, 1), 400);
+    let registered = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(registered.pets[0].level, Some(1));
+    assert_eq!(registered.pets[0].progress, Some(0));
+    assert_eq!(registered.pets[0].progress_source, "server-level-reset");
+    receive(&mut engine, &gains(&[(1042, 25)]), 500);
+    let pending = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(pending.pets[0].level, Some(1));
+    assert_eq!(pending.pets[0].progress, Some(25));
+    receive(&mut engine, &level(1042, 2), 600);
+    let second = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(second.pets[0].level, Some(2));
+    assert_eq!(second.pets[0].progress, Some(0));
+    receive(&mut engine, &gains(&[(1042, 75)]), 700);
+    let pending = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(pending.pets[0].level, Some(2));
+    assert_eq!(pending.pets[0].progress, Some(75));
+    receive(&mut engine, &level(1042, 3), 800);
+    let completed = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(completed.pets[0].level, Some(3));
+    assert_eq!(completed.pets[0].progress, Some(0));
+    assert_eq!(completed.pets[0].session_gained, 101);
+}
+
+#[test]
+fn duplicate_registration_never_resets_a_registered_pet_and_points_only_rows_can_register() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 2)], &[(1042, 32), (1204, 3)]),
+        200,
+    );
+    receive(&mut engine, &gains(&[(1042, 2)]), 300);
+    let before = engine.character_snapshot();
+    receive(&mut engine, &registration(1042, 1), 400);
+    assert_eq!(engine.character_snapshot(), before);
+    receive(&mut engine, &registration(1042, 3), 50);
+    assert_eq!(engine.character_snapshot(), before);
+    receive(&mut engine, &registration(1204, 1), 500);
+    let state = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(state.pets[0].level, Some(2));
+    assert_eq!(state.pets[0].progress, Some(34));
+    assert_eq!(state.pets[1].level, Some(1));
+    assert_eq!(state.pets[1].progress, Some(0));
+    receive(&mut engine, &registration(1300, 1), 600);
+    let state = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(state.pets[2].pet_id, 1300);
+    assert_eq!(state.pets[2].progress, Some(0));
+    assert!(!state.inventory_complete);
+}
+
+#[test]
+fn real_level_reset_restores_its_baseline_after_loss_without_rejuvenating_other_pet_rows() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(
+        &mut engine,
+        &inventory(0, &[(1042, 1), (1204, 1)], &[(1042, 24), (1204, 3)]),
+        200,
+    );
+    engine.capture_loss();
+    receive(&mut engine, &level(1042, 2), 400);
+    let reset = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(reset.continuity, PetContinuity::LastKnown);
+    assert_eq!(reset.pets[0].level, Some(2));
+    assert_eq!(reset.pets[0].progress, Some(0));
+    assert_eq!(reset.pets[0].progress_source, "server-level-reset");
+    assert!(!reset.pets[0].progress_stale);
+    assert_eq!(reset.pets[0].observed_at_ms, 400);
+    assert_eq!(reset.pets[0].session_started_at_ms, Some(400));
+    assert!(reset.pets[1].progress_stale);
+    assert_eq!(reset.pets[1].observed_at_ms, 200);
+    receive(&mut engine, &gains(&[(1042, 3), (1204, 1)]), 500);
+    let advanced = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(advanced.pets[0].progress, Some(3));
+    assert_eq!(advanced.pets[0].progress_source, "server-delta");
+    assert_eq!(advanced.pets[1].progress, Some(3));
+    assert!(advanced.pets[1].progress_stale);
+    assert_eq!(advanced.pets[1].observed_at_ms, 200);
+}
+
+#[test]
+fn documented_change_prefixes_accept_opaque_suffixes_with_strict_fields_and_family_bounds() {
+    // Literal synthetic frame from the documented 14 90 fixed-field prefix;
+    // suffix meaning is intentionally neither decoded nor used for progress.
+    let level_with_suffix = [
+        0x14, 0x90, 0, 0, 0x12, 4, 0, 0, 2, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
+    ];
+    assert_eq!(
+        character::decode(&level_with_suffix).unwrap(),
+        Some(CharacterEvent::PetLevel {
+            pet_id: 1042,
+            level: 2
+        })
+    );
+    let registration_with_suffix = [9, 0x90, 0x87, 0x65, 0x12, 4, 0, 0, 1, 0, 0, 0, 0x99, 0x44];
+    assert_eq!(
+        character::decode(&registration_with_suffix).unwrap(),
+        Some(CharacterEvent::PetAdded {
+            pet_id: 1042,
+            level: 1
+        })
+    );
+    for frame in [&level_with_suffix[..], &registration_with_suffix[..]] {
+        for length in 2..12 {
+            assert!(character::decode(&frame[..length]).is_err());
+        }
+        let mut too_large = frame.to_vec();
+        too_large.resize(4_097, 0);
+        assert!(character::decode(&too_large).is_err());
+        too_large.truncate(4_096);
+        assert!(character::decode(&too_large).unwrap().is_some());
+        for (offset, value) in [(4, 0u32), (4, 100_000), (8, 0), (8, 4)] {
+            let mut invalid = frame.to_vec();
+            invalid[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(character::decode(&invalid).is_err());
+        }
+    }
+}
+
+#[test]
+fn level_suffix_is_not_replayed_as_a_gain_or_combined_with_the_next_frame() {
+    let mut engine = MeterEngine::default();
+    engine.ingest_tcp(&tcp(99, 0x12, &[]), true, 100);
+    own(&mut engine, 7, 101);
+    let login = wire(&inventory(0, &[(1042, 1)], &[(1042, 24)]));
+    engine.ingest_tcp(&tcp(100, 0x18, &login), true, 200);
+    let mut change = level(1042, 2);
+    change.extend(wire(&gains(&[(1042, 999)]))); // opaque bytes inside level frame
+    let mut packets = wire(&gains(&[(1042, 1)]));
+    packets.extend(wire(&change));
+    packets.extend(wire(&gains(&[(1042, 3)])));
+    engine.ingest_tcp(&tcp(100 + login.len() as u32, 0x18, &packets), true, 300);
+    let state = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(state.pets[0].level, Some(2));
+    assert_eq!(state.pets[0].progress, Some(3));
+    assert_eq!(state.pets[0].session_gained, 4);
 }
 
 #[test]
@@ -769,6 +927,14 @@ fn invalid_typed_pet_events_are_atomic_even_with_an_earlier_clock() {
         CharacterEvent::PetLevel {
             pet_id: 0,
             level: 2,
+        },
+        CharacterEvent::PetAdded {
+            pet_id: 1042,
+            level: 4,
+        },
+        CharacterEvent::PetAdded {
+            pet_id: 0,
+            level: 1,
         },
         CharacterEvent::PetInventory {
             active_pet_id: Some(9999),

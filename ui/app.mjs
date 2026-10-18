@@ -1,7 +1,7 @@
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
-import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget } from './model.mjs';
+import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
@@ -27,6 +27,7 @@ import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } 
 import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
+import { petDiagnosticReport } from './pet-diagnostics.mjs';
 import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -35,7 +36,7 @@ const native = Boolean(window.__TAURI__?.core?.invoke);
 const demo = !native && new URLSearchParams(location.search).get('demo') === '1';
 const targetDemo = demo && new URLSearchParams(location.search).get('targetDemo') === '1';
 const targetPetDemoMode = demo ? new URLSearchParams(location.search).get('targetPetDemo') : '';
-const targetPetDemo = ['1', 'multi', 'oneshot'].includes(targetPetDemoMode);
+const targetPetDemo = ['1', 'multi', 'oneshot', 'npc-id', 'unmapped'].includes(targetPetDemoMode);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const uid = () => globalThis.crypto?.randomUUID?.() || `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -58,7 +59,7 @@ let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
 const petCatalog = normalizePetCatalog(PET_CATALOG);
 let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null;
-let petPinObservation = null;
+let petPinObservation = null, petDiagnosticsOpen = false, petDiagnosticPending = false;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
@@ -99,6 +100,12 @@ if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1'
   characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1002, active_pet_known: true, inventory_complete: true,
     pets: [{ pet_id: 1002, level: 1, progress: 12, progress_source: 'server-delta', session_gained: 12, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 6, last_gain_at_ms: at - 1000, observed_at_ms: at }, { pet_id: 1003, level: 2, progress: 40, progress_source: 'server-absolute', session_gained: 4, session_baseline_gained: 0, session_started_at_ms: at - 60000, session_gain_events: 4, last_gain_at_ms: at - 2000, observed_at_ms: at }, { pet_id: 1004, level: 3, progress: null, session_gained: 0, observed_at_ms: at }] } });
   prefs = normalizePreferences({ ...prefs, petPins: [1002, 1003] });
+  const tierDemo = new URLSearchParams(location.search).get('petTierDemo');
+  if (['reset', 'gain'].includes(tierDemo)) {
+    characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1010, active_pet_known: true, inventory_complete: true,
+      pets: [{ pet_id: 1010, level: 2, progress: tierDemo === 'reset' ? 0 : 3, progress_source: tierDemo === 'reset' ? 'server-level-reset' : 'server-delta', session_gained: tierDemo === 'reset' ? 0 : 3, observed_at_ms: at }] } });
+    prefs = normalizePreferences({ ...prefs, petPins: [1010] });
+  }
   if (new URLSearchParams(location.search).get('petStaleDemo') === '1') characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(characterData.pet_progress, { localPlayerId: liveServerActorId(state), now: at, reason: 'demo-capture-gap' }) });
 }
 if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '1') {
@@ -110,9 +117,10 @@ if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '
 if (telemetryDemo && targetPetDemo) {
   const at = Date.now(), own = state.players.find(player => player.id === '7') || { id: '7', name: state.local_player_name, damage: 100 };
   const target = { id: '960', name: targetPetDemoMode === 'multi' ? 'Eternal Moss Crab' : 'Krall Armed Soldier', damage: 100, is_boss: false, own_participant: { ...own, id: '7', damage: 100 }, own_last_hit_ms: at, last_hit_ms: at, elapsed_ms: 1000, capture_complete: true };
-  state = normalizeState({ ...state, focused_target_id: targetPetDemoMode === 'oneshot' ? null : target.id, focused_target_observed_at_ms: targetPetDemoMode === 'oneshot' ? null : at,
-    live_target: targetPetDemoMode === 'oneshot' ? null : target, targets: targetPetDemoMode === 'oneshot' ? [] : [target],
-    recent_personal_target: { actor_id: 7, target_id: 960, target_name: target.name, hit_at_ms: at, source: 'server-self-hit' } });
+  const idOnly = ['npc-id', 'unmapped'].includes(targetPetDemoMode), oneShot = idOnly || targetPetDemoMode === 'oneshot';
+  state = normalizeState({ ...state, focused_target_id: oneShot ? null : target.id, focused_target_observed_at_ms: oneShot ? null : at,
+    live_target: oneShot ? null : target, targets: oneShot ? [] : [target],
+    recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
@@ -1067,10 +1075,15 @@ function currentTargetPets() {
 
 function renderTargetPetPin() {
   const host = $('#target-pet-pin'), tr = prefs.locale === 'tr', value = currentTargetPets();
-  host.hidden = !prefs.displayModules.pets || !value.matches.length;
+  const status = petTargetStatus(state, petPinObservation, value.matches), labels = targetPetStatusLabels(status);
+  host.dataset.status = status;
+  host.hidden = !prefs.displayModules.pets || status === 'waiting-personal-hit' || status === 'self-identity-pending' && state.capture?.status !== 'capturing';
   if (host.hidden) return;
   const full = prefs.petPins.length >= PET_PIN_LIMIT, limit = petLabels(prefs.locale).limit;
-  const html = `<div class="target-pet-pin-heading"><span aria-hidden="true">⌖</span><div><strong>${esc(value.target.name)}</strong><small>${tr ? 'Bu mobdan pet ruhu kazanılabilir' : 'Pet souls can drop from this mob'}</small></div></div><div class="target-pet-pin-actions">${value.matches.map(pet => {
+  const receivedName = value.target?.name && !/^(?:#\d+|Target\s+#?\d+)$/iu.test(value.target.name) ? value.target.name : '';
+  const title = status === 'matched' ? receivedName || value.matches[0].monster : labels.title;
+  const caption = status !== 'matched' ? labels.detail : receivedName ? tr ? 'Pet kaynağı · alınan NPC ile rehber eşleşmesi' : 'Pet source · received NPC matches the guide' : tr ? 'Rehber adı · alınan NPC kimliğiyle eşleşti' : 'Reference name · matched by received NPC ID';
+  const html = `<div class="target-pet-pin-heading"><span aria-hidden="true">⌖</span><div><strong>${esc(title)}</strong><small>${esc(caption)}</small></div><button type="button" class="text-button" data-pet-diagnostics>${tr ? 'Durum' : 'Status'}</button></div><div class="target-pet-pin-actions">${value.matches.map(pet => {
     const pinned = prefs.petPins.includes(pet.id), disabled = full && !pinned, label = tr ? pinned ? 'Sabitlemeyi kaldır' : 'Peti sabitle' : pinned ? 'Unpin pet' : 'Pin pet';
     return `<button type="button" class="target-pet-pin-button" data-target-pet-pin="${pet.id}" aria-pressed="${pinned}" aria-label="${esc(`${label} · ${pet.name}${disabled ? ` · ${limit}` : ''}`)}" title="${esc(disabled ? limit : `${label} · ${pet.name}`)}" ${disabled ? 'disabled' : ''}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 2 6 6-3 1-3 5-2-2-5 5-1-1 5-5-2-2 5-3z"/></svg><span class="target-pet-pin-name">${esc(pet.name)}</span><small>${tr ? pinned ? 'Sabitlendi' : 'Sabitle' : pinned ? 'Pinned' : 'Pin'}</small></button>`;
   }).join('')}</div>${full && value.matches.some(pet => !prefs.petPins.includes(pet.id)) ? `<p class="target-pet-pin-hint">${esc(limit)}. ${tr ? 'Yenisi için takip listesinden bir peti kaldır.' : 'Unpin a tracked pet to add another.'}</p>` : ''}`;
@@ -1081,10 +1094,26 @@ function renderTargetPetPin() {
   }
 }
 
+function targetPetStatusLabels(status) {
+  const tr = prefs.locale === 'tr';
+  return ({
+    matched: { title: tr ? 'Pet eşleşmesi alındı' : 'Pet match received', detail: tr ? 'Alınan NPC bilgisi rehberle eşleşti.' : 'Received NPC metadata matches the guide.' },
+    'self-identity-pending': { title: tr ? 'Karakter kimliği bekleniyor' : 'Waiting for self identity', detail: tr ? 'Pet hedefini kendine ait vuruşla bağlamak için oyundan karakter kimliğin gerekli.' : 'Game self identity is required to associate pet targets with your own hits.' },
+    'npc-metadata-pending': { title: tr ? 'Hedefin tür bilgisi bekleniyor' : 'Waiting for target metadata', detail: tr ? 'Mobun adı veya NPC türü henüz alınmadı; pet kaynağı olduğu tahmin edilmiyor.' : 'The mob name or NPC type has not arrived; no pet-source guess is made.' },
+    'catalog-no-match': { title: tr ? 'Bu hedef için rehber eşleşmesi yok' : 'No guide match for this target', detail: tr ? 'Katalogda bu NPC için doğrulanmış pet bağlantısı yok. Bu, pet ruhu veremediği anlamına gelmez.' : 'The catalog has no verified pet link for this NPC. This does not establish that it cannot drop souls.' },
+    'waiting-personal-hit': { title: tr ? 'Kendi hedef vuruşun bekleniyor' : 'Waiting for your target hit', detail: tr ? 'Yakındaki oyuncuların hedefleri senin pet hedefin sayılmaz.' : 'Nearby players’ targets do not become your pet target.' },
+  })[status];
+}
+
+function petDiagnosticsContent() {
+  const value = currentTargetPets(), labels = targetPetStatusLabels(petTargetStatus(state, petPinObservation, value.matches)), tr = prefs.locale === 'tr';
+  return `<details class="pet-target-diagnostics" data-state-key="pet-diagnostics" ${petDiagnosticsOpen ? 'open' : ''}><summary>${tr ? 'Pet algılama durumu' : 'Pet detection status'}</summary><p class="help"><strong>${esc(labels.title)}</strong><br>${esc(labels.detail)}</p><p class="help">${tr ? 'Tanı dosyası son alınan hedef kimliğini ve sabitlenen petlerin sayaçlarını içerir. Ham paket, adres, karakter adı veya ses içermez; yalnız bu cihaza kaydedilir.' : 'The diagnostic file contains the last received target IDs and pinned pet counters. It excludes raw packets, addresses, character names and audio; it is saved only on this device.'}</p><button type="button" class="action-button secondary" data-action="save-pet-diagnostics" ${petDiagnosticPending ? 'disabled' : ''}>${tr ? 'Pet tanısını kaydet' : 'Save pet diagnostic'}</button></details>`;
+}
+
 function petsContent() {
   const plan = currentPetPlan();
   petFilters.page = filteredPets(plan, { ...petFilters, pins: prefs.petPins }).page;
-  return `${demo ? source(t('sourceDemo')) : ''}${renderPetGuide(plan, petCatalog, { locale: prefs.locale, filters: petFilters, pins: prefs.petPins, goal: prefs.petGoal, show: prefs.showPetTracker, automatic: prefs.petAutoTrack, selectedId: petSelectedId })}<details class="pet-data-notice"><summary>${prefs.locale === 'tr' ? 'Pet verileri ve lisans bildirimi' : 'Pet data and license notice'}</summary><p>MetaBot.GG · ${esc(petCatalog.verified_at)} · ${esc(PET_CATALOG.source_client_build)}</p><pre>${esc(PET_DATA_NOTICE)}</pre></details>`;
+  return `${demo ? source(t('sourceDemo')) : ''}${renderPetGuide(plan, petCatalog, { locale: prefs.locale, filters: petFilters, pins: prefs.petPins, goal: prefs.petGoal, show: prefs.showPetTracker, automatic: prefs.petAutoTrack, selectedId: petSelectedId })}${petDiagnosticsContent()}<details class="pet-data-notice"><summary>${prefs.locale === 'tr' ? 'Pet verileri ve lisans bildirimi' : 'Pet data and license notice'}</summary><p>MetaBot.GG · ${esc(petCatalog.verified_at)} · ${esc(PET_CATALOG.source_client_build)}</p><pre>${esc(PET_DATA_NOTICE)}</pre></details>`;
 }
 
 function refreshPetsDrawer() {
@@ -1595,6 +1624,7 @@ $('#pet-tracker').addEventListener('click', event => {
   if (control.dataset.petAction === 'collapse') savePreferences({ petTrackerCollapsed: !prefs.petTrackerCollapsed });
 });
 $('#target-pet-pin').addEventListener('click', event => {
+  if (delegatedControl(event, event.currentTarget, 'button[data-pet-diagnostics]')) { petDiagnosticsOpen = true; openPetGuide(); $('#drawer-content .pet-target-diagnostics')?.scrollIntoView({ block: 'nearest' }); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-target-pet-pin]');
   if (!control || control.disabled || !prefs.displayModules.pets) return;
   const id = Number(control.dataset.targetPetPin);
@@ -1813,6 +1843,18 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
   if (actionName === 'refresh-build' || actionName === 'refresh-pets') await readCharacterData();
+  if (actionName === 'save-pet-diagnostics') {
+    if (petDiagnosticPending) return;
+    petDiagnosticPending = true; refreshPetsDrawer();
+    try {
+      if (native) { await refreshState(); await readCharacterData(); }
+      const content = JSON.stringify(petDiagnosticReport({ version: appVersion, mode: native ? 'native' : demo ? 'demo' : 'browser', state, character: characterData, pins: prefs.petPins, now: Date.now() }), null, 2);
+      if (native) { const path = await action('export_document', { format: 'json', content }); toast(String(path)); }
+      else { download('luma-pet-diagnostics.json', content, 'application/json'); toast(t('exported')); }
+    } catch { toast(t('failed'), true); }
+    finally { petDiagnosticPending = false; refreshPetsDrawer(); }
+    return;
+  }
   if (actionName === 'modules-pets' || actionName === 'modules-all') { savePreferences({ displayModules: displayModulePreset(actionName === 'modules-pets' ? 'pets' : 'all') }); refreshDrawer(); }
   if (actionName === 'open-pet-guide') openPetGuide();
   if (actionName === 'pet-pin') togglePetPin(Number(id));

@@ -2,6 +2,13 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.20.2 preview · 2026-10-18
+
+- Preserve the server NPC template ID through the combat engine and live target snapshot. Match it to validated pet-location IDs even when the spawn has no monster name; scene actor IDs are never used as template IDs.
+- On a received pet level event, start that tier at zero and apply subsequent soul gains. Decode the separate registration event and bounded documented level/registration prefixes with opaque suffixes. A completed local threshold alone does not invent a level change.
+- Keep duplicate registration/level notifications from erasing already received progress. Add focused regressions for the previously failing unnamed-monster and tier-transition paths.
+- Provide visible pet matching status and an explicit, bounded local diagnostic export for troubleshooting.
+
 ## 0.20.1 preview · 2026-10-18
 
 - Let the pet list fill the available height whenever DPS is hidden, including views with other modules still enabled. Keep one scrolling list in small windows and remove the duplicate pet introduction card while the tracker is visible.

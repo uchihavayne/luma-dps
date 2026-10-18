@@ -47,6 +47,29 @@ test('target pin suggestions match whole verified monster names without guessing
   assert.ok(petTargetMatches({ name: actual.locations[0].monster }, catalog).some(row => row.id === 1002));
 });
 
+test('received NPC template IDs use only validated source-map mappings and override localized or conflicting names', () => {
+  const actual = catalog.pets.find(row => row.id === 1002);
+  assert.equal(actual.locations[0].verifiedNpcId, 2100075);
+  assert.ok(petTargetMatches({ npc_id: 2100075, name: 'Yerelleştirilmiş canavar adı' }, catalog).some(row => row.id === 1002));
+  assert.ok(petTargetMatches({ npc_id: 2100480 }, catalog).some(row => row.id === 1002));
+  for (const npc_id of [9999999, 1002, 0, '2100075']) assert.deepEqual(petTargetMatches({ npc_id, id: '2100075', name: actual.locations[0].monster }, catalog), []);
+  const example = PET_CATALOG.pets.find(row => row.id === 1002);
+  const invalid = [
+    'https://other.test/en/aion-2/map/verteron?focus=npc:2100075',
+    'https://metabot.gg/en/aion-2/mounts/krall-laborer?focus=npc:2100075',
+    'https://metabot.gg/en/aion-2/map/verteron?focus=npc:2100075&extra=1',
+    'https://metabot.gg/en/aion-2/map/verteron?focus=npc:2100075&focus=npc:2100480',
+    'https://metabot.gg/en/aion-2/map/verteron?focus=npc:2100075#other',
+    'https://metabot.gg/en/aion-2/map/verteron?focus=npc:02100075',
+    'https://metabot.gg/en/aion-2/map/verteron?focus=npc:1002',
+  ];
+  for (const map_url of invalid) {
+    const checked = normalizePetCatalog({ ...PET_CATALOG, pets: [{ ...example, locations: [{ zone: 'Verteron', monster: 'Krall Armed Soldier', map_url, verifiedNpcId: 2100075 }] }] });
+    assert.equal(checked.pets[0].locations[0].verifiedNpcId, null);
+    assert.deepEqual(petTargetMatches({ npc_id: 2100075 }, checked), []);
+  }
+});
+
 test('remaining souls use the current tier counter rather than a lifetime count', () => {
   const first = petCompletion(pet(), catalog.requirements, { now });
   assert.equal(first.nextRemaining, 13); assert.equal(first.maxRemaining, 88); assert.equal(first.remaining, 88); assert.equal(first.percent, 48);
@@ -54,6 +77,26 @@ test('remaining souls use the current tier counter rather than a lifetime count'
   const second = petCompletion(pet({ level: 2, progress: 32 }), catalog.requirements, { now });
   assert.equal(second.nextRemaining, 43); assert.equal(second.maxRemaining, 43);
   assert.equal(petCompletion(pet({ level: 3, progress: null }), catalog.requirements, { now }).remaining, 0);
+});
+
+test('a received level reset opens the next tier and later gains advance it without guessing a level from totals', () => {
+  const pending = plan([pet({ progress: 25 })]).rows.find(row => row.id === 1002);
+  assert.equal(pending.level, 1); assert.equal(pending.status, 'awaiting-level');
+  assert.equal(pending.percent, null); assert.equal(pending.remaining, null);
+  const reset = pet({ level: 2, progress: 0, progress_source: 'server-level-reset', session_started_at_ms: null, session_gain_events: 0, last_gain_at_ms: null });
+  const collection = petPlan(inventory([reset, pet({ pet_id: 1003, progress_stale: true })], { continuity: 'last-known' }), catalog, { localPlayerId: '7', now });
+  const next = collection.rows.find(row => row.id === 1002);
+  assert.equal(next.level, 2); assert.equal(next.progress, 0); assert.equal(next.required, 75);
+  assert.equal(next.remaining, 75); assert.equal(next.percent, 0); assert.equal(next.stale, false);
+  assert.equal(next.etaMs, null);
+  assert.equal(collection.rows.find(row => row.id === 1003).stale, true);
+  const gained = plan([{ ...reset, progress: 3, progress_source: 'server-delta' }]).rows.find(row => row.id === 1002);
+  assert.equal(gained.level, 2); assert.equal(gained.remaining, 72); assert.equal(gained.percent, 4);
+  const html = renderPetTracker([next]);
+  assert.ok(html.includes('Sonraki seviye · 0 / 75'));
+  assert.ok(html.includes('75 ruh kaldı'));
+  assert.equal(petCompletion(pet({ progress: 0, level: null, progress_source: 'server-level-reset' }), catalog.requirements, { now }).remaining, null);
+  assert.equal(petCompletion(pet({ progress: 12, progress_source: 'server-level-reset' }), catalog.requirements, { now }).remaining, null);
 });
 
 test('explicit received level zero tracks registration souls while absent levels remain unknown', () => {

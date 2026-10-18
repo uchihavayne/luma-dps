@@ -258,7 +258,8 @@ export function normalizeRecentPersonalTarget(value) {
   const own = actor(value.actor_id), target = actor(value.target_id), at = value.hit_at_ms;
   if (!own || !target || !Number.isSafeInteger(at) || at < 0 || at > 8640000000000000) return null;
   const name = value.target_name === null || value.target_name === undefined ? null : typeof value.target_name === 'string' && value.target_name.length <= 120 && !/[\u0000-\u001f\u007f]/.test(value.target_name) ? value.target_name : null;
-  return { actor_id: own, target_id: target, target_name: name, hit_at_ms: at, source: 'server-self-hit' };
+  const npc = Number.isInteger(value.target_npc_id) && value.target_npc_id >= 100000 && value.target_npc_id <= 9999999 ? value.target_npc_id : null;
+  return { actor_id: own, target_id: target, target_name: name, target_npc_id: npc, hit_at_ms: at, source: 'server-self-hit' };
 }
 
 export function recentPetTarget(previous, state = {}, now = Date.now()) {
@@ -272,7 +273,7 @@ export function recentPetTarget(previous, state = {}, now = Date.now()) {
   const received = normalizeRecentPersonalTarget(state.recent_personal_target);
   if (received) {
     if (received.actor_id !== actor || received.hit_at_ms < notBefore || now < received.hit_at_ms || now - received.hit_at_ms >= 10000) return empty;
-    return { target: { id: received.target_id, name: received.target_name || '' }, at: received.hit_at_ms, epoch, notBefore, source: 'received-hit' };
+    return { target: { id: received.target_id, name: received.target_name || '', npc_id: received.target_npc_id }, at: received.hit_at_ms, epoch, notBefore, source: 'received-hit' };
   }
   if (previous?.source === 'received-hit') return empty;
   const at = state.focused_target_observed_at_ms;
@@ -284,6 +285,15 @@ export function recentPetTarget(previous, state = {}, now = Date.now()) {
   if (!previous?.target || previous.epoch !== epoch || !Number.isSafeInteger(previous.at) || now < previous.at || now - previous.at >= 10000) return empty;
   if (state.focused_target_id !== null && state.focused_target_id !== undefined && String(state.focused_target_id) !== String(previous.target.id)) return empty;
   return previous;
+}
+
+export function petTargetStatus(state = {}, observation, matches = []) {
+  if (!liveServerActorId(state)) return 'self-identity-pending';
+  const target = observation?.target;
+  if (!target) return 'waiting-personal-hit';
+  if (Array.isArray(matches) && matches.length) return 'matched';
+  const name = typeof target.name === 'string' ? target.name.trim() : '';
+  return !target.npc_id && (!name || /^(?:#\d+|Target\s+#?\d+)$/iu.test(name)) ? 'npc-metadata-pending' : 'catalog-no-match';
 }
 
 function encounterContext(value = {}) {
@@ -309,7 +319,7 @@ export function normalizeEncounter(value) {
 function normalizeTarget(target = {}) {
   const hp = key => typeof target[key] === 'number' && Number.isFinite(target[key]) && target[key] >= 0 ? target[key] : null;
   const participant = value => normalizePlayer({ ...value, skills: [] });
-  return { id: identifier(target.id), name: str(target.name, 100) || `#${identifier(target.id) || '?'}`, is_boss: target.is_boss === true, damage: Math.max(0, finite(target.damage)), current_hp: hp('current_hp'), reported_max_hp: hp('reported_max_hp'), observed_peak_hp: hp('observed_peak_hp'), health_observed_at_ms: hp('health_observed_at_ms'), current_hp_observed_at_ms: hp('current_hp_observed_at_ms'),
+  return { id: identifier(target.id), name: str(target.name, 100) || `#${identifier(target.id) || '?'}`, npc_id: Number.isInteger(target.npc_id) && target.npc_id >= 100000 && target.npc_id <= 9999999 ? target.npc_id : null, is_boss: target.is_boss === true, damage: Math.max(0, finite(target.damage)), current_hp: hp('current_hp'), reported_max_hp: hp('reported_max_hp'), observed_peak_hp: hp('observed_peak_hp'), health_observed_at_ms: hp('health_observed_at_ms'), current_hp_observed_at_ms: hp('current_hp_observed_at_ms'),
     participants: (Array.isArray(target.participants) ? target.participants : []).slice(0, 10).map(participant), participant_count: Math.max(0, finite(target.participant_count)), participants_available: target.participants_available === true,
     own_participant: target.own_participant && typeof target.own_participant === 'object' && !Array.isArray(target.own_participant) ? participant(target.own_participant) : null,
     own_rank: hp('own_rank'), party_total_damage: hp('party_total_damage'), party_dps: hp('party_dps'), started_ms: hp('started_ms'), elapsed_ms: hp('elapsed_ms'), last_hit_ms: hp('last_hit_ms'), own_last_hit_ms: hp('own_last_hit_ms'), capture_complete: target.capture_complete === true };

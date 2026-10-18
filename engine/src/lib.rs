@@ -28,7 +28,8 @@ fn event_contains_pet_observation(event: &Event) -> bool {
         Event::Character(
             character::CharacterEvent::PetInventory { .. }
             | character::CharacterEvent::PetGains { .. }
-            | character::CharacterEvent::PetLevel { .. },
+            | character::CharacterEvent::PetLevel { .. }
+            | character::CharacterEvent::PetAdded { .. },
         ) => true,
         Event::Updates(events) => events.iter().any(event_contains_pet_observation),
         _ => false,
@@ -142,6 +143,7 @@ pub struct TargetParticipant {
 pub struct TargetState {
     pub id: u64,
     pub name: String,
+    pub npc_id: Option<u32>,
     pub is_boss: bool,
     pub damage: u64,
     pub current_hp: Option<u64>,
@@ -170,6 +172,8 @@ pub struct RecentPersonalTarget {
     pub actor_id: u64,
     pub target_id: u64,
     pub target_name: Option<String>,
+    #[serde(default)]
+    pub target_npc_id: Option<u32>,
     pub hit_at_ms: u64,
     pub source: String,
 }
@@ -315,6 +319,7 @@ struct Identity {
     class: Option<String>,
     player: bool,
     npc: bool,
+    npc_model_id: Option<u32>,
     pet: bool,
     owner: Option<u64>,
     hp: Option<u64>,
@@ -1044,7 +1049,7 @@ impl MeterEngine {
             Event::Npc {
                 id,
                 name,
-                model: _,
+                model,
                 kind,
             } => {
                 // Another spawn record is a new occupant of this scene handle;
@@ -1078,6 +1083,10 @@ impl MeterEngine {
                 entry.spawned = true;
                 entry.player = false;
                 entry.npc = matches!(kind, 0x0c | 0x0d | 0x1c);
+                entry.npc_model_id = entry
+                    .npc
+                    .then_some(model)
+                    .filter(|id| (100_000..=9_999_999).contains(id));
                 entry.pet = kind == 0x5f;
                 if !entry.pet {
                     entry.owner = None
@@ -1811,6 +1820,7 @@ impl MeterEngine {
             actor_id: hit.actor_id,
             target_id: hit.target_id,
             target_name: identity.name.clone(),
+            target_npc_id: identity.npc_model_id,
             hit_at_ms: hit.hit_at_ms,
             source: "server-self-hit".into(),
         })
@@ -2229,6 +2239,8 @@ impl MeterEngine {
             let target_identity = identities.get(target);
             let target_row = targets.entry(*target).or_insert_with(|| TargetState {
                 id: *target,
+                npc_id: target_identity
+                    .and_then(|entry| entry.npc.then_some(entry.npc_model_id).flatten()),
                 name: target_identity
                     .and_then(|entry| entry.name.clone())
                     .unwrap_or_else(|| format!("Target #{}", target)),

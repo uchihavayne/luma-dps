@@ -563,6 +563,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             | [0, 0x90]
             | [0x0d, 0x90]
             | [0x14, 0x90]
+            | [9, 0x90]
             | [0x56, 0x36]
     ) {
         if opcode == [0, 0x90] {

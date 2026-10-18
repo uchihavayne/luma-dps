@@ -20,20 +20,31 @@ export function petReferenceUrl(value) {
   } catch { return ''; }
 }
 
+function verifiedMapNpcId(value) {
+  const reference = petReferenceUrl(value);
+  if (!reference) return null;
+  const url = new URL(reference);
+  if (!['metabot.gg', 'www.metabot.gg'].includes(url.hostname) || !/^\/en\/aion-2\/map\/[a-z0-9-]+\/?$/.test(url.pathname) || url.hash || [...url.searchParams.keys()].length !== 1) return null;
+  const focus = /^npc:([1-9]\d{5,6})$/.exec(url.searchParams.get('focus') || '');
+  return focus ? integer(Number(focus[1]), 100000, 9999999) : null;
+}
+
 export function normalizePetPins(value) {
   return [...new Set(list(value, 100).filter(id => integer(id, 1000, 99999) !== null))].slice(0, PET_PIN_LIMIT);
 }
 
 export function petTargetMatches(target, catalog) {
-  const name = record(target).name;
-  if (typeof name !== 'string' || name.length > 120 || /[\u0000-\u001f\u007f]/.test(name)) return [];
+  target = record(target);
+  const hasNpcId = target.npc_id !== null && target.npc_id !== undefined;
+  const npcId = integer(target.npc_id, 100000, 9999999), name = target.name;
+  if (hasNpcId && npcId === null || !hasNpcId && (typeof name !== 'string' || name.length > 120 || /[\u0000-\u001f\u007f]/.test(name))) return [];
   const wholeName = value => typeof value === 'string' ? value.normalize('NFC').toLocaleLowerCase('en').replace(/\s+/g, ' ').trim() : '';
-  const needle = wholeName(name);
-  if (!needle) return [];
+  const needle = hasNpcId ? '' : wholeName(name);
+  if (!hasNpcId && !needle) return [];
   const matches = new Map();
   for (const pet of list(record(catalog).pets, 2500)) {
     if (integer(pet?.id, 1000, 99999) === null || !pet.name || pet.id_mapping_verified === false) continue;
-    const location = list(pet.locations, 64).find(row => wholeName(row?.monster) === needle);
+    const location = list(pet.locations, 64).find(row => hasNpcId ? row?.verifiedNpcId === npcId : wholeName(row?.monster) === needle);
     if (location && !matches.has(pet.id)) matches.set(pet.id, { id: pet.id, name: text(pet.name), monster: text(location.monster) });
   }
   return [...matches.values()].sort((a, b) => a.name.localeCompare(b.name, 'en') || a.id - b.id);
@@ -49,7 +60,7 @@ export function normalizePetCatalog(value) {
     seen.add(id);
     const locations = list(row.locations, 64).map(input => {
       const location = record(input);
-      return { zone: text(location.zone), area: text(location.area), monster: text(location.monster), monster_level: integer(location.monster_level, 1, 1000), teleport: text(location.teleport), source_url: petReferenceUrl(location.source_url), map_url: petReferenceUrl(location.map_url) };
+      return { zone: text(location.zone), area: text(location.area), monster: text(location.monster), monster_level: integer(location.monster_level, 1, 1000), teleport: text(location.teleport), source_url: petReferenceUrl(location.source_url), map_url: petReferenceUrl(location.map_url), verifiedNpcId: verifiedMapNpcId(location.map_url) };
     }).filter(location => location.zone || location.area);
     const bonuses = list(row.bonuses, 30).map(input => {
       const bonus = record(input);
@@ -69,7 +80,8 @@ export function petCompletion(observed, requirements, { now = Date.now(), goal =
   const validTime = last !== null && (last <= now + 250 || stale);
   const base = { level, progress: validTime ? progress : null, observedAtMs: validTime ? last : null, stale, goal: goal === 'next' ? 'next' : 'max', status: 'unknown', nextRemaining: null, maxRemaining: null, remaining: null, percent: null, required: null, soulsPerMinute: null, etaMs: null };
   if (level === 3 && validTime) return { ...base, status: 'complete', nextRemaining: 0, maxRemaining: 0, remaining: 0, percent: 100 };
-  if (level === null || !validTime || !requirements || !Array.isArray(requirements.souls) || requirements.souls.length !== 3 || !requirements.souls.every(value => integer(value, 1, 1000000) !== null) || !['server-absolute', 'server-delta'].includes(row.progress_source) || progress === null) return base;
+  const supportedProgress = ['server-absolute', 'server-delta'].includes(row.progress_source) || row.progress_source === 'server-level-reset' && progress === 0;
+  if (level === null || !validTime || !requirements || !Array.isArray(requirements.souls) || requirements.souls.length !== 3 || !requirements.souls.every(value => integer(value, 1, 1000000) !== null) || !supportedProgress || progress === null) return base;
   const required = requirements.souls[level];
   if (!Number.isSafeInteger(required)) return base;
   if (progress >= required) return { ...base, required, status: 'awaiting-level' };
