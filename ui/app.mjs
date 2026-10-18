@@ -1,7 +1,7 @@
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
-import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from './model.mjs';
+import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
@@ -27,13 +27,15 @@ import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } 
 import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
-import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, PET_PIN_LIMIT } from './pets.mjs';
+import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const native = Boolean(window.__TAURI__?.core?.invoke);
 const demo = !native && new URLSearchParams(location.search).get('demo') === '1';
 const targetDemo = demo && new URLSearchParams(location.search).get('targetDemo') === '1';
+const targetPetDemoMode = demo ? new URLSearchParams(location.search).get('targetPetDemo') : '';
+const targetPetDemo = ['1', 'multi', 'oneshot'].includes(targetPetDemoMode);
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const uid = () => globalThis.crypto?.randomUUID?.() || `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -56,6 +58,7 @@ let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
 const petCatalog = normalizePetCatalog(PET_CATALOG);
 let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null;
+let petPinObservation = null;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
@@ -103,6 +106,13 @@ if (telemetryDemo && new URLSearchParams(location.search).get('relayDemo') === '
   roomIntent = true; teamState = teamSnapshot({ enabled: true, status: 'active', room_id: 'a'.repeat(32), self_peer_id: 'b'.repeat(32), is_host: true, sampled_at_ms: at, last_sync_at_ms: at, expires_at_ms: at + 7200000,
     peers: [{ peer_id: 'b'.repeat(32), display_name: state.local_player_name || 'Aeryn', class_name: 'Ranger', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 14090000, raw_remaining_units: 0, estimated_remaining_ms: null, charges: null, age_ms: 0, ready_confirmed: true, fresh: true }] },
       { peer_id: 'c'.repeat(32), display_name: 'Liora', class_name: 'Cleric', sequence: 1, received_at_ms: at, age_ms: 0, fresh: true, capture_live: true, cooldowns: [{ skill_id: 11010000, raw_remaining_units: 24000, estimated_remaining_ms: 10000, charges: null, age_ms: 0, ready_confirmed: false, fresh: true }] }] });
+}
+if (telemetryDemo && targetPetDemo) {
+  const at = Date.now(), own = state.players.find(player => player.id === '7') || { id: '7', name: state.local_player_name, damage: 100 };
+  const target = { id: '960', name: targetPetDemoMode === 'multi' ? 'Eternal Moss Crab' : 'Krall Armed Soldier', damage: 100, is_boss: false, own_participant: { ...own, id: '7', damage: 100 }, own_last_hit_ms: at, last_hit_ms: at, elapsed_ms: 1000, capture_complete: true };
+  state = normalizeState({ ...state, focused_target_id: targetPetDemoMode === 'oneshot' ? null : target.id, focused_target_observed_at_ms: targetPetDemoMode === 'oneshot' ? null : at,
+    live_target: targetPetDemoMode === 'oneshot' ? null : target, targets: targetPetDemoMode === 'oneshot' ? [] : [target],
+    recent_personal_target: { actor_id: 7, target_id: 960, target_name: target.name, hit_at_ms: at, source: 'server-self-hit' } });
 }
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
 
@@ -1049,6 +1059,28 @@ function markPetSnapshotStale(reason) {
 
 function currentPetPlan() { return petPlan(characterData.pet_progress, petCatalog, { localPlayerId: liveServerActorId(state), goal: prefs.petGoal, pins: prefs.petPins }); }
 
+function currentTargetPets() {
+  const now = targetPetDemo && telemetryDemo ? state.recent_personal_target?.hit_at_ms : Date.now();
+  petPinObservation = recentPetTarget(petPinObservation, state, now);
+  return { target: petPinObservation?.target || null, matches: petTargetMatches(petPinObservation?.target, petCatalog) };
+}
+
+function renderTargetPetPin() {
+  const host = $('#target-pet-pin'), tr = prefs.locale === 'tr', value = currentTargetPets();
+  host.hidden = !prefs.displayModules.pets || !value.matches.length;
+  if (host.hidden) return;
+  const full = prefs.petPins.length >= PET_PIN_LIMIT, limit = petLabels(prefs.locale).limit;
+  const html = `<div class="target-pet-pin-heading"><span aria-hidden="true">⌖</span><div><strong>${esc(value.target.name)}</strong><small>${tr ? 'Bu mobdan pet ruhu kazanılabilir' : 'Pet souls can drop from this mob'}</small></div></div><div class="target-pet-pin-actions">${value.matches.map(pet => {
+    const pinned = prefs.petPins.includes(pet.id), disabled = full && !pinned, label = tr ? pinned ? 'Sabitlemeyi kaldır' : 'Peti sabitle' : pinned ? 'Unpin pet' : 'Pin pet';
+    return `<button type="button" class="target-pet-pin-button" data-target-pet-pin="${pet.id}" aria-pressed="${pinned}" aria-label="${esc(`${label} · ${pet.name}${disabled ? ` · ${limit}` : ''}`)}" title="${esc(disabled ? limit : `${label} · ${pet.name}`)}" ${disabled ? 'disabled' : ''}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 2 6 6-3 1-3 5-2-2-5 5-1-1 5-5-2-2 5-3z"/></svg><span class="target-pet-pin-name">${esc(pet.name)}</span><small>${tr ? pinned ? 'Sabitlendi' : 'Sabitle' : pinned ? 'Pinned' : 'Pin'}</small></button>`;
+  }).join('')}</div>${full && value.matches.some(pet => !prefs.petPins.includes(pet.id)) ? `<p class="target-pet-pin-hint">${esc(limit)}. ${tr ? 'Yenisi için takip listesinden bir peti kaldır.' : 'Unpin a tracked pet to add another.'}</p>` : ''}`;
+  if (host._content !== html) {
+    const focused = host.contains(document.activeElement) ? document.activeElement.dataset.targetPetPin : null;
+    host.innerHTML = html; host._content = html;
+    if (focused) host.querySelector(`[data-target-pet-pin="${focused}"]`)?.focus({ preventScroll: true });
+  }
+}
+
 function petsContent() {
   const plan = currentPetPlan();
   petFilters.page = filteredPets(plan, { ...petFilters, pins: prefs.petPins }).page;
@@ -1517,6 +1549,7 @@ function beep() {
 }
 
 function tickTimers() {
+  renderTargetPetPin();
   $('#meter').classList.toggle('idle-fade', prefs.fadeWhenIdle && !drawer && !state.encounter_active && !['combat', 'combat_active'].includes(state.status));
   if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   const event = activeEvent(), bossTimer = chosenBossTimer(), scheduled = event ? scheduleTiming(event) : null, timing = scheduled ? { next: scheduled.nextOpening, remaining: scheduled.remainingMs } : bossTimer?.status === 'countdown' ? { next: bossTimer.server_time_ms, remaining: bossTimer.remaining } : null;
@@ -1560,6 +1593,14 @@ $('#pet-tracker').addEventListener('click', event => {
   if (control.dataset.petAction === 'open') openPetGuide(Number(control.dataset.id));
   if (control.dataset.petAction === 'unpin') togglePetPin(Number(control.dataset.id));
   if (control.dataset.petAction === 'collapse') savePreferences({ petTrackerCollapsed: !prefs.petTrackerCollapsed });
+});
+$('#target-pet-pin').addEventListener('click', event => {
+  const control = delegatedControl(event, event.currentTarget, 'button[data-target-pet-pin]');
+  if (!control || control.disabled || !prefs.displayModules.pets) return;
+  const id = Number(control.dataset.targetPetPin);
+  if (!currentTargetPets().matches.some(pet => pet.id === id)) return;
+  togglePetPin(id);
+  renderTargetPetPin();
 });
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#modules-button').addEventListener('click', () => openDrawer('settings', 'appearance'));

@@ -3,6 +3,79 @@ import assert from 'node:assert/strict';
 import { THEMES, liveServerActorId, normalizePreferences, importTheme, exportTheme, validBackground, recurringEvent, manualOdyle, normalizeState, sortedPlayers, playerShare, clockTime, importHistory, cooldownStatus, resizeStep, compactHeaderHeight, acceptsCalendarSnapshot, acceptsStateSnapshot } from '../model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections } from '../model.mjs';
 import { ANALYSIS_SECTIONS, SETTINGS_SECTIONS } from '../navigation.mjs';
+import { recentPetTarget, normalizeRecentPersonalTarget } from '../model.mjs';
+
+const petTargetState = (overrides = {}) => ({
+  local_player_id: '7', local_player_name: 'Center', local_identity_source: 'server',
+  live_team_identity: { local: { actor_id: 7, name: 'Center', identity_source: 'server' } },
+  focused_target_id: '960', focused_target_observed_at_ms: 1000,
+  live_target: { id: '960', name: 'Krall Armed Soldier', own_participant: { id: '7', damage: 100 }, own_last_hit_ms: 1000 },
+  targets: [], diagnostics: { stream_gaps: 0 }, capture: { status: 'capturing', missed_packets: 0 }, ...overrides,
+});
+
+test('one-click target pinning keeps an observed own kill for ten seconds without renewing the hit time', () => {
+  const live = petTargetState(), first = recentPetTarget(null, live, 1000);
+  assert.equal(first.target.name, 'Krall Armed Soldier'); assert.equal(first.at, 1000);
+  const completed = { ...live, focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, encounter_active: false };
+  const dead = recentPetTarget(first, completed, 5000);
+  assert.deepEqual(dead, first);
+  assert.equal(recentPetTarget(dead, completed, 10999).target.id, '960');
+  assert.equal(recentPetTarget(dead, completed, 11000).target, null);
+  assert.equal(recentPetTarget(null, completed, 5000).target, null);
+  assert.equal(recentPetTarget(first, completed, 999).target, null);
+});
+
+test('new own targets replace pin suggestions, while stranger/manual identities and historical reports cannot supply them', () => {
+  const first = recentPetTarget(null, petTargetState(), 1000);
+  const next = petTargetState({ focused_target_id: '961', focused_target_observed_at_ms: 2000,
+    live_target: { id: '961', name: 'Unrelated target', own_participant: { id: '7', damage: 1 } } });
+  assert.equal(recentPetTarget(first, next, 2000).target.name, 'Unrelated target');
+  assert.equal(recentPetTarget(first, { ...next, live_target: null }, 2000).target, null);
+  assert.equal(recentPetTarget(null, petTargetState({ live_team_identity: { local: null } }), 1000), null);
+  assert.equal(recentPetTarget(null, petTargetState({ local_identity_source: 'manual' }), 1000).target, null);
+  assert.equal(recentPetTarget(null, petTargetState({ live_target: { id: '960', name: 'Krall Armed Soldier', own_participant: { id: '8', damage: 1 } } }), 1000).target, null);
+  assert.equal(recentPetTarget(null, petTargetState({ focused_target_observed_at_ms: 2000 }), 1000).target, null);
+});
+
+test('capture discontinuity and character changes clear target pinning and never revive an earlier focus snapshot', () => {
+  const first = recentPetTarget(null, petTargetState(), 1000);
+  for (const patch of [{ capture: { status: 'capturing', missed_packets: 1 } }, { diagnostics: { stream_gaps: 1 } },
+    { local_player_name: 'Other', live_team_identity: { local: { actor_id: 7, name: 'Other', identity_source: 'server' } } },
+    { capture: { status: 'disconnected', missed_packets: 0 } }, { capture: { status: 'waiting', missed_packets: 0 } }]) {
+    const changed = petTargetState(patch), cleared = recentPetTarget(first, changed, 2000);
+    assert.equal(cleared.target, null);
+    assert.equal(recentPetTarget(cleared, { ...changed, capture: { ...changed.capture, status: 'capturing' } }, 3000).target, null);
+    const fresh = { ...changed, focused_target_observed_at_ms: 3500, capture: { ...changed.capture, status: 'capturing' } };
+    assert.equal(recentPetTarget(cleared, fresh, 3500).target.id, '960');
+  }
+  assert.equal(recentPetTarget(first, petTargetState({ live_team_identity: { local: { actor_id: 8, name: 'Other', identity_source: 'server' } } }), 2000).target, null);
+});
+
+test('an actual one-shot self-hit DTO supplies a pet target after death without an earlier rendered focus', () => {
+  const hit = { actor_id: 7, target_id: 960, target_name: 'Krall Armed Soldier', hit_at_ms: 1000, source: 'server-self-hit' };
+  const dead = normalizeState(petTargetState({ focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, encounter_active: false, recent_personal_target: hit }));
+  assert.deepEqual(dead.recent_personal_target, { ...hit, actor_id: '7', target_id: '960' });
+  const first = recentPetTarget(null, dead, 1500);
+  assert.equal(first.target.name, 'Krall Armed Soldier'); assert.equal(first.at, 1000);
+  assert.equal(recentPetTarget(first, dead, 10999).at, 1000);
+  assert.equal(recentPetTarget(first, dead, 11000).target, null);
+  const unnamed = { ...dead, recent_personal_target: { ...hit, target_id: 961, target_name: null, hit_at_ms: 2000 } };
+  assert.deepEqual(recentPetTarget(first, unnamed, 2500).target, { id: '961', name: '' });
+  assert.equal(recentPetTarget(first, { ...dead, recent_personal_target: null }, 1500).target, null);
+  const gap = { ...dead, diagnostics: { stream_gaps: 1 } }, invalidated = recentPetTarget(first, gap, 1500);
+  assert.equal(invalidated.target, null);
+  assert.equal(recentPetTarget(invalidated, gap, 2000).target, null);
+});
+
+test('received-hit normalization never turns arbitrary IDs, sources, actors or future clocks into target pin suggestions', () => {
+  const hit = { actor_id: 7, target_id: 960, target_name: 'Krall Armed Soldier', hit_at_ms: 1000, source: 'server-self-hit' };
+  for (const patch of [{ actor_id: 0 }, { actor_id: 'manual' }, { target_id: 0 }, { target_id: 0x100000000 }, { hit_at_ms: -1 }, { hit_at_ms: Number.MAX_SAFE_INTEGER }, { source: 'manual' }]) assert.equal(normalizeRecentPersonalTarget({ ...hit, ...patch }), null);
+  assert.equal(normalizeRecentPersonalTarget({ ...hit, target_name: 'Krall\nArmed Soldier' }).target_name, null);
+  for (const patch of [{ actor_id: 8 }, { hit_at_ms: 2000 }]) {
+    const value = petTargetState({ focused_target_id: null, focused_target_observed_at_ms: null, live_target: null, recent_personal_target: { ...hit, ...patch } });
+    assert.equal(recentPetTarget(null, value, 1500).target, null);
+  }
+});
 
 test('display modules persist a recoverable pet-only view independently of capture and listening settings', () => {
   const before = normalizePreferences({ cubeAutoListen: true, showCubeLocator: true, petPins: [1002], damageScope: 'party', compactStrip: true });

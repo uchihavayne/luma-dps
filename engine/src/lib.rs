@@ -21,6 +21,7 @@ const MAX_SAMPLES: usize = 20_000;
 const MAX_HISTORY_SAMPLES: usize = 100_000;
 const PROFILE_PENDING_MS: u64 = 30_000;
 const MAX_PENDING_PROFILES: usize = 64;
+const RECENT_PERSONAL_TARGET_MS: u64 = 10_000;
 
 fn event_contains_pet_observation(event: &Event) -> bool {
     match event {
@@ -161,6 +162,23 @@ pub struct TargetState {
     pub last_hit_ms: Option<u64>,
     pub capture_complete: bool,
 }
+
+/// A received personal hit used by short-lived live controls, independent of
+/// an encounter's completion or history. No damage/drop total is inferred.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentPersonalTarget {
+    pub actor_id: u64,
+    pub target_id: u64,
+    pub target_name: Option<String>,
+    pub hit_at_ms: u64,
+    pub source: String,
+}
+
+struct RecentPersonalHit {
+    actor_id: u64,
+    target_id: u64,
+    hit_at_ms: u64,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
@@ -236,6 +254,7 @@ pub struct MeterState {
     pub focused_target_id: Option<u64>,
     pub focused_target_observed_at_ms: Option<u64>,
     pub live_target: Option<TargetState>,
+    pub recent_personal_target: Option<RecentPersonalTarget>,
     pub status: String,
     pub elapsed_ms: u64,
     pub total_damage: u64,
@@ -363,6 +382,7 @@ pub struct MeterEngine {
     field_boss_available: bool,
     character: character::CharacterStore,
     pet_connections: Vec<net::Connection>,
+    recent_personal_hit: Option<RecentPersonalHit>,
     character_revision: u64,
     encounter_build: Option<character::CharacterBuild>,
     encounter_build_taken: bool,
@@ -426,6 +446,7 @@ impl Default for MeterEngine {
             field_boss_available: false,
             character: character::CharacterStore::default(),
             pet_connections: Vec::new(),
+            recent_personal_hit: None,
             character_revision: 0,
             encounter_build: None,
             encounter_build_taken: false,
@@ -538,6 +559,7 @@ impl MeterEngine {
         let previous_gaps = self.streams.gaps;
         let chunk = self.streams.push(&segment, now);
         if segment.syn || segment.reset || self.streams.gaps != previous_gaps {
+            self.recent_personal_hit = None;
             self.focus_epoch = self.focus_epoch.wrapping_add(1);
             for identity in self.identities.values_mut() {
                 identity.current_hp_observed_at_ms = None;
@@ -655,6 +677,7 @@ impl MeterEngine {
             .get(&id)
             .is_some_and(|entity| entity.removed)
         {
+            self.clear_recent_personal_entity(id);
             if self
                 .aggregates
                 .keys()
@@ -682,6 +705,13 @@ impl MeterEngine {
         }
     }
     pub fn ingest_event(&mut self, event: Event, now: u64) {
+        if self
+            .recent_personal_hit
+            .as_ref()
+            .is_some_and(|hit| now < hit.hit_at_ms)
+        {
+            self.recent_personal_hit = None;
+        }
         self.pending_profiles.retain(|(_, observed_at)| {
             now >= *observed_at && now - observed_at <= PROFILE_PENDING_MS
         });
@@ -744,6 +774,7 @@ impl MeterEngine {
             }
             Event::ZoneChange { zone_id } => {
                 if self.current_context.map_id != Some(zone_id) {
+                    self.recent_personal_hit = None;
                     self.finish(self.last_hit);
                     self.cooldowns.clear();
                     self.cooldowns.bind_self(self.own_id);
@@ -859,6 +890,13 @@ impl MeterEngine {
                     .get(&id)
                     .and_then(|entry| entry.name.as_deref())
                     .is_some_and(|old| old != name);
+                if self.recent_personal_hit.as_ref().is_some_and(|hit| {
+                    hit.target_id == id
+                        || hit.actor_id == id && changed_name
+                        || own && hit.actor_id != id
+                }) {
+                    self.recent_personal_hit = None;
+                }
                 let may_resolve_completed = !changed_name
                     && self
                         .identities
@@ -1009,6 +1047,9 @@ impl MeterEngine {
                 model: _,
                 kind,
             } => {
+                // Another spawn record is a new occupant of this scene handle;
+                // it cannot rename the previous hit, even if the model matches.
+                self.clear_recent_personal_entity(id);
                 self.pending_profiles
                     .retain(|(profile, _)| profile.id != id);
                 let replaces_entity = self
@@ -1267,6 +1308,9 @@ impl MeterEngine {
                 self.dirty();
             }
             Event::Removed { id, death } => {
+                if self.own_id == Some(id) {
+                    self.recent_personal_hit = None;
+                }
                 self.pending_profiles
                     .retain(|(profile, _)| profile.id != id);
                 // Keep attribution until the encounter ends; an entity leaving
@@ -1296,6 +1340,7 @@ impl MeterEngine {
                 if self.paused || hit.amount == 0 {
                     return;
                 }
+                self.observe_recent_personal_hit(&hit, now);
                 self.training_hit(&hit, now);
                 if self.started.is_some() && now.saturating_sub(self.last_hit) >= IDLE_MS {
                     self.finish(self.last_hit.saturating_add(IDLE_MS))
@@ -1551,6 +1596,7 @@ impl MeterEngine {
         }
     }
     pub fn connection_changed(&mut self) {
+        self.recent_personal_hit = None;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         self.finish(self.last_hit);
         self.current_context = EncounterContext::default();
@@ -1592,6 +1638,7 @@ impl MeterEngine {
         self.dirty();
     }
     pub fn capture_loss(&mut self) {
+        self.recent_personal_hit = None;
         self.focus_epoch = self.focus_epoch.wrapping_add(1);
         for identity in self.identities.values_mut() {
             identity.current_hp_observed_at_ms = None;
@@ -1664,6 +1711,7 @@ impl MeterEngine {
         self.dirty();
     }
     pub fn reset(&mut self) {
+        self.recent_personal_hit = None;
         self.cancel_training();
         self.finish(self.last_hit);
         self.completed = None;
@@ -1681,6 +1729,93 @@ impl MeterEngine {
         self.diagnostics.truncated_encounter = false;
         self.dirty();
     }
+
+    fn clear_recent_personal_entity(&mut self, id: u64) {
+        if self
+            .recent_personal_hit
+            .as_ref()
+            .is_some_and(|hit| hit.actor_id == id || hit.target_id == id)
+        {
+            self.recent_personal_hit = None;
+        }
+    }
+
+    fn verified_live_self(&self) -> Option<u64> {
+        self.own_id.filter(|id| {
+            *id > 0
+                && *id <= u64::from(u32::MAX)
+                && self.identities.get(id).is_some_and(|identity| {
+                    identity.player
+                        && !identity.npc
+                        && !identity.pet
+                        && !identity.removed
+                        && identity
+                            .name
+                            .as_deref()
+                            .is_some_and(|name| !name.is_empty())
+                })
+        })
+    }
+
+    fn observe_recent_personal_hit(&mut self, hit: &packets::Hit, now: u64) {
+        let Some(actor_id) = self.verified_live_self() else {
+            return;
+        };
+        let personal_source = hit.source == actor_id
+            || self.identities.get(&hit.source).is_some_and(|identity| {
+                identity.pet
+                    && !identity.npc
+                    && !identity.player
+                    && !identity.removed
+                    && Self::owner_in(&self.identities, hit.source) == actor_id
+            });
+        if !personal_source {
+            return;
+        }
+        // A newer personal hit replaces the previous suggestion even when the
+        // new target is unnamed, uncatalogued, or ineligible for a pet control.
+        self.recent_personal_hit = None;
+        if hit.target == 0
+            || hit.target > u64::from(u32::MAX)
+            || !self.identities.get(&hit.target).is_some_and(|identity| {
+                identity.npc
+                    && !identity.player
+                    && !identity.pet
+                    && !identity.removed
+                    && identity.owner.is_none()
+            })
+        {
+            return;
+        }
+        self.recent_personal_hit = Some(RecentPersonalHit {
+            actor_id,
+            target_id: hit.target,
+            hit_at_ms: now,
+        });
+    }
+
+    fn recent_personal_target(&self, now: u64) -> Option<RecentPersonalTarget> {
+        let hit = self.recent_personal_hit.as_ref()?;
+        if self.verified_live_self() != Some(hit.actor_id)
+            || now.checked_sub(hit.hit_at_ms)? > RECENT_PERSONAL_TARGET_MS
+        {
+            return None;
+        }
+        let identity = self.identities.get(&hit.target_id)?;
+        if !identity.npc || identity.player || identity.pet || identity.owner.is_some() {
+            return None;
+        }
+        // Removed/dead targets are intentionally eligible. A new spawn or an
+        // identity replacement clears the observation before this lookup.
+        Some(RecentPersonalTarget {
+            actor_id: hit.actor_id,
+            target_id: hit.target_id,
+            target_name: identity.name.clone(),
+            hit_at_ms: hit.hit_at_ms,
+            source: "server-self-hit".into(),
+        })
+    }
+
     fn owner_in(identities: &HashMap<u64, Identity>, id: u64) -> u64 {
         let mut result = id;
         for _ in 0..8 {
@@ -2806,6 +2941,7 @@ impl MeterEngine {
             focused_target_id,
             focused_target_observed_at_ms,
             live_target,
+            recent_personal_target: self.recent_personal_target(now),
             status: if self.paused {
                 "paused"
             } else if self.diagnostics.stream_gaps > 0 {

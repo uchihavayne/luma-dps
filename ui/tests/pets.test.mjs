@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PET_CATALOG, PET_DATA_NOTICE } from '../pet-catalog.mjs';
 import { normalizePreferences, liveServerActorId } from '../model.mjs';
-import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
+import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petTargetMatches, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
 
 const now = 1_000_000;
 const catalog = normalizePetCatalog(PET_CATALOG);
@@ -26,6 +26,25 @@ test('unverified ID mappings, ambiguous duplicates and wrong-region thresholds c
   assert.equal(normalizePetCatalog({ ...PET_CATALOG, pets: [{ ...example, id_mapping_verified: false }] }).pets.length, 0);
   assert.equal(normalizePetCatalog({ ...PET_CATALOG, pets: [example, { ...example, name: 'Other' }] }).pets.length, 0);
   assert.equal(normalizePetCatalog({ ...PET_CATALOG, region: 'TW' }).requirements, null);
+});
+
+test('target pin suggestions match whole verified monster names without guessing from actor or pet IDs', () => {
+  const reference = { pets: [
+    { id: 1002, name: 'Pet title', locations: [{ monster: 'Krall Laborer' }] },
+    { id: 1003, name: 'Krall Laborer', locations: [{ monster: 'Other monster' }] },
+    { id: 1004, name: 'Another pet', locations: [{ monster: 'KRALL LABORER' }, { monster: 'Krall Laborer' }] },
+    { id: 1005, name: 'Rejected pet', id_mapping_verified: false, locations: [{ monster: 'Krall Laborer' }] },
+    { id: 1006, name: 'Unicode pet', locations: [{ monster: 'Célebrant' }] },
+  ] };
+  assert.deepEqual(petTargetMatches({ id: '99999', name: ' krall   laborer ' }, reference), [
+    { id: 1004, name: 'Another pet', monster: 'KRALL LABORER' },
+    { id: 1002, name: 'Pet title', monster: 'Krall Laborer' },
+  ]);
+  for (const name of ['Krall', 'Elite Krall Laborer', 'Krall Laborer Chief', 'Pet title', '', 'Krall\u0000 Laborer']) assert.deepEqual(petTargetMatches({ id: 1002, name }, reference), []);
+  assert.deepEqual(petTargetMatches({ id: 1002 }, reference), []);
+  assert.equal(petTargetMatches({ name: 'Ce\u0301lebrant' }, reference)[0].id, 1006);
+  const actual = catalog.pets.find(row => row.id === 1002);
+  assert.ok(petTargetMatches({ name: actual.locations[0].monster }, catalog).some(row => row.id === 1002));
 });
 
 test('remaining souls use the current tier counter rather than a lifetime count', () => {

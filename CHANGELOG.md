@@ -2,6 +2,12 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.20.1 preview · 2026-10-18
+
+- Let the pet list fill the available height whenever DPS is hidden, including views with other modules still enabled. Keep one scrolling list in small windows and remove the duplicate pet introduction card while the tracker is visible.
+- Offer direct pet pinning beside a recently hit personal target when its received monster name exactly matches the pet reference. A target may offer more than one pet; each uses the existing six-pin limit and saved preferences.
+- Keep the last received target suggestion briefly after a kill, measured from the actual hit time. Clear it on a new target, identity change, capture gap or disconnection. Scene actor IDs and partial names are never treated as catalog IDs.
+
 ## 0.20.0 preview · 2026-10-18
 
 - Add saved module visibility controls and a pet-only preset. Users can hide DPS, Cube, event, Odyle and team sections independently and restore them from the persistent header control. Visibility choices do not silently change capture or listening settings.

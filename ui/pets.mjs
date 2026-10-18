@@ -24,6 +24,21 @@ export function normalizePetPins(value) {
   return [...new Set(list(value, 100).filter(id => integer(id, 1000, 99999) !== null))].slice(0, PET_PIN_LIMIT);
 }
 
+export function petTargetMatches(target, catalog) {
+  const name = record(target).name;
+  if (typeof name !== 'string' || name.length > 120 || /[\u0000-\u001f\u007f]/.test(name)) return [];
+  const wholeName = value => typeof value === 'string' ? value.normalize('NFC').toLocaleLowerCase('en').replace(/\s+/g, ' ').trim() : '';
+  const needle = wholeName(name);
+  if (!needle) return [];
+  const matches = new Map();
+  for (const pet of list(record(catalog).pets, 2500)) {
+    if (integer(pet?.id, 1000, 99999) === null || !pet.name || pet.id_mapping_verified === false) continue;
+    const location = list(pet.locations, 64).find(row => wholeName(row?.monster) === needle);
+    if (location && !matches.has(pet.id)) matches.set(pet.id, { id: pet.id, name: text(pet.name), monster: text(location.monster) });
+  }
+  return [...matches.values()].sort((a, b) => a.name.localeCompare(b.name, 'en') || a.id - b.id);
+}
+
 export function normalizePetCatalog(value) {
   value = record(value);
   const seen = new Set(), duplicate = new Set(), pets = [];
