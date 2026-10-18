@@ -4,7 +4,7 @@ import { normalizePetPins } from './pets.mjs';
 
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const npcId = value => Number.isSafeInteger(value) && value >= 100000 && value <= 9999999 ? value : null;
-const captureStates = new Set(['capturing', 'starting', 'waiting', 'stopped', 'disconnected', 'error', 'no-game', 'permission-required', 'unavailable', 'unsupported']);
+const captureStates = new Set(['capturing', 'starting', 'waiting', 'stopped', 'disconnected', 'error', 'no-game', 'permission-required', 'unavailable', 'unsupported', 'api-unavailable', 'api-version-mismatch', 'operation-not-supported']);
 
 // Explicit local export only. Never serialize a whole state or character build:
 // those can contain names, reports, endpoints and unrelated player information.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PET_CATALOG, PET_DATA_NOTICE } from '../pet-catalog.mjs';
 import { normalizePreferences, liveServerActorId } from '../model.mjs';
-import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petPinTransition, petTargetMatches, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
+import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petPinTransition, petTargetMatches, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker, PET_PIN_LIMIT } from '../pets.mjs';
 
 const now = 1_000_000;
 const catalog = normalizePetCatalog(PET_CATALOG);
@@ -189,12 +189,64 @@ test('tracker shows level, numerator, percentage and color progress in both regu
   assert.ok(compact.includes('12 / 25'));
   assert.ok(compact.includes('48%'));
   assert.ok(compact.includes('style="width:48%"'));
-  assert.equal((compact.match(/class="pet-tracker-row/g) || []).length, 2); // container and the first visible pet
+  assert.equal((compact.match(/<article class="pet-tracker-row/g) || []).length, 3);
+  for (const id of [1002, 1003, 1004]) assert.ok(compact.includes(`data-pet-action="open" data-id="${id}"`));
   const unknown = renderPetTracker([plan([]).rows.find(row => row.id === 1002)]);
   assert.ok(unknown.includes('is-unknown'));
   assert.ok(!unknown.includes('role="progressbar"'));
   assert.ok(!unknown.includes('class="pet-tracker-percent">0%'));
   assert.ok(unknown.includes('class="pet-tracker-percent">—'));
+});
+
+test('received points without a level remain visible in the tracker without invented tiers or percentages', () => {
+  const row = plan([pet({ level: null, progress: 12 })]).rows.find(row => row.id === 1002);
+  assert.equal(row.progress, 12); assert.equal(row.level, null); assert.equal(row.required, null);
+  assert.equal(row.remaining, null); assert.equal(row.percent, null); assert.equal(row.etaMs, null);
+  const tracker = renderPetTracker([row]);
+  assert.ok(tracker.includes('Alınan sayaç · 12'));
+  assert.ok(tracker.includes('Sayaç alındı · seviye bekleniyor'));
+  assert.ok(!tracker.includes('Sayaç alınmadı'));
+  assert.ok(!tracker.includes('role="progressbar"'));
+  assert.ok(!tracker.includes('12 / 25'));
+  const guide = renderPetGuide(plan([pet({ level: null, progress: 12 })]), catalog, { filters: { query: 'Krall Laborer' } });
+  assert.ok(guide.includes('Alınan sayaç: 12'));
+  assert.ok(guide.includes('Sayaç alındı · seviye bekleniyor'));
+  assert.ok(!guide.includes('Sayaç alınmadı'));
+  const en = renderPetTracker([row], { locale: 'en' });
+  assert.ok(en.includes('Received counter · 12'));
+  assert.ok(en.includes('Counter received · waiting for level'));
+  assert.ok(!en.includes('Counter not received'));
+});
+
+test('raw counters with unknown requirements and stale points keep their precise missing-data reason', () => {
+  const value = plan([pet({ pet_id: 1001, progress: 8 }), pet({ pet_id: 1002, level: null, progress: 0, progress_stale: true })]);
+  const special = value.rows.find(row => row.id === 1001), stale = value.rows.find(row => row.id === 1002);
+  assert.equal(special.required, null); assert.equal(special.progress, 8);
+  const html = renderPetTracker([special, stale]);
+  assert.ok(html.includes('Alınan sayaç · 8'));
+  assert.ok(html.includes('Sayaç alındı · seviye hedefi doğrulanmadı'));
+  assert.ok(html.includes('Alınan sayaç · 0'));
+  assert.ok(html.includes('Son alınan'));
+  assert.ok(!html.includes('Tahmini'));
+  assert.ok(!html.includes('Sayaç alınmadı'));
+  for (const input of [pet({ progress_source: 'unknown' }), pet({ progress_source: 'server-level-reset', level: null, progress: 0 }), pet({ observed_at_ms: now + 1000 })]) {
+    assert.equal(petCompletion(input, catalog.requirements, { now }).progress, null);
+  }
+});
+
+test('compact tracker keeps every pin reachable and removable instead of dropping all but the first', () => {
+  const ids = [1002, 1003, 1004, 1005, 1006, 1007];
+  const rows = trackedPets(plan(ids.map(pet_id => pet({ pet_id }))), ids, { now });
+  const html = renderPetTracker(rows, { compact: true });
+  assert.equal((html.match(/<article class="pet-tracker-row/g) || []).length, ids.length);
+  assert.ok(html.includes('pet-tracker-rows is-compact'));
+  for (const id of ids) {
+    assert.ok(html.includes(`data-pet-action="open" data-id="${id}"`));
+    assert.ok(html.includes(`data-pet-action="unpin" data-id="${id}"`));
+  }
+  const collapsed = renderPetTracker(rows, { compact: true, collapsed: true });
+  assert.ok(collapsed.includes('class="pet-tracker-rows is-compact" hidden'));
+  assert.equal((collapsed.match(/<article class="pet-tracker-row/g) || []).length, ids.length);
 });
 
 test('six pinned pets retain independent counters and only the interrupted row loses its ETA', () => {
@@ -275,9 +327,9 @@ test('filter reset preserves sort and distinguishes unmatched searches from empt
 });
 
 test('pins persist uniquely and stay bounded; explicit pins take priority over automatic tracking', () => {
-  const ids = [1002, 1002, 1003, 1004, 1005, 1006, 1007, 1008, '1009', 0];
+  const ids = [1002, 1002, ...Array.from({ length: 20 }, (_, index) => 1003 + index), '1009', 0];
   assert.deepEqual(normalizePreferences({ petPins: ids }).petPins, normalizePetPins(ids));
-  assert.equal(normalizePetPins(ids).length, 6);
+  assert.equal(normalizePetPins(ids).length, PET_PIN_LIMIT);
   const value = plan([pet(), pet({ pet_id: 1003, last_gain_at_ms: now })]);
   assert.equal(trackedPets(value, [], { now })[0].id, 1003);
   assert.equal(trackedPets(value, [1002], { now })[0].id, 1002);
@@ -299,18 +351,56 @@ test('pinning a known reference pet opens a collapsed hidden tracker without req
   assert.equal(rows.length, 2); assert.ok(rows.every(row => row.remaining === null));
 });
 
-test('successive pin selections append independently, normalize duplicates and stop at six without dropping saved pets', () => {
+test('successive pin selections append independently, normalize duplicates and stop at twelve without dropping saved pets', () => {
   const reference = plan([]);
   let preferences = { petPins: [1002, 1002, '1003', -1], petTrackerCollapsed: true };
-  for (const id of [1003, 1004, 1005, 1006, 1007]) {
+  for (const id of Array.from({ length: PET_PIN_LIMIT - 1 }, (_, index) => 1003 + index)) {
     const result = petPinTransition(preferences, id, reference);
     assert.equal(result.status, 'added');
     preferences = { ...preferences, ...result.patch };
   }
-  assert.deepEqual(preferences.petPins, [1002, 1003, 1004, 1005, 1006, 1007]);
-  const full = petPinTransition(preferences, 1008, reference);
+  const expected = Array.from({ length: 12 }, (_, index) => 1002 + index);
+  assert.deepEqual(preferences.petPins, expected);
+  const full = petPinTransition(preferences, 1014, reference);
   assert.deepEqual(full, { status: 'limit', patch: null });
-  assert.deepEqual(preferences.petPins, [1002, 1003, 1004, 1005, 1006, 1007]);
+  assert.deepEqual(preferences.petPins, expected);
+});
+
+test('recent untracked gains append one automatic row after all twelve pins without replacing a pin', () => {
+  const ids = Array.from({ length: 12 }, (_, index) => 1002 + index);
+  const rows = ids.map((pet_id, index) => pet({ pet_id, progress: index + 1 }));
+  const value = plan([...rows, pet({ pet_id: 1014, last_gain_at_ms: now - 100 }), pet({ pet_id: 1015, last_gain_at_ms: now - 200 })], { pins: ids });
+  const tracked = trackedPets(value, ids, { now });
+  assert.equal(PET_PIN_LIMIT, 12);
+  assert.deepEqual(tracked.slice(0, 12).map(row => row.id), ids);
+  assert.ok(tracked.slice(0, 12).every(row => row.automatic === false));
+  assert.equal(tracked.length, 13); assert.equal(tracked[12].id, 1014); assert.equal(tracked[12].automatic, true);
+  const html = renderPetTracker(tracked, { compact: true });
+  assert.equal((html.match(/<article class="pet-tracker-row/g) || []).length, 13);
+  assert.equal((html.match(/data-pet-action="unpin"/g) || []).length, 12);
+  assert.ok(html.includes('data-pet-action="pin" data-id="1014"'));
+  assert.match(html, /data-pet-action="pin" data-id="1014"[^>]* disabled/);
+  assert.ok(html.includes('En fazla 12 pet sabitlenebilir'));
+  assert.deepEqual(trackedPets(value, ids, { now, automatic: false }).map(row => row.id), ids);
+});
+
+test('automatic tracking requires recent real timed gains, with no first-pet or summoned fallback', () => {
+  for (const overrides of [
+    { session_gained: 0 }, { last_gain_at_ms: null }, { last_gain_at_ms: now + 1 },
+    { last_gain_at_ms: now - 120001 }, { progress_stale: true }, { level: 3, progress: null },
+  ]) {
+    const value = plan([pet(overrides)]);
+    assert.deepEqual(trackedPets(value, [], { now }), []);
+  }
+  const current = plan([pet({ last_gain_at_ms: now - 120000 })]);
+  assert.equal(trackedPets(current, [], { now })[0].id, 1002);
+  assert.equal(trackedPets(current, [], { now, automatic: false }).length, 0);
+  const html = renderPetTracker(trackedPets(current, [], { now }));
+  assert.ok(html.includes('Yeni ruh kazanımı · Bu oturumda +12'));
+  assert.match(html, /data-pet-action="pin" data-id="1002"[^>]*>/);
+  assert.doesNotMatch(html, /data-pet-action="pin"[^>]*disabled/);
+  const pinned = trackedPets(current, [1002], { now });
+  assert.equal(pinned.length, 1); assert.equal(pinned[0].automatic, false);
 });
 
 test('unpinning patches only the list and allows a missing saved pet to be removed', () => {

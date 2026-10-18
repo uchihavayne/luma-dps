@@ -47,7 +47,7 @@ A scene actor ID identifies one spawned entity; it is not an NPC template ID or 
 
 When a template is received, the UI uses that numeric mapping even if no monster name was received. It does not substitute a matching display name for an unmatched template ID. Without a template ID, only an exact received monster-name fallback is available. A template or location missing from this snapshot is an unsupported match, not proof that no pet soul can drop. The catalog does not cover every monster or pet.
 
-The optional local pet diagnostic export contains only bounded capture counters, an authoritative self scene ID, a recent target template/scene ID and at most six pinned pet counters. It does not include full character builds, names, network addresses, credentials, raw packet payloads or reports, and is saved only on user action.
+The optional local pet diagnostic export contains only bounded capture counters, an authoritative self scene ID, a recent target template/scene ID and at most twelve pinned pet counters. It does not include full character builds, names, network addresses, credentials, raw packet payloads or reports, and is saved only on user action.
 
 ## Owned effects and genus effects
 

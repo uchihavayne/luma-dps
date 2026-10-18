@@ -7,6 +7,16 @@ import { recentPetTarget, normalizeRecentPersonalTarget, petTargetStatus } from 
 import { PET_CATALOG } from '../pet-catalog.mjs';
 import { normalizePetCatalog, petTargetMatches } from '../pets.mjs';
 
+test('same-encounter observed boards survive a boss filter and remain bounded independently of filtered totals', () => {
+  const rows = Array.from({ length: 130 }, (_, index) => ({ id: index + 1, name: `Target ${index + 1}`, damage: 1000, participants_available: true, participant_count: 12, elapsed_ms: 10000 }));
+  const state = normalizeState({ encounter_started_ms: 5000, total_damage: 0, dps: 0, targets: [], observed_targets: rows, focused_target_id: 129 });
+  assert.equal(state.total_damage, 0); assert.equal(state.targets.length, 0);
+  assert.equal(state.encounter_started_ms, 5000); assert.equal(state.observed_targets.length, 100);
+  assert.equal(state.observed_targets[0].id, '129'); assert.equal(state.observed_targets[0].participant_count, 12);
+  assert.equal(normalizeState({ encounter_started_ms: -1 }).encounter_started_ms, null);
+  assert.equal(normalizeState({ encounter_started_ms: '5000' }).encounter_started_ms, null);
+});
+
 const petTargetState = (overrides = {}) => ({
   local_player_id: '7', local_player_name: 'Center', local_identity_source: 'server',
   live_team_identity: { local: { actor_id: 7, name: 'Center', identity_source: 'server' } },

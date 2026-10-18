@@ -80,6 +80,9 @@ fn unpartied_target_top_ten_excludes_other_mobs_and_keeps_own_rank_below_ten() {
     assert_eq!(boss.own_participant.as_ref().unwrap().dps, 5.0);
     assert_eq!(boss.party_total_damage, None);
     assert_eq!(state.focused_target_id, Some(900));
+    assert_eq!(state.encounter_started_ms, Some(1000));
+    assert_eq!(state.observed_targets.len(), 1);
+    assert_eq!(state.observed_targets[0].id, 900);
 }
 
 #[test]
@@ -287,6 +290,9 @@ fn boss_filter_keeps_unmarked_live_target_separate_from_filtered_totals_and_repo
     assert!(state.players.iter().all(|player| player.damage == 0));
     assert_eq!(state.focused_target_id, Some(900));
     let target = state.live_target.as_ref().unwrap();
+    assert_eq!(state.encounter_started_ms, Some(1000));
+    assert_eq!(state.observed_targets.len(), 1);
+    assert_eq!(state.observed_targets[0].id, 900);
     assert_eq!(target.name, "Received field target");
     assert!(!target.is_boss);
     assert_eq!(target.damage, 600);
@@ -340,4 +346,180 @@ fn imported_private_target_boards_cannot_exceed_the_captured_64_board_bound() {
         target.participants_available = true;
     }
     assert!(engine.merge_history(&[record]).is_err());
+}
+
+#[test]
+fn pausing_after_an_idle_personal_target_does_not_rewrite_its_elapsed_time_or_dps() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    engine.ingest_event(
+        Event::PartyRoster {
+            names: vec!["Local".into()],
+        },
+        0,
+    );
+    hit(&mut engine, 1, 900, 100, 1000);
+    hit(&mut engine, 2, 901, 200, 9000);
+    let before = engine.live_state(11_000);
+    assert_eq!(before.personal_elapsed_ms, 10_000);
+    assert_eq!(before.personal_dps, Some(10.0));
+
+    engine.set_paused_at(true, 12_000);
+    engine.set_paused_at(false, 22_000);
+    hit(&mut engine, 2, 901, 200, 23_000);
+    let after = engine.live_state(24_000);
+    let original = after
+        .targets
+        .iter()
+        .find(|target| target.id == 900)
+        .unwrap();
+    assert_eq!(after.personal_elapsed_ms, 10_000);
+    assert_eq!(after.party_elapsed_ms, 10_000);
+    assert_eq!(after.personal_dps, Some(10.0));
+    assert_eq!(after.party_dps, Some(10.0));
+    assert_eq!(original.elapsed_ms, 10_000);
+    assert_eq!(original.own_participant.as_ref().unwrap().dps, 10.0);
+    let other = after
+        .targets
+        .iter()
+        .find(|target| target.id == 901)
+        .unwrap();
+    assert_eq!(other.elapsed_ms, 5000);
+    assert_eq!(other.participants[0].dps, 80.0);
+}
+
+#[test]
+fn pausing_inside_a_personal_target_window_does_not_spend_its_idle_time() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    hit(&mut engine, 1, 900, 100, 1000);
+    hit(&mut engine, 2, 901, 100, 1500);
+    engine.set_paused_at(true, 2000);
+    engine.set_paused_at(false, 12_000);
+    hit(&mut engine, 2, 901, 100, 12_500);
+    let state = engine.live_state(13_000);
+    assert_eq!(state.personal_elapsed_ms, 2000);
+    assert_eq!(state.personal_dps, Some(50.0));
+    let target = state
+        .targets
+        .iter()
+        .find(|target| target.id == 900)
+        .unwrap();
+    assert_eq!(target.elapsed_ms, 2000);
+    assert_eq!(target.own_participant.as_ref().unwrap().dps, 50.0);
+}
+
+#[test]
+fn shared_observed_boards_survive_the_boss_filter_and_a_brief_personal_attack_pause() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    identity(&mut engine, 3, "Another", false);
+    npc(&mut engine, 900, "Received shared target");
+    hit(&mut engine, 1, 900, 100, 1000);
+    hit(&mut engine, 2, 900, 200, 2000);
+    engine.set_target_mode("boss");
+    hit(&mut engine, 2, 900, 200, 9000);
+    hit(&mut engine, 3, 900, 300, 12_000);
+    let state = engine.live_state(12_500);
+    assert!(state.encounter_active);
+    assert!(state.targets.is_empty());
+    assert_eq!(state.total_damage, 0);
+    assert_eq!(state.focused_target_id, None);
+    assert!(state.live_target.is_none());
+    assert_eq!(state.encounter_started_ms, Some(1000));
+    let target = &state.observed_targets[0];
+    assert!(!target.is_boss);
+    assert_eq!(target.id, 900);
+    assert_eq!(target.participant_count, 3);
+    assert_eq!(target.damage, 800);
+    assert_eq!(target.own_last_hit_ms, Some(1000));
+    assert_eq!(target.last_hit_ms, Some(12_000));
+    assert_eq!(target.own_participant.as_ref().unwrap().damage, 100);
+    assert_eq!(engine.current_record(12_500).total_damage, 0);
+
+    engine.capture_loss();
+    let state = engine.live_state(12_600);
+    assert!(!state.observed_targets[0].capture_complete);
+    assert_eq!(state.observed_targets[0].own_last_hit_ms, None);
+}
+
+#[test]
+fn a_shared_observed_board_without_a_personal_hit_is_selectable_but_not_an_automatic_focus() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    identity(&mut engine, 3, "Another", false);
+    hit(&mut engine, 2, 900, 200, 1000);
+    hit(&mut engine, 3, 900, 300, 2000);
+    engine.set_target_mode("boss");
+    let state = engine.live_state(2500);
+    assert!(state.targets.is_empty());
+    assert!(state.live_target.is_none());
+    assert_eq!(state.focused_target_id, None);
+    assert_eq!(state.encounter_started_ms, Some(1000));
+    let target = &state.observed_targets[0];
+    assert_eq!(target.participant_count, 2);
+    assert!(target.own_participant.is_none());
+    assert_eq!(target.own_last_hit_ms, None);
+    assert_eq!(target.party_total_damage, None);
+    assert_eq!(target.participants[0].id, 3);
+    assert_eq!(target.participants[0].dps, 200.0);
+}
+
+#[test]
+fn observed_board_choices_remain_bounded_and_prioritize_the_actual_focus() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    identity(&mut engine, 2, "Other", false);
+    identity(&mut engine, 3, "Another", false);
+    for index in 0..110 {
+        hit(&mut engine, 2, 1000 + index, 1000 - index, 1000);
+        hit(&mut engine, 3, 1000 + index, 1000 - index, 1000);
+    }
+    hit(&mut engine, 1, 1109, 1, 2000);
+    engine.set_target_mode("boss");
+    let state = engine.live_state(2500);
+    assert!(state.targets.is_empty());
+    assert_eq!(state.observed_targets.len(), 64);
+    assert_eq!(state.observed_targets[0].id, 1109);
+    assert!(state
+        .observed_targets
+        .iter()
+        .all(|target| target.participants_available && target.participants.len() <= 10));
+    assert_eq!(
+        state.observed_targets[0]
+            .own_participant
+            .as_ref()
+            .unwrap()
+            .damage,
+        1
+    );
+}
+
+#[test]
+fn finishing_a_paused_session_keeps_saved_rates_within_the_declared_end_time() {
+    let mut engine = MeterEngine::default();
+    identity(&mut engine, 1, "Local", true);
+    hit(&mut engine, 1, 900, 100, 1000);
+    hit(&mut engine, 1, 900, 200, 3000);
+    engine.set_paused_at(true, 4000);
+    assert_eq!(engine.live_state(8000).personal_elapsed_ms, 3000);
+
+    // A connection end closes at its last received hit, before the pause.
+    engine.connection_changed();
+    let record = engine.history_snapshot().1.remove(0);
+    assert_eq!(record.started_ms, 1000);
+    assert_eq!(record.ended_ms, 3000);
+    assert_eq!(record.elapsed_ms, 2000);
+    assert_eq!(record.personal_elapsed_ms, 2000);
+    assert_eq!(record.dps, 150.0);
+    assert_eq!(record.personal_dps, Some(150.0));
+    assert_eq!(record.targets[0].elapsed_ms, 2000);
+    assert_eq!(record.targets[0].participants[0].dps, 150.0);
+    let current = engine.live_state(10_000);
+    assert_eq!(current.elapsed_ms, record.elapsed_ms);
+    assert_eq!(current.dps, record.dps);
 }

@@ -24,7 +24,7 @@ import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
-import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
+import { bossPresentation, targetVital, targetSummary, targetBoardChoices } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
@@ -46,6 +46,9 @@ try { prefs = normalizePreferences(JSON.parse(localStorage.getItem('luma-indepen
 let state = normalizeState(demo ? new URLSearchParams(location.search).get('partyDemo') === '1' ? DEMO_PARTY_STATE : DEMO_STATE : {});
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let skillsFromTargetBoard = false;
+let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
+let selectedBoardTargetId = null;
+let automaticTargetFocus = null;
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
 let receivedStateCount = 0;
@@ -67,7 +70,7 @@ let appVersion = demo ? 'Demo' : '';
 let captureDiagnostics = null, captureDiagnosticRequest = null, captureDiagnosticFingerprint = '', captureDiagnosticActionPending = false;
 const captureDiagnosticDemo = demo && new URLSearchParams(location.search).get('captureDiagnosticsDemo') === 'missing-api';
 if (captureDiagnosticDemo) captureDiagnostics = normalizeCaptureDiagnostics({
-  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.20.4', mode: 'demo',
+  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.21.0', mode: 'demo',
   compatibility: { schema_version: 1, diagnostic_only: true, capture_started: false,
     os: { status: 'ready', label: 'Windows 10', major: 10, minor: 0, build: 19045, ubr: null, architecture: 'x86_64', process_architecture: 'x86_64', version_source: 'RtlGetVersion', error_code: null },
     packet_monitor: { status: 'api-unavailable', system32_only: true, load_status: 'loaded', load_error_code: null, exports_present: PACKET_MONITOR_EXPORTS.slice(0, 8), exports_missing: PACKET_MONITOR_EXPORTS.slice(8) } },
@@ -105,6 +108,12 @@ if (telemetryDemo) {
   });
 }
 if (targetDemo) state = normalizeState(targetDemoState(state));
+if (targetDemo && new URLSearchParams(location.search).get('targetBoardDemo') === 'filtered') {
+  state = normalizeState({ ...state, encounter_started_ms: state.targets[0].started_ms, targets: [], live_target: null, focused_target_id: null, focused_target_observed_at_ms: null,
+    observed_targets: [{ ...state.targets[0], is_boss: false }], players: [], personal_targets: [], party_targets: [], elapsed_ms: 0, personal_elapsed_ms: 0, party_elapsed_ms: 0,
+    total_damage: 0, dps: 0, personal_total_damage: 0, personal_dps: 0, party_total_damage: 0, party_dps: 0 });
+  prefs = normalizePreferences({ ...prefs, mode: 'boss', autoTargetRoster: false, displayModules: { ...prefs.displayModules, dps: true } });
+}
 if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1') {
   const at = Date.now();
   characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1002, active_pet_known: true, inventory_complete: true,
@@ -478,8 +487,11 @@ function renderMeter() {
   connection.title = `${status.message}\n${status.detail}`;
   renderLatency();
   const scopes = meterScopes(state, prefs);
-  const targetView = bossPresentation(state, { now: demo && targetDemo ? state.focused_target_observed_at_ms : Date.now(), autoBossRoster: prefs.autoTargetRoster, damageScope: prefs.damageScope });
+  const targetView = bossPresentation(state, { now: demo && targetDemo ? state.focused_target_observed_at_ms ?? Date.now() : Date.now(), autoBossRoster: prefs.autoTargetRoster, damageScope: prefs.damageScope, selectedTargetId: selectedBoardTargetId, previousFocus: automaticTargetFocus });
+  automaticTargetFocus = targetView.focusMemory || null;
+  renderTargetBoardControls();
   const board = targetView.roster;
+  renderedTargetBoard = board;
   const scoped = board ? { ...scopes.summary, known: targetView.summary.known, damage: targetView.summary.totalDamage, dps: targetView.summary.dps, elapsed: targetView.summary.elapsedMs, targets: [targetView.target] } : scopes.summary;
   const boardPlayers = board ? [...board.rows] : [];
   if (board?.own && board.ownRank > 10 && !boardPlayers.some(player => player.id === board.own.id)) boardPlayers.push({ ...board.own, rank: board.ownRank, beyondTopTen: true });
@@ -492,7 +504,7 @@ function renderMeter() {
   if (board) {
     setText($('#target-roster-label'), `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Hedef' : 'Target'} · ${prefs.locale === 'tr' ? 'İlk 10' : 'Top 10'}`);
     setText($('#target-roster-coverage'), `${prefs.locale === 'tr' ? 'Gözlenen' : 'Observed'} ${board.participantCount ?? board.rows.length}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}`);
-    $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Yalnız vurduğun hedefe verilen ve bağlantında alınan hasar. Parti şartı yok; bu sunucudaki herkesin doğrulanmış sıralaması değildir.' : 'Received damage to the target you hit. No party is required; this is not a verified ranking of every player on the server.';
+    $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Yalnız seçili hedefe verilen ve bağlantında alınan hasar. Parti şartı yok; bu sunucudaki herkesin doğrulanmış sıralaması değildir.' : 'Received damage to the selected target. No party is required; this is not a verified ranking of every player on the server.';
   }
   for (const [scope, original] of Object.entries(scopes.summaries)) {
     const observed = board ? targetSummary(targetView.target, state, scope) : null;
@@ -508,6 +520,7 @@ function renderMeter() {
   $('#target-name').textContent = topTarget ? displayTargetName(topTarget, prefs.locale) : '—'; $('#target-name').title = topTarget ? displayTargetName(topTarget, prefs.locale) : '';
   renderTargetVitals(topTarget, targetView.target ? targetView.vital : targetVital(topTarget, Date.now()));
   $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : t('chooseCharacter');
+  $('#combat-time').title = prefs.locale === 'tr' ? `${board ? 'Seçili hedefin ortak süresi' : 'Seçili kapsamın savaş süresi'} · ${fullNumber(scoped.elapsed / 1000)} sn` : `${board ? 'Selected target’s common duration' : 'Selected scope’s combat duration'} · ${fullNumber(scoped.elapsed / 1000)} s`;
   $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : t('chooseCharacter');
   if (board) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
   for (const selector of ['#dps-value', '#damage-value']) $(selector).parentElement.style.setProperty('--metric-length', Math.max(4, $(selector).textContent.length));
@@ -526,6 +539,10 @@ function renderMeter() {
   notice.dataset.diagnostics = String(canDiagnose);
   notice.setAttribute('role', canDiagnose ? 'button' : 'status'); notice.tabIndex = canDiagnose ? 0 : -1;
   if (canDiagnose) setText(notice, `${notice.textContent} · ${prefs.locale === 'tr' ? 'Tanı ↗' : 'Diagnostics ↗'}`);
+  if (!canDiagnose && prefs.displayModules.dps && !board && prefs.mode === 'boss' && !state.targets.length && targetBoardChoices(state).length) {
+    notice.hidden = false; notice.classList.add('warning');
+    setText(notice, prefs.locale === 'tr' ? 'Boss etiketi alınmadı. İlk 10 için aşağıdan hedef seç veya Tümü görünümüne geç.' : 'No boss classification received. Choose a Top 10 target below or switch to All.');
+  }
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
@@ -540,6 +557,19 @@ function renderMeter() {
   renderLiveTools();
   updateTeamLive();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
+}
+
+function renderTargetBoardControls() {
+  const tr = prefs.locale === 'tr', select = $('#target-board-select'), choices = targetBoardChoices(state);
+  $('#target-board-controls').hidden = !choices.length && !selectedBoardTargetId;
+  const value = selectedBoardTargetId ? `target:${selectedBoardTargetId}` : prefs.autoTargetRoster ? 'auto' : 'off';
+  setText($('#target-board-caption'), tr ? 'Hedef · İlk 10' : 'Target · Top 10');
+  setText($('#dps-view-button'), tr ? 'DPS’i aç' : 'Show DPS'); $('#dps-view-button').hidden = prefs.displayModules.dps;
+  $('#dps-view-button').title = tr ? 'Pet takibini koruyarak DPS görünümünü aç' : 'Show DPS while keeping pet tracking';
+  const options = `<option value="auto">${tr ? 'Otomatik · vurduğum hedef' : 'Auto · my last target'}</option><option value="off">${tr ? 'Kapalı · oyuncu listesi' : 'Off · player roster'}</option>${choices.map((target, index) => `<option value="target:${esc(target.id)}">${esc(displayTargetName(target, prefs.locale))} · ${target.participant_count} ${tr ? 'kişi' : 'players'}${!target.name || /^#|^Target\s|^NPC\s/iu.test(target.name) ? ` · ${index + 1}` : ''}</option>`).join('')}${selectedBoardTargetId && !choices.some(target => String(target.id) === selectedBoardTargetId) ? `<option value="${esc(value)}">${tr ? 'Hedef verisi bekleniyor' : 'Waiting for target data'}</option>` : ''}`;
+  if (select._options !== options && document.activeElement !== select) { select.innerHTML = options; select._options = options; }
+  if (document.activeElement !== select) select.value = value;
+  select.title = tr ? 'Aynı hedefe verilen gözlenen hasar. Parti gerekmez. Her hedefin kendi süresi kullanılır.' : 'Observed damage to one target. No party required. Each target uses its own duration.';
 }
 
 function renderPlayers(status, scoped) {
@@ -969,12 +999,13 @@ async function setObsRunning(running) {
 }
 
 function playerPicker() {
-  const players = analysisState().players;
+  const players = [...analysisState().players];
+  if (!snapshot && skillsFromTargetBoard && selectedBoardPlayerDetail && !players.some(player => player.id === selectedBoardPlayerDetail.id)) players.unshift(selectedBoardPlayerDetail);
   if (!players.some(player => player.id === selectedPlayer)) selectedPlayer = ownPlayer(analysisState())?.id || scopedEncounter(analysisState(), prefs.damageScope).players[0]?.id || '';
   return players.length ? `<label class="field"><span>${t('selectPlayer')}</span><select name="selectedPlayer"><option value="" ${selectedPlayer ? '' : 'selected'}>${t('selectPlayer')}</option>${sortedPlayers(players, 'dps').map(player => `<option value="${esc(player.id)}" ${player.id === selectedPlayer ? 'selected' : ''}>${esc(player.name)} · ${esc(player.class_name)}</option>`).join('')}</select></label>` : empty('noPlayers');
 }
 
-function analysisPlayer() { const s = analysisState(), player = scopedEncounter(s, prefs.damageScope).players.find(player => player.id === selectedPlayer) || s.players.find(player => player.id === selectedPlayer); return player && s.timing_valid === false ? { ...player, dps: null } : player; }
+function analysisPlayer() { const s = analysisState(), player = scopedEncounter(s, prefs.damageScope).players.find(player => player.id === selectedPlayer) || s.players.find(player => player.id === selectedPlayer) || (!snapshot && skillsFromTargetBoard && selectedBoardPlayerDetail?.id === selectedPlayer ? selectedBoardPlayerDetail : null); return player && s.timing_valid === false ? { ...player, dps: null } : player; }
 
 function receivedPersonalStats(s) {
   const coverage = takenCoverage(s, true);
@@ -993,9 +1024,10 @@ function overviewContent() {
 }
 
 function skillsContent() {
-  const context = skillsFromTargetBoard && !snapshot ? `<p class="status-card">${prefs.locale === 'tr' ? 'İlk 10 listesi yalnız vurduğun hedefi kapsar. Buradaki yetenek ayrıntıları seçili karşılaşmanın tüm hedeflerine aittir; alınmayan ayrıntılar gösterilmez.' : 'The Top 10 board covers the target you hit. Skill details here cover all targets in the selected encounter; unavailable details are not shown.'}</p>` : '';
+  const context = skillsFromTargetBoard && !snapshot ? `<p class="status-card">${prefs.locale === 'tr' ? 'İlk 10 listesi yalnız seçili hedefi kapsar. Buradaki yetenek ayrıntıları seçili karşılaşmanın tüm hedeflerine aittir; alınmayan ayrıntılar gösterilmez.' : 'The Top 10 board covers the selected target. Skill details here cover all targets in the selected encounter; unavailable details are not shown.'}</p>` : '';
   const picker = context + playerPicker(), p = analysisPlayer();
   if (!p) return `${source()}${picker}`;
+  if (p.board_summary_only) return `${source()}${picker}<div class="analysis-metrics"><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>DPS · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}</span><strong>${rate(p.dps)}</strong></div></div><p class="status-card">${prefs.locale === 'tr' ? 'Seçili hedefin katkısı alındı. Bu filtrede oyuncunun yetenek ayrıntıları bulunmuyor; ayrıntılı analiz için Tümü görünümünü kullan.' : 'Contribution to this target was received. This filter has no skill details for the player; use All for detailed analysis.'}</p>`;
   const skills = sortedSkills(p.skills, skillSort), summary = skillSummary(p);
   const sum = skills.reduce((total, skill) => total + skill.damage, 0);
   return `${source()}${picker}<div class="analysis-metrics"><div><span>${t('damage')}</span><strong>${num(p.damage)}</strong></div><div><span>DPS</span><strong>${rate(p.dps)}</strong></div><div><span>${t('averageHit')}</span><strong>${num(summary.average)}</strong></div><div><span>${t('crit')}</span><strong>${summary.criticalRate.toFixed(1)}%</strong></div></div>${receivedPlayerStats(p)}<label class="field"><span>${t('skillSort')}</span><select name="skillSort">${['damage', 'hits', 'crit'].map(value => `<option value="${value}" ${value === skillSort ? 'selected' : ''}>${t({damage: 'skillDamage', hits: 'skillHits', crit: 'skillCrit'}[value])}</option>`).join('')}</select></label>${skills.length ? skills.map(skill => `<div class="skill-row"><div class="skill-top"><span>${esc(skill.name)}</span><strong>${num(skill.damage)} · ${sum ? (skill.damage / sum * 100).toFixed(1) : '0.0'}%</strong></div><div class="skill-track" style="--skill-share:${sum ? skill.damage / sum * 100 : 0}%"><i></i></div><div class="skill-detail">${t('hits')}: ${fullNumber(skill.hits)} · ${t('crit')}: ${skill.hits ? Math.min(100, skill.crit_hits / skill.hits * 100).toFixed(1) : '0.0'}%<br>${t('averageHit')}: ${num(skill.hits ? skill.damage / skill.hits : 0)} · ${t('minMax')}: ${num(skill.min)} / ${num(skill.max)}${skillQuality(skill)}</div></div>`).join('') : empty('noSkills')}`;
@@ -1206,6 +1238,7 @@ function refreshPetsDrawer() {
 }
 
 function renderPetTracking() {
+  if ($('#pet-tracker').querySelector('button:active')) return;
   const plan = currentPetPlan(), rows = trackedPets(plan, prefs.petPins, { automatic: prefs.petAutoTrack });
   const host = $('#pet-tracker');
   host.hidden = !prefs.displayModules.pets || !prefs.showPetTracker || !rows.length;
@@ -1637,7 +1670,7 @@ function openDrawer(kind, requestedTab = 'overview') {
 
 function closeDrawer() {
   if (!drawer) return;
-  drawer = ''; snapshot = null; skillsFromTargetBoard = false; teamInviteCopy = ''; teamInviteDraft = ''; teamConsent = false;
+  drawer = ''; snapshot = null; skillsFromTargetBoard = false; selectedBoardPlayerDetail = null; teamInviteCopy = ''; teamInviteDraft = ''; teamConsent = false;
   $('#drawer').hidden = true; $('#drawer-backdrop').hidden = true;
   for (const element of [...$('#meter').children]) element.inert = false;
   if (restoreFocus?.isConnected && restoreFocus.getClientRects().length && !restoreFocus.disabled) restoreFocus.focus(); else $('#analysis-button').focus();
@@ -1708,6 +1741,7 @@ $('#pet-tracker').addEventListener('click', event => {
   if (control.dataset.petAction === 'guide') openPetGuide();
   if (control.dataset.petAction === 'open') openPetGuide(Number(control.dataset.id));
   if (control.dataset.petAction === 'unpin') togglePetPin(Number(control.dataset.id));
+  if (control.dataset.petAction === 'pin') togglePetPin(Number(control.dataset.id));
   if (control.dataset.petAction === 'collapse') savePreferences({ petTrackerCollapsed: !prefs.petTrackerCollapsed });
 });
 $('#target-pet-pin').addEventListener('click', event => {
@@ -1720,7 +1754,7 @@ $('#target-pet-pin').addEventListener('click', event => {
   togglePetPin(id);
   renderTargetPetPin();
 });
-for (const type of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(type, () => requestAnimationFrame(() => { renderTargetPetPin(); scheduleOverlayRegions(); }));
+for (const type of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(type, () => requestAnimationFrame(() => { renderTargetPetPin(); renderPetTracking(); scheduleOverlayRegions(); }));
 document.addEventListener('scroll', scheduleOverlayRegions, true);
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#modules-button').addEventListener('click', () => openDrawer('settings', 'appearance'));
@@ -1729,7 +1763,14 @@ $('#module-home').addEventListener('click', event => {
   if (action === 'pets') openPetGuide();
   if (action === 'all') savePreferences({ displayModules: displayModulePreset('all') });
 });
-$('#damage-scope').addEventListener('change', event => { savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
+$('#damage-scope').addEventListener('change', event => { selectedBoardTargetId = null; savePreferences(event.target.value === 'target' ? { autoTargetRoster: true } : { rosterScope: event.target.value, autoTargetRoster: false }); });
+$('#dps-view-button').addEventListener('click', () => savePreferences({ displayModules: { ...prefs.displayModules, dps: true } }));
+$('#target-board-select').addEventListener('change', event => {
+  const value = event.target.value;
+  if (value.startsWith('target:')) { selectedBoardTargetId = value.slice(7); renderMeter(); }
+  else { selectedBoardTargetId = null; savePreferences({ autoTargetRoster: value === 'auto' }); }
+});
+$('#target-board-select').addEventListener('blur', () => renderTargetBoardControls());
 $('#close-window').addEventListener('click', () => action('close_window').catch(() => {}));
 $('#drag-region').addEventListener('pointerdown', event => { if (isFullscreenDashboard(prefs) || startHudGesture(event)) return; if (native && event.button === 0 && !prefs.locked) { event.preventDefault(); invoke('start_drag').catch(() => {}); } });
 $('.drawer-header').addEventListener('pointerdown', event => {
@@ -1747,7 +1788,15 @@ $('#cube-entry').addEventListener('click', () => openDrawer('settings', 'hiddenC
 $('#cube-nav-size').addEventListener('click', () => savePreferences({ cubeNavigatorSize: prefs.cubeNavigatorSize === 'full' ? 'compact' : 'full' }));
 $('#combat-warning').addEventListener('click', () => { snapshot = null; openDrawer('analysis', 'effects'); });
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
-$('#players').addEventListener('click', event => { const player = event.target.closest('[data-player]'); if (player) { selectedPlayer = player.dataset.player; skillsFromTargetBoard = player.dataset.targetScoped === 'true'; snapshot = null; openDrawer('analysis', 'skills'); } });
+$('#players').addEventListener('click', event => {
+  const player = event.target.closest('[data-player]'); if (!player) return;
+  selectedPlayer = player.dataset.player; skillsFromTargetBoard = player.dataset.targetScoped === 'true'; selectedBoardPlayerDetail = null;
+  if (skillsFromTargetBoard) {
+    const row = [...(renderedTargetBoard?.rows || []), renderedTargetBoard?.own].find(value => value?.id === selectedPlayer);
+    if (row) selectedBoardPlayerDetail = { ...row, skills: [], board_summary_only: true };
+  }
+  snapshot = null; openDrawer('analysis', 'skills');
+});
 $('#sort').addEventListener('change', event => savePreferences({ sort: event.target.value }));
 $('#target-modes').addEventListener('click', async event => {
   const mode = delegatedControl(event, event.currentTarget, 'button[data-mode]')?.dataset.mode; if (!mode) return;
@@ -2071,6 +2120,7 @@ function receiveState(value) {
   receivedStateCount++;
   const previous = state;
   state = normalizeState(value);
+  if (previous.encounter_started_ms !== state.encounter_started_ms || previous.local_player_id !== state.local_player_id || previous.diagnostics.stream_gaps !== state.diagnostics.stream_gaps || previous.capture.missed_packets !== state.capture.missed_packets) { selectedBoardTargetId = null; automaticTargetFocus = null; }
   const diagnosticFingerprint = JSON.stringify([state.capture.status, state.capture.error_code, state.capture.admin?.elevated]);
   if (diagnosticFingerprint !== captureDiagnosticFingerprint) { captureDiagnosticFingerprint = diagnosticFingerprint; readCaptureDiagnostics(); }
   const petMetadata = petMetadataTransition(previous, state, { previousActorId: liveServerActorId(previous), currentActorId: liveServerActorId(state) });

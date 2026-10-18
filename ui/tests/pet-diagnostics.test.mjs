@@ -29,7 +29,7 @@ test('diagnostics reject foreign or manual ownership, expire hit data and bound 
   assert.equal(report.identity.server_confirmed, false);
   assert.equal(report.recent_hit, null);
   assert.equal(report.pet_snapshot.received, false);
-  assert.equal(report.tracked_pets.length, 6);
+  assert.equal(report.tracked_pets.length, 12);
   assert.ok(report.tracked_pets.every(row => !row.received && row.progress === null));
   value.state.local_identity_source = 'server';
   value.character.pet_progress.actor_id = 8;

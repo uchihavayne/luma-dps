@@ -1,6 +1,6 @@
 [package]
 name = "luma-desktop"
-version = "0.20.4"
+version = "0.21.0"
 edition = "2021"
 description = "Independent Luma Windows meter shell"
 

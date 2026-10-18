@@ -6,18 +6,22 @@ const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : '
 const fresh = (at, now, limit) => number(at) !== null && number(now) !== null && now >= at && now - at < limit;
 const localIdentity = state => ['server', 'manual', 'name-match'].includes(state.local_identity_source) ? actor(state.local_player_id) : null;
 
+function targetObservations(state) {
+  const values = [state.live_target,
+    ...(Array.isArray(state.observed_targets) ? state.observed_targets.slice(0, 4096) : []),
+    ...(Array.isArray(state.targets) ? state.targets.slice(0, 4096) : [])];
+  const unique = new Map();
+  for (const value of values) {
+    const id = value && typeof value === 'object' && !Array.isArray(value) ? actor(value.id) : null;
+    if (id && !unique.has(id)) unique.set(id, value);
+  }
+  return [...unique.values()];
+}
+
 export function focusedTarget(state = {}, now = Date.now()) {
   const local = localIdentity(state);
   if (!local) return { target: null, source: 'none' };
-  const targets = (Array.isArray(state.targets) ? state.targets : []).slice(0, 4096);
-  if (state.live_target && typeof state.live_target === 'object' && !Array.isArray(state.live_target)) {
-    const liveId = actor(state.live_target.id);
-    if (liveId) {
-      const previous = targets.findIndex(target => actor(target?.id) === liveId);
-      if (previous >= 0) targets.splice(previous, 1);
-      targets.unshift(state.live_target);
-    }
-  }
+  const targets = targetObservations(state);
   const id = actor(state.focused_target_id), at = state.focused_target_observed_at_ms;
   const received = id && targets.find(target => actor(target?.id) === id);
   if (received && fresh(at, now, 10_000)) return { target: received, source: 'personal-hit' };
@@ -31,6 +35,30 @@ export function focusedTarget(state = {}, now = Date.now()) {
     || b.own_participant.damage - a.own_participant.damage || Number(a.id) - Number(b.id));
   if (own.length > 1 && own[0].own_last_hit_ms === own[1].own_last_hit_ms) return { target: null, source: 'none' };
   return { target: own[0] || null, source: own.length ? 'personal-boss-hit' : 'none' };
+}
+
+export function continuedPersonalTarget(previous, state = {}, now = Date.now()) {
+  const focus = focusedTarget(state, now), local = localIdentity(state);
+  const timestamp = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const count = value => timestamp(value) ?? 0;
+  const encounter = timestamp(state.encounter_started_ms), capturing = state.capture?.status === 'capturing' && state.encounter_active === true;
+  const gaps = count(state.diagnostics?.stream_gaps), missed = count(state.capture?.missed_packets);
+  const remember = target => capturing && encounter !== null && timestamp(target.started_ms) !== null
+    && actor(target.own_participant?.id) === local && number(target.own_participant?.damage) > 0
+    && timestamp(target.own_last_hit_ms) !== null && fresh(target.own_last_hit_ms, now, 10_000)
+    ? { localId: local, encounterStartedMs: encounter, targetId: actor(target.id), targetStartedMs: target.started_ms, ownLastHitMs: target.own_last_hit_ms, gaps, missed } : null;
+  if (focus.target) return { ...focus, memory: remember(focus.target) };
+  const empty = { target: null, source: 'none', memory: null };
+  if (!previous || !capturing || !local || encounter === null || actor(previous.targetId) !== previous.targetId || timestamp(previous.ownLastHitMs) === null || now < previous.ownLastHitMs
+    || previous.localId !== local || previous.encounterStartedMs !== encounter || previous.gaps !== gaps || previous.missed !== missed) return empty;
+  const targets = targetObservations(state), target = targets.find(row => actor(row.id) === previous.targetId);
+  if (!target || timestamp(target.started_ms) !== previous.targetStartedMs || timestamp(target.own_last_hit_ms) !== previous.ownLastHitMs
+    || actor(target.own_participant?.id) !== local || !(number(target.own_participant?.damage) > 0)
+    || !fresh(target.last_hit_ms, now, 10_000) || number(target.current_hp) === 0) return empty;
+  if (state.focused_target_id !== null && state.focused_target_id !== undefined && actor(state.focused_target_id) !== previous.targetId) return empty;
+  if (targets.some(row => actor(row.id) !== previous.targetId && actor(row.own_participant?.id) === local && number(row.own_participant?.damage) > 0
+    && timestamp(row.own_last_hit_ms) !== null && row.own_last_hit_ms >= previous.ownLastHitMs)) return empty;
+  return { target, source: 'continued-personal-target', memory: previous };
 }
 
 export function targetVital(target = {}, now = Date.now(), freshnessMs = 5000) {
@@ -97,10 +125,20 @@ export function targetSummary(target, state = {}, scope = 'personal') {
   return { known: totalDamage !== null, totalDamage, dps, elapsedMs, scope };
 }
 
-export function bossPresentation(state = {}, { now = Date.now(), autoBossRoster = true, damageScope = 'personal' } = {}) {
-  const focus = focusedTarget(state, now), target = focus.target;
-  const roster = autoBossRoster ? bossRoster(target, state) : null;
+export function targetBoardChoices(state = {}) {
+  return targetObservations(state).filter(target => bossRoster(target, state))
+    .sort((a, b) => b.damage - a.damage || Number(a.id) - Number(b.id));
+}
+
+export function bossPresentation(state = {}, { now = Date.now(), autoBossRoster = true, damageScope = 'personal', selectedTargetId = null, previousFocus = null } = {}) {
+  const explicit = selectedTargetId !== null && selectedTargetId !== undefined && selectedTargetId !== '';
+  const selected = explicit ? actor(selectedTargetId) : null;
+  const personal = continuedPersonalTarget(previousFocus, state, now);
+  const focus = explicit ? { target: selected ? targetObservations(state).find(target => actor(target.id) === selected) || null : null, source: 'user-selected-target' } : personal;
+  const roster = explicit || autoBossRoster ? bossRoster(focus.target, state) : null;
+  const target = explicit && !roster ? null : focus.target;
   return { target, vital: targetVital(target || {}, now), roster,
     summary: roster ? targetSummary(target, state, damageScope) : null,
-    automatic: Boolean(roster), focusSource: focus.source };
+    automatic: Boolean(roster) && !explicit, focusSource: target ? focus.source : 'none',
+    selectedTargetId: selected, selectionAvailable: !explicit || Boolean(roster), focusMemory: personal.memory };
 }

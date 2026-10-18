@@ -255,6 +255,7 @@ pub struct Diagnostics {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeterState {
+    pub encounter_started_ms: Option<u64>,
     pub focused_target_id: Option<u64>,
     pub focused_target_observed_at_ms: Option<u64>,
     pub live_target: Option<TargetState>,
@@ -266,6 +267,8 @@ pub struct MeterState {
     pub paused: bool,
     pub players: Vec<PlayerState>,
     pub targets: Vec<TargetState>,
+    /// Same-encounter contribution boards, independent of the main boss filter.
+    pub observed_targets: Vec<TargetState>,
     pub history: Vec<Encounter>,
     pub cooldowns: Vec<serde_json::Value>,
     pub observed_casts: Vec<cooldowns::CastUse>,
@@ -343,7 +346,33 @@ struct SourceActivity {
     first: u64,
     last: u64,
     paused_at_start: u64,
+    paused_at_last: u64,
     last_focus_epoch: u64,
+}
+impl SourceActivity {
+    fn merge_window(&mut self, other: &Self) {
+        if other.first < self.first {
+            self.first = other.first;
+            self.paused_at_start = other.paused_at_start;
+        }
+        if other.last > self.last {
+            self.last = other.last;
+            self.paused_at_last = other.paused_at_last;
+        }
+    }
+
+    fn elapsed_until(&self, end: u64, paused_ms: u64) -> u64 {
+        let elapsed = end
+            .saturating_sub(self.first)
+            .saturating_sub(paused_ms.saturating_sub(self.paused_at_start));
+        let at_last_hit = self
+            .last
+            .saturating_sub(self.first)
+            .saturating_sub(self.paused_at_last.saturating_sub(self.paused_at_start));
+        // Cap inactivity in the same active clock as the elapsed interval.
+        // A pause after the cap must not shorten an already observed window.
+        elapsed.min(at_last_hit.saturating_add(IDLE_MS))
+    }
 }
 #[derive(Default)]
 struct StreamPrefix {
@@ -1399,12 +1428,14 @@ impl MeterEngine {
                         .entry((hit.source, hit.target))
                         .and_modify(|span| {
                             span.last = now;
+                            span.paused_at_last = self.paused_ms;
                             span.last_focus_epoch = self.focus_epoch;
                         })
                         .or_insert(SourceActivity {
                             first: now,
                             last: now,
                             paused_at_start: self.paused_ms,
+                            paused_at_last: self.paused_ms,
                             last_focus_epoch: self.focus_epoch,
                         });
                     self.alive_targets.insert(hit.target);
@@ -2152,7 +2183,7 @@ impl MeterEngine {
         }
         let Some(start) = self.started else { return 0 };
         let end = if self.paused {
-            self.pause_at.unwrap_or(self.last_hit)
+            self.pause_at.unwrap_or(self.last_hit).min(now)
         } else {
             now.min(self.last_hit.saturating_add(IDLE_MS))
         };
@@ -2598,39 +2629,34 @@ impl MeterEngine {
             .map(|completed| &completed.identities)
             .unwrap_or(&self.identities);
         let span_for = |eligible: &dyn Fn(u64, u64) -> bool| {
-            let mut first = None::<u64>;
-            let mut last = 0;
-            let mut pause_before_first = 0;
+            let mut activity = None::<SourceActivity>;
             for ((source, target), span) in pairs {
                 if eligible(*source, *target) {
-                    if first.is_none_or(|start| span.first < start) {
-                        first = Some(span.first);
-                        pause_before_first = span.paused_at_start
+                    if let Some(activity) = &mut activity {
+                        activity.merge_window(span);
+                    } else {
+                        activity = Some(*span);
                     }
-                    last = last.max(span.last)
                 }
             }
             let end = if let Some(completed) = &self.completed {
-                completed.record.ended_ms.min(last.saturating_add(IDLE_MS))
+                completed.record.ended_ms
             } else if self.paused {
-                self.pause_at
-                    .unwrap_or(last)
-                    .min(last.saturating_add(IDLE_MS))
+                self.pause_at.unwrap_or(self.last_hit).min(now)
             } else {
-                now.min(last.saturating_add(IDLE_MS))
+                now
             };
             let paused_ms = self
                 .completed
                 .as_ref()
                 .map(|completed| completed.paused_ms)
                 .unwrap_or(self.paused_ms);
-            let elapsed = first
-                .map(|start| {
-                    end.saturating_sub(start)
-                        .saturating_sub(paused_ms.saturating_sub(pause_before_first))
-                })
-                .unwrap_or(0);
-            (first, elapsed)
+            (
+                activity.map(|span| span.first),
+                activity
+                    .map(|span| span.elapsed_until(end, paused_ms))
+                    .unwrap_or(0),
+            )
         };
         let local = record.local_player_id;
         let outgoing = |source, target| {
@@ -2674,7 +2700,7 @@ impl MeterEngine {
             .map(|damage| damage as f64 / (record.party_elapsed_ms as f64 / 1000.0).max(1.0));
         // Target windows share the first received hit on that target. Building
         // them in one pass avoids scanning all encounter pairs per target.
-        let mut target_activity = BTreeMap::<u64, (u64, u64, u64, Option<u64>)>::new();
+        let mut target_activity = BTreeMap::<u64, (SourceActivity, Option<u64>)>::new();
         let live_focus = self.completed.is_none() && self.started.is_some();
         for ((source, target), span) in pairs {
             if !outgoing(*source, *target) {
@@ -2688,14 +2714,10 @@ impl MeterEngine {
             target_activity
                 .entry(*target)
                 .and_modify(|row| {
-                    if span.first < row.0 {
-                        row.0 = span.first;
-                        row.2 = span.paused_at_start;
-                    }
-                    row.1 = row.1.max(span.last);
-                    row.3 = row.3.max(own_last);
+                    row.0.merge_window(span);
+                    row.1 = row.1.max(own_last);
                 })
-                .or_insert((span.first, span.last, span.paused_at_start, own_last));
+                .or_insert((*span, own_last));
         }
         let paused_ms = self
             .completed
@@ -2703,25 +2725,19 @@ impl MeterEngine {
             .map(|value| value.paused_ms)
             .unwrap_or(self.paused_ms);
         for target in &mut record.targets {
-            let Some((first, last, paused_at_start, own_last)) =
-                target_activity.get(&target.id).copied()
-            else {
+            let Some((activity, own_last)) = target_activity.get(&target.id).copied() else {
                 continue;
             };
             let end = if let Some(completed) = &self.completed {
-                completed.record.ended_ms.min(last.saturating_add(IDLE_MS))
+                completed.record.ended_ms
             } else if self.paused {
-                self.pause_at
-                    .unwrap_or(last)
-                    .min(last.saturating_add(IDLE_MS))
+                self.pause_at.unwrap_or(self.last_hit).min(now)
             } else {
-                now.min(last.saturating_add(IDLE_MS))
+                now
             };
-            target.started_ms = Some(first);
-            target.elapsed_ms = end
-                .saturating_sub(first)
-                .saturating_sub(paused_ms.saturating_sub(paused_at_start));
-            target.last_hit_ms = Some(last);
+            target.started_ms = Some(activity.first);
+            target.elapsed_ms = activity.elapsed_until(end, paused_ms);
+            target.last_hit_ms = Some(activity.last);
             target.own_last_hit_ms = own_last;
             let divisor = (target.elapsed_ms as f64 / 1000.0).max(1.0);
             for player in &mut target.participants {
@@ -2865,6 +2881,8 @@ impl MeterEngine {
         // Keep its observed board separate from filtered report totals.
         let unfiltered = (self.target_mode == "boss").then(|| self.snapshot(now, "all"));
         let live_view = unfiltered.as_ref().unwrap_or(&current);
+        let encounter_started_ms =
+            (self.started.is_some() || self.completed.is_some()).then_some(live_view.started_ms);
         let focused_target_id = live_view.focused_target_id;
         let focused_target_observed_at_ms = live_view.focused_target_observed_at_ms;
         let live_target = focused_target_id.and_then(|id| {
@@ -2874,6 +2892,24 @@ impl MeterEngine {
                 .find(|target| target.id == id)
                 .cloned()
         });
+        let mut observed_targets: Vec<_> = live_view
+            .targets
+            .iter()
+            .filter(|target| {
+                target.participants_available && (target.is_boss || target.participant_count >= 2)
+            })
+            .cloned()
+            .collect();
+        observed_targets.sort_by_key(|target| {
+            (
+                Some(target.id) != focused_target_id,
+                !target.is_boss,
+                std::cmp::Reverse(target.last_hit_ms.unwrap_or(0)),
+                std::cmp::Reverse(target.damage),
+                target.id,
+            )
+        });
+        observed_targets.truncate(100);
         let mut assist = self.assistance.live_snapshot(now);
         assist.casts.sort_by_key(|cast| {
             (
@@ -2950,6 +2986,7 @@ impl MeterEngine {
         );
         cooldowns.sort_by_key(|row| row["skill_id"].as_u64().unwrap_or(0));
         MeterState {
+            encounter_started_ms,
             focused_target_id,
             focused_target_observed_at_ms,
             live_target,
@@ -2974,6 +3011,7 @@ impl MeterEngine {
             paused: self.paused,
             players: current.players,
             targets: current.targets,
+            observed_targets,
             history: if with_history {
                 self.history.iter().take(30).cloned().collect()
             } else {

@@ -62,6 +62,50 @@ test('an explicit local actor shows only personal damage even when a stranger ha
   assert.equal(state.total_damage, 9000);
 });
 
+test('an explicit zero personal or party clock never borrows the earlier nearby fight duration', () => {
+  const value = normalizeState({ ...nearby(), local_player_id: 2, local_identity_source: 'server', personal_total_damage: 2000, personal_dps: 2000, personal_elapsed_ms: 0,
+    party_membership_source: 'server', party_member_ids: [2], party_total_damage: 2000, party_dps: 2000, party_elapsed_ms: 0 });
+  for (const scope of ['personal', 'party']) {
+    const selected = scopedEncounter(value, scope);
+    assert.equal(selected.elapsed, 0); assert.equal(selected.damage, 2000); assert.equal(selected.dps, 2000);
+    assert.equal(selected.players[0].dps, 2000);
+  }
+  assert.equal(scopedEncounter(value, 'observed').elapsed, 10000);
+});
+
+test('legacy missing scoped clocks survive normalization as unknown and use the available encounter clock for rate fallback', () => {
+  const legacy = { elapsed_ms: 147000, total_damage: 594000, dps: 594000 / 147, local_player_id: 2, local_identity_source: 'server',
+    personal_total_damage: 594000, party_total_damage: 594000, party_membership_source: 'server', party_member_ids: [2],
+    players: [{ id: 2, damage: 594000, dps: 594000 / 147, in_party: true }] };
+  const normalized = normalizeState(legacy);
+  for (const value of [normalized, normalizeState(normalized)]) {
+    assert.equal(value.personal_elapsed_ms, null); assert.equal(value.party_elapsed_ms, null);
+    for (const scope of ['personal', 'party']) {
+      const selected = scopedEncounter(value, scope);
+      assert.equal(selected.elapsed, 147000); assert.equal(selected.dps, 594000 / 147);
+      assert.equal(selected.players[0].dps, 594000 / 147);
+    }
+  }
+  const firstHit = normalizeState({ ...legacy, personal_elapsed_ms: 0, party_elapsed_ms: 0 });
+  for (const scope of ['personal', 'party']) {
+    const selected = scopedEncounter(firstHit, scope);
+    assert.equal(selected.elapsed, 0); assert.equal(selected.dps, 594000);
+  }
+});
+
+test('missing scoped rates derive from that scope total and clock rather than observed row rates or capped rows', () => {
+  const value = normalizeState({ ...nearby(), local_player_id: 2, local_identity_source: 'server', personal_total_damage: 2000, personal_dps: null, personal_elapsed_ms: 5000,
+    party_membership_source: 'server', party_member_ids: [2], party_total_damage: 3000, party_dps: null, party_elapsed_ms: 5000 });
+  const personal = scopedEncounter(value);
+  assert.equal(personal.dps, 400); assert.equal(personal.players[0].dps, 400);
+  const party = scopedEncounter(value, 'party');
+  assert.equal(party.damage, 3000); assert.equal(party.dps, 600); assert.equal(party.players[0].dps, 400);
+  const capped = scopedEncounter({ ...value, players: value.players.filter(row => row.id !== '2') });
+  assert.equal(capped.players.length, 0); assert.equal(capped.damage, 2000); assert.equal(capped.dps, 400);
+  assert.equal(scopedEncounter({ ...value, personal_dps: 321 }).dps, 321);
+  assert.equal(scopedEncounter({ ...value, dps: null }, 'observed').dps, 900);
+});
+
 test('name strings do not independently guess local identity or party membership', () => {
   const state = normalizeState({ ...nearby(), local_player_name: 'Me' });
   assert.equal(scopedEncounter(state).known, false);

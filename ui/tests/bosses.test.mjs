@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { focusedTarget, targetVital, bossRoster, targetSummary, bossPresentation } from '../bosses.mjs';
+import { focusedTarget, targetVital, bossRoster, targetSummary, bossPresentation, targetBoardChoices } from '../bosses.mjs';
 
 const player = (id, damage, extra = {}) => ({ id, name: `Player${id}`, class_name: 'Ranger', damage, dps: damage / 10, identity_confirmed: true, ...extra });
 const target = (extra = {}) => ({ id: 900, name: 'Received boss', is_boss: true, damage: 1000, elapsed_ms: 10_000,
@@ -119,4 +119,88 @@ test('partial capture is marked; an unclassified multi-player target is not misl
   const solo = target({ is_boss: false, participant_count: 1, participants: [player(1, 1000)] });
   assert.equal(bossPresentation(state({ targets: [solo] }), { now: 11_000 }).automatic, false);
   assert.equal(bossPresentation(state(), { now: 11_000, autoBossRoster: false }).automatic, false);
+});
+
+test('explicit shared-target selection remains available after personal focus expires and boss filtering hides the target', () => {
+  const shared = target({ is_boss: false, participant_count: 171, own_rank: 99, own_last_hit_ms: 1000 });
+  const value = state({ encounter_active: true, focused_target_id: null, focused_target_observed_at_ms: null, targets: [], observed_targets: [shared] });
+  assert.equal(bossPresentation(value, { now: 30_000 }).roster, null);
+  const choices = targetBoardChoices(value);
+  assert.deepEqual(choices.map(row => row.id), [900]);
+  const selected = bossPresentation(value, { now: 30_000, autoBossRoster: false, selectedTargetId: '900' });
+  assert.equal(selected.focusSource, 'user-selected-target'); assert.equal(selected.automatic, false);
+  assert.equal(selected.selectionAvailable, true); assert.equal(selected.roster.kind, 'target');
+  assert.equal(selected.roster.participantCount, 171); assert.equal(selected.summary.totalDamage, 100);
+  assert.equal(selected.vital.status, 'stale'); assert.equal(selected.vital.percent, null);
+});
+
+test('board choices merge only current received target lists, prefer the live DTO and keep unknown boss classification', () => {
+  const current = target({ id: 901, name: 'Fresh shared target', is_boss: false, damage: 1000 });
+  const value = state({ live_target: current, observed_targets: [target({ id: 901, name: 'Older copy' }), target({ id: 902, damage: 2000 })],
+    targets: [target({ id: 901, name: 'Filtered duplicate' }), target({ id: 903, participants_available: false }), target({ id: 904, is_boss: false, participant_count: 1 })] });
+  const choices = targetBoardChoices(value);
+  assert.deepEqual(choices.map(row => row.id), [902, 901]);
+  assert.equal(choices[1].name, 'Fresh shared target'); assert.equal(choices[1].is_boss, false);
+  assert.equal(value.observed_targets.length, 2); assert.equal(value.targets.length, 3);
+});
+
+test('a missing explicit target never substitutes an unrelated board from another encounter', () => {
+  const next = state({ targets: [target({ id: 901 })], focused_target_id: 901 });
+  const selected = bossPresentation(next, { now: 11_000, selectedTargetId: 900, autoBossRoster: true });
+  assert.equal(selected.target, null); assert.equal(selected.roster, null);
+  assert.equal(selected.selectionAvailable, false); assert.equal(selected.focusSource, 'none');
+  const anonymous = bossPresentation(state({ local_player_id: null, local_identity_source: 'unresolved' }), { now: 30_000, selectedTargetId: 900, damageScope: 'observed' });
+  assert.equal(anonymous.roster.totalDamage, 1000); assert.equal(anonymous.summary.totalDamage, 1000);
+  assert.equal(anonymous.roster.own, null); assert.equal(anonymous.roster.ownRank, null);
+});
+
+test('a previously attacked shared target remains automatic while others keep that exact fight active', () => {
+  const shared = target({ is_boss: false, started_ms: 1000 });
+  const active = state({ encounter_started_ms: 1000, encounter_active: true, capture: { status: 'capturing', missed_packets: 0 }, targets: [], observed_targets: [shared] });
+  const first = bossPresentation(active, { now: 11_000 });
+  assert.equal(first.target.id, 900); assert.ok(first.focusMemory);
+  const ongoing = { ...active, focused_target_id: null, focused_target_observed_at_ms: null, observed_targets: [{ ...shared, last_hit_ms: 24_000 }] };
+  assert.equal(bossPresentation(ongoing, { now: 25_000 }).target, null);
+  const continued = bossPresentation(ongoing, { now: 25_000, previousFocus: first.focusMemory });
+  assert.equal(continued.target.id, 900); assert.equal(continued.focusSource, 'continued-personal-target');
+  assert.equal(continued.roster.kind, 'target'); assert.equal(continued.automatic, true);
+  assert.equal(continued.focusMemory.ownLastHitMs, 10_000);
+  assert.equal(bossPresentation(ongoing, { now: 34_000, previousFocus: continued.focusMemory }).target, null);
+  const manual = bossPresentation(ongoing, { now: 25_000, selectedTargetId: 900 });
+  assert.equal(manual.roster.totalDamage, 1000); assert.equal(manual.focusMemory, null);
+});
+
+test('automatic continuation clears on session, actor, loss, target epoch, death or stale target activity', () => {
+  const shared = target({ is_boss: false, started_ms: 1000 });
+  const active = state({ encounter_started_ms: 1000, encounter_active: true, capture: { status: 'capturing', missed_packets: 0 }, targets: [], observed_targets: [shared] });
+  const previous = bossPresentation(active, { now: 11_000 }).focusMemory;
+  const ongoing = { ...active, focused_target_id: null, focused_target_observed_at_ms: null, observed_targets: [{ ...shared, last_hit_ms: 24_000 }] };
+  const variants = [
+    { ...ongoing, encounter_active: false }, { ...ongoing, encounter_started_ms: 2000 },
+    { ...ongoing, local_player_id: 2 }, { ...ongoing, capture: { status: 'error', missed_packets: 0 } },
+    { ...ongoing, capture: { status: 'capturing', missed_packets: 1 } }, { ...ongoing, diagnostics: { stream_gaps: 1 } },
+    ...[{ own_last_hit_ms: null }, { started_ms: 2000 }, { current_hp: 0 }, { last_hit_ms: 15_000 }, { last_hit_ms: 26_000 }]
+      .map(patch => ({ ...ongoing, observed_targets: [{ ...ongoing.observed_targets[0], ...patch }] })),
+    { ...ongoing, observed_targets: [] },
+  ];
+  for (const value of variants) {
+    const result = bossPresentation(value, { now: 25_000, previousFocus: previous });
+    assert.equal(result.target, null); assert.equal(result.focusMemory, null);
+  }
+  const noSession = bossPresentation({ ...active, encounter_started_ms: null }, { now: 11_000 });
+  assert.equal(noSession.target.id, 900); assert.equal(noSession.focusMemory, null);
+});
+
+test('a newer own target supersedes continuation and unrelated nearby activity never supplies a replacement', () => {
+  const shared = target({ is_boss: false, started_ms: 1000 });
+  const active = state({ encounter_started_ms: 1000, encounter_active: true, capture: { status: 'capturing' }, targets: [], observed_targets: [shared] });
+  const previous = bossPresentation(active, { now: 11_000 }).focusMemory;
+  const next = target({ id: 901, is_boss: false, started_ms: 12_000, own_last_hit_ms: 24_000, last_hit_ms: 24_000 });
+  const newer = { ...active, focused_target_id: 901, focused_target_observed_at_ms: 24_000, observed_targets: [{ ...shared, last_hit_ms: 24_000 }, next] };
+  assert.equal(bossPresentation(newer, { now: 25_000, previousFocus: previous }).target.id, 901);
+  const missedEarlierFocus = { ...newer, focused_target_id: null, focused_target_observed_at_ms: null, observed_targets: [{ ...shared, last_hit_ms: 24_000 }, { ...next, own_last_hit_ms: 12_000 }] };
+  assert.equal(bossPresentation(missedEarlierFocus, { now: 25_000, previousFocus: previous }).target, null);
+  const strangers = { ...active, focused_target_id: null, focused_target_observed_at_ms: null,
+    observed_targets: [{ ...shared, last_hit_ms: 1000 }, { ...next, own_participant: null, own_last_hit_ms: null }] };
+  assert.equal(bossPresentation(strangers, { now: 25_000, previousFocus: previous }).target, null);
 });

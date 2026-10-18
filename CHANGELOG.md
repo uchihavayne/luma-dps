@@ -2,6 +2,13 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.21.0 preview · 2026-10-18
+
+- Keep same-encounter observed target boards available independently of the Boss category filter. Add a direct target selector for the observed Top 10, including targets without a boss label or a recent personal hit. Preserve a real personally attacked target while fresh received damage continues on it; clear continuity on identity, encounter or capture discontinuities.
+- Fix paused-time subtraction shrinking a completed personal/target activity window and inflating its DPS. Preserve zero scoped durations and derive missing rates from their matching scoped total and duration.
+- Keep every pinned pet accessible in compact mode, increase saved pins to twelve and append one recent unpinned soul-gain row with a direct Pin action. Display received points when the level is still unknown instead of claiming no counter was received.
+- Add a direct Show DPS action from the pet workspace, preserve pressed tracker controls through refresh and clarify the duration used by target rankings. Refresh the feature comparison from six current publisher sources; unsupported radar/map/full-catalog features remain explicitly listed.
+
 ## 0.20.4 preview · 2026-10-18
 
 - Automatically report the local Windows version/build, system/app architectures and System32 Packet Monitor DLL/export availability in **Settings → Controls → Capture compatibility**, also reached from a capture error notice. Copy or save the bounded JSON report locally; no automatic upload is added.
