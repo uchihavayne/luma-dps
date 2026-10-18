@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from '../overlay.mjs';
+import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard, clippedInputRegion } from '../overlay.mjs';
 import { normalizePreferences, normalizePlayer, playerBarColor, importTheme, exportTheme } from '../model.mjs';
+
+test('interactive buttons are clipped to the viewport and their actual scrolling surfaces', () => {
+  const screen = { width: 420, height: 320 };
+  assert.deepEqual(clippedInputRegion({ x: 5, y: 95, width: 180, height: 28 }, screen, [{ x: 10, y: 100, width: 300, height: 90 }]), { x: 10, y: 100, width: 175, height: 23 });
+  assert.equal(clippedInputRegion({ x: 10, y: 200, width: 180, height: 28 }, screen, [{ x: 10, y: 100, width: 300, height: 90 }]), null);
+  assert.deepEqual(clippedInputRegion({ x: -4, y: 309, width: 80, height: 28 }, screen), { x: 0, y: 309, width: 76, height: 11 });
+  assert.equal(clippedInputRegion({ x: 420, y: 10, width: 80, height: 28 }, screen), null);
+  assert.equal(clippedInputRegion({ x: NaN, y: 10, width: 80, height: 28 }, screen), null);
+  assert.equal(clippedInputRegion({ x: 10, y: 10, width: 0, height: 28 }, screen), null);
+});
 
 test('fullscreen defaults to a dashboard that fills any viewport without changing saved HUD geometry', () => {
   const preferences = normalizePreferences({ fullscreenOverlay: true, compactStrip: true, overlayX: 1500, overlayY: 700, overlayWidth: 480, overlayHeight: 360 }), original = structuredClone(preferences);

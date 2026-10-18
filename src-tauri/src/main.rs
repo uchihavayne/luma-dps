@@ -846,72 +846,130 @@ fn set_fullscreen_overlay(
 fn set_overlay_hit_regions(
     runtime: State<Arc<FullscreenRuntime>>,
     regions: Vec<fullscreen_overlay::HitRegion>,
+    interactive_regions: Option<Vec<fullscreen_overlay::HitRegion>>,
 ) -> Result<(), String> {
     fullscreen_overlay::validate_regions(&regions)?;
+    let interactive_regions = interactive_regions.unwrap_or_default();
+    fullscreen_overlay::validate_interactive_regions(&interactive_regions)?;
     let mut state = runtime
         .state
         .lock()
         .map_err(|_| "Full-screen overlay state unavailable")?;
     state.regions = regions;
+    state.interactive_regions = interactive_regions;
     state.revision = state.revision.wrapping_add(1);
     Ok(())
+}
+
+fn pointer_mode(
+    shared: &Shared,
+    fullscreen: bool,
+    rescue_available: bool,
+) -> fullscreen_overlay::PointerMode {
+    let preferences = shared.preferences.lock().ok();
+    preferences
+        .as_ref()
+        .map(|value| {
+            pointer_mode_preferences(
+                value,
+                fullscreen,
+                shared.panel_open.load(Ordering::Relaxed),
+                rescue_available,
+            )
+        })
+        .unwrap_or(fullscreen_overlay::PointerMode::Window)
+}
+
+fn pointer_mode_preferences(
+    preferences: &Preferences,
+    fullscreen: bool,
+    panel_open: bool,
+    rescue_available: bool,
+) -> fullscreen_overlay::PointerMode {
+    let click_through = preferences
+        .extra
+        .get("clickThroughWhenLocked")
+        .and_then(Value::as_bool)
+        == Some(true);
+    fullscreen_overlay::PointerMode::from_policy(
+        fullscreen,
+        preferences.locked,
+        click_through && rescue_available,
+        panel_open,
+    )
 }
 
 fn start_fullscreen_pointer_worker(
     window: WebviewWindow,
     shared: Arc<Shared>,
     runtime: Arc<FullscreenRuntime>,
+    hotkeys: Arc<HotkeyRuntime>,
 ) {
     std::thread::spawn(move || {
         let mut applied = None;
+        let mut hold = fullscreen_overlay::PointerHold::default();
         while !shared.stopping.load(Ordering::Relaxed) {
-            let state = runtime
-                .state
-                .lock()
-                .ok()
-                .map(|state| (state.active, state.regions.clone(), state.revision));
-            if let Some((true, regions, revision)) = state {
-                let forced = shared.preferences.lock().ok().is_some_and(|preferences| {
-                    preferences.locked
-                        && preferences
-                            .extra
-                            .get("clickThroughWhenLocked")
-                            .and_then(Value::as_bool)
-                            == Some(true)
-                        && !shared.panel_open.load(Ordering::Relaxed)
-                });
-                let inside = fullscreen_overlay::cursor_position()
-                    .and_then(|(x, y)| {
+            let state = runtime.state.lock().ok().map(|state| {
+                (
+                    state.active,
+                    state.regions.clone(),
+                    state.interactive_regions.clone(),
+                    state.revision,
+                )
+            });
+            if let Some((fullscreen, regions, interactive_regions, revision)) = state {
+                let mode = pointer_mode(&shared, fullscreen, hotkeys.rescue_available());
+                let point = if mode == fullscreen_overlay::PointerMode::Window {
+                    None
+                } else {
+                    fullscreen_overlay::cursor_position().and_then(|cursor| {
                         let position = window.inner_position().ok()?;
                         let scale = window.scale_factor().ok()?;
-                        (scale.is_finite() && scale > 0.0).then(|| {
-                            fullscreen_overlay::contains(
-                                &regions,
-                                (f64::from(x) - f64::from(position.x)) / scale,
-                                (f64::from(y) - f64::from(position.y)) / scale,
-                            )
-                        })
+                        fullscreen_overlay::logical_cursor(cursor, (position.x, position.y), scale)
                     })
-                    .unwrap_or(false);
-                let desired = forced || !inside;
-                if applied != Some((revision, desired)) {
+                };
+                let inside = fullscreen_overlay::accepts_pointer(
+                    mode,
+                    &regions,
+                    &interactive_regions,
+                    point,
+                );
+                let desired =
+                    hold.ignore_cursor(mode, inside, fullscreen_overlay::primary_button_down());
+                if applied != Some((revision, mode, desired)) {
                     let target = window.clone();
                     let policy = runtime.clone();
+                    let current_shared = shared.clone();
+                    let current_hotkeys = hotkeys.clone();
                     // Native mode transitions and cursor writes are serialized
                     // on the UI thread. Revalidate after dispatch so an update
                     // calculated before exit cannot disable normal-window input.
                     if window
                         .app_handle()
                         .run_on_main_thread(move || {
-                            if let Ok(mut state) = policy.state.lock() {
-                                state.apply_pointer_update(revision, || {
-                                    target.set_ignore_cursor_events(desired).is_ok()
-                                });
+                            // Preference writers already acquire this lock
+                            // before the overlay state. Keep the same order and
+                            // hold both through the write to reject old modes.
+                            if let Ok(preferences) = current_shared.preferences.lock() {
+                                if let Ok(mut state) = policy.state.lock() {
+                                    let current_mode = pointer_mode_preferences(
+                                        &preferences,
+                                        state.active,
+                                        current_shared.panel_open.load(Ordering::Relaxed),
+                                        current_hotkeys.rescue_available(),
+                                    );
+                                    state.apply_pointer_update(
+                                        revision,
+                                        mode,
+                                        current_mode,
+                                        || target.set_ignore_cursor_events(desired).is_ok(),
+                                    );
+                                }
                             }
                         })
                         .is_ok()
                     {
-                        applied = Some((revision, desired));
+                        applied = Some((revision, mode, desired));
                     }
                 }
                 std::thread::sleep(Duration::from_millis(25));
@@ -1615,6 +1673,26 @@ mod shell_tests {
         preferences.locked = true;
         assert!(cursor_pass_through(&preferences, false, false).is_err());
         assert_eq!(
+            pointer_mode_preferences(&preferences, false, false, false),
+            fullscreen_overlay::PointerMode::Window
+        );
+        assert_eq!(
+            pointer_mode_preferences(&preferences, false, false, true),
+            fullscreen_overlay::PointerMode::Controls
+        );
+        assert_eq!(
+            pointer_mode_preferences(&preferences, true, false, false),
+            fullscreen_overlay::PointerMode::Meter
+        );
+        assert_eq!(
+            pointer_mode_preferences(&preferences, true, false, true),
+            fullscreen_overlay::PointerMode::Controls
+        );
+        assert_eq!(
+            pointer_mode_preferences(&preferences, false, true, true),
+            fullscreen_overlay::PointerMode::Window
+        );
+        assert_eq!(
             cursor_pass_through(&preferences, false, true).unwrap(),
             true
         );
@@ -1623,6 +1701,10 @@ mod shell_tests {
             false
         );
         preferences.locked = false;
+        assert_eq!(
+            pointer_mode_preferences(&preferences, false, false, true),
+            fullscreen_overlay::PointerMode::Window
+        );
         assert_eq!(
             cursor_pass_through(&preferences, true, false).unwrap(),
             false
@@ -3292,6 +3374,41 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())
 }
 
+struct PanelInputTransition<'a> {
+    window: &'a WebviewWindow,
+    shared: &'a Shared,
+    previous: bool,
+    committed: bool,
+}
+
+impl<'a> PanelInputTransition<'a> {
+    fn begin(window: &'a WebviewWindow, shared: &'a Shared, previous: bool, open: bool) -> Self {
+        // Stop an already queued click-through write before resizing/opening
+        // the drawer. A failed transition restores the prior input policy.
+        if open {
+            shared.panel_open.store(true, Ordering::Relaxed);
+        }
+        invalidate_fullscreen_pointer(window);
+        Self {
+            window,
+            shared,
+            previous,
+            committed: false,
+        }
+    }
+}
+
+impl Drop for PanelInputTransition<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.shared
+                .panel_open
+                .store(self.previous, Ordering::Relaxed);
+            invalidate_fullscreen_pointer(self.window);
+        }
+    }
+}
+
 #[tauri::command]
 fn set_panel_open(
     window: WebviewWindow,
@@ -3307,6 +3424,7 @@ fn set_panel_open(
     if previously_open == open {
         return Ok(());
     }
+    let mut input_transition = PanelInputTransition::begin(&window, &shared, previously_open, open);
     if open {
         window
             .set_ignore_cursor_events(false)
@@ -3320,6 +3438,7 @@ fn set_panel_open(
     if fullscreen_overlay_enabled(&preferences) {
         shared.panel_open.store(open, Ordering::Relaxed);
         invalidate_fullscreen_pointer(&window);
+        input_transition.committed = true;
         return Ok(());
     }
     let previous = PanelGeometry {
@@ -3399,6 +3518,8 @@ fn set_panel_open(
     window
         .set_ignore_cursor_events(pass_through)
         .map_err(|error| error.to_string())?;
+    invalidate_fullscreen_pointer(&window);
+    input_transition.committed = true;
     Ok(())
 }
 
@@ -3763,7 +3884,12 @@ fn main() {
                         if let Ok(preferences) = shared.preferences.lock() { let _ = persist(&shared, &preferences); }
                     }
                 }
-                start_fullscreen_pointer_worker(window, shared.clone(), fullscreen_runtime);
+                start_fullscreen_pointer_worker(
+                    window,
+                    shared.clone(),
+                    fullscreen_runtime,
+                    hotkey_runtime.clone(),
+                );
             }
             let updates=Arc::new(UpdateRuntime{service:updates::UpdateService::new(shared.data_dir.clone(),env!("CARGO_PKG_VERSION")).map(Arc::new)});
             let automatic=shared.preferences.lock().ok().is_some_and(|preferences|preferences.extra.get("autoCheckUpdates").and_then(Value::as_bool)!=Some(false));

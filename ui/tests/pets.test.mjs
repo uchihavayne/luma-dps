@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PET_CATALOG, PET_DATA_NOTICE } from '../pet-catalog.mjs';
 import { normalizePreferences, liveServerActorId } from '../model.mjs';
-import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petTargetMatches, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
+import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petPinTransition, petTargetMatches, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
 
 const now = 1_000_000;
 const catalog = normalizePetCatalog(PET_CATALOG);
@@ -282,6 +282,50 @@ test('pins persist uniquely and stay bounded; explicit pins take priority over a
   assert.equal(trackedPets(value, [], { now })[0].id, 1003);
   assert.equal(trackedPets(value, [1002], { now })[0].id, 1002);
   assert.equal(trackedPets(value, [], { automatic: false, now }).length, 0);
+});
+
+test('pinning a known reference pet opens a collapsed hidden tracker without requiring a live counter', () => {
+  const reference = petPlan(null, catalog, { localPlayerId: '7', now });
+  const preferences = Object.freeze({ petPins: Object.freeze([1002]), showPetTracker: false, petTrackerCollapsed: true, petGoal: 'next', theme: 'pearl', displayModules: Object.freeze({ pets: true, dps: false }) });
+  const change = petPinTransition(preferences, 1003, reference);
+  assert.equal(reference.observedCount, 0);
+  assert.equal(change.status, 'added');
+  assert.deepEqual(change.patch, { petPins: [1002, 1003], showPetTracker: true, petTrackerCollapsed: false });
+  const merged = { ...preferences, ...change.patch };
+  assert.equal(merged.petGoal, 'next'); assert.equal(merged.theme, 'pearl');
+  assert.equal(merged.displayModules, preferences.displayModules);
+  assert.deepEqual(preferences.petPins, [1002]);
+  const rows = trackedPets(reference, merged.petPins, { now });
+  assert.equal(rows.length, 2); assert.ok(rows.every(row => row.remaining === null));
+});
+
+test('successive pin selections append independently, normalize duplicates and stop at six without dropping saved pets', () => {
+  const reference = plan([]);
+  let preferences = { petPins: [1002, 1002, '1003', -1], petTrackerCollapsed: true };
+  for (const id of [1003, 1004, 1005, 1006, 1007]) {
+    const result = petPinTransition(preferences, id, reference);
+    assert.equal(result.status, 'added');
+    preferences = { ...preferences, ...result.patch };
+  }
+  assert.deepEqual(preferences.petPins, [1002, 1003, 1004, 1005, 1006, 1007]);
+  const full = petPinTransition(preferences, 1008, reference);
+  assert.deepEqual(full, { status: 'limit', patch: null });
+  assert.deepEqual(preferences.petPins, [1002, 1003, 1004, 1005, 1006, 1007]);
+});
+
+test('unpinning patches only the list and allows a missing saved pet to be removed', () => {
+  const preferences = { petPins: [1002, 99999], showPetTracker: false, petTrackerCollapsed: true, petGoal: 'max' };
+  const change = petPinTransition(preferences, 99999, { rows: [] });
+  assert.deepEqual(change, { status: 'removed', patch: { petPins: [1002] } });
+  const merged = { ...preferences, ...change.patch };
+  assert.equal(merged.showPetTracker, false); assert.equal(merged.petTrackerCollapsed, true); assert.equal(merged.petGoal, 'max');
+  assert.deepEqual(preferences.petPins, [1002, 99999]);
+});
+
+test('pin requests reject invalid or unknown new IDs without a preference patch', () => {
+  const reference = plan([]);
+  for (const id of [null, undefined, '1002', 0, 999, 100000, 1002.5, 99999]) assert.deepEqual(petPinTransition({ petPins: [] }, id, reference), { status: 'invalid', patch: null });
+  for (const invalidPlan of [null, [], {}, { rows: [null, {}, { id: '1002' }] }]) assert.deepEqual(petPinTransition({ petPins: [] }, 1002, invalidPlan), { status: 'invalid', patch: null });
 });
 
 test('catalog links cannot introduce credentials, arbitrary hosts or executable protocols', () => {

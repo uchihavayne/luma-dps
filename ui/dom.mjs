@@ -1,3 +1,5 @@
+import { clippedInputRegion } from './overlay.mjs';
+
 // Keep controls themselves stable so live metrics do not discard focus or scroll.
 export function setText(element, value) {
   const text = String(value ?? '');
@@ -19,6 +21,33 @@ export function isDrawerDragStart(event, header) {
 export function delegatedControl(event, container, selector) {
   const control = event.target?.closest(selector);
   return control && container.contains(control) ? control : null;
+}
+
+export const INPUT_CONTROL_SELECTOR = 'button,input,select,textarea,a[href],summary,[role="button"],[role="tab"],.pet-tracker-rows,.target-pet-pin-actions';
+
+export function visibleInputRegions(root, viewport) {
+  const view = root.ownerDocument.defaultView, styles = new Map(), regions = [];
+  const styleOf = element => { if (!styles.has(element)) styles.set(element, view.getComputedStyle(element)); return styles.get(element); };
+  for (const control of root.querySelectorAll(INPUT_CONTROL_SELECTOR)) {
+    if (control.matches(':disabled,[aria-disabled="true"]') || control.closest('[hidden],[inert],[aria-hidden="true"]') || !control.getClientRects().length) continue;
+    const clips = [];
+    let hidden = false;
+    for (let ancestor = control; ancestor; ancestor = ancestor.parentElement) {
+      const style = styleOf(ancestor);
+      if (style.visibility === 'hidden' || style.visibility === 'collapse' || style.display === 'none' || Number(style.opacity) === 0) { hidden = true; break; }
+      if (ancestor !== control && (style.overflowX !== 'visible' || style.overflowY !== 'visible')) {
+        const rect = ancestor.getBoundingClientRect(), clipX = style.overflowX !== 'visible', clipY = style.overflowY !== 'visible';
+        clips.push({ x: clipX ? rect.x + ancestor.clientLeft : 0, y: clipY ? rect.y + ancestor.clientTop : 0,
+          width: clipX ? ancestor.clientWidth : viewport.width, height: clipY ? ancestor.clientHeight : viewport.height });
+      }
+      if (ancestor === root) break;
+    }
+    if (hidden || styleOf(control).pointerEvents === 'none') continue;
+    const region = clippedInputRegion(control.getBoundingClientRect(), viewport, clips);
+    if (region) regions.push(region);
+    if (regions.length >= 128) break;
+  }
+  return regions;
 }
 
 export function reconcileKeyedRows(container, items, { key, create, update }) {

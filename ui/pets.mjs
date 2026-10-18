@@ -33,6 +33,15 @@ export function normalizePetPins(value) {
   return [...new Set(list(value, 100).filter(id => integer(id, 1000, 99999) !== null))].slice(0, PET_PIN_LIMIT);
 }
 
+export function petPinTransition(preferences, id, plan) {
+  const pins = normalizePetPins(record(preferences).petPins);
+  if (integer(id, 1000, 99999) === null) return { status: 'invalid', patch: null };
+  if (pins.includes(id)) return { status: 'removed', patch: { petPins: pins.filter(value => value !== id) } };
+  if (!list(record(plan).rows, 4500).some(row => record(row).id === id)) return { status: 'invalid', patch: null };
+  if (pins.length >= PET_PIN_LIMIT) return { status: 'limit', patch: null };
+  return { status: 'added', patch: { petPins: [...pins, id], showPetTracker: true, petTrackerCollapsed: false } };
+}
+
 export function petTargetMatches(target, catalog) {
   target = record(target);
   const hasNpcId = target.npc_id !== null && target.npc_id !== undefined;

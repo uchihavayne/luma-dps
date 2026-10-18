@@ -2,6 +2,12 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.20.3 preview · 2026-10-18
+
+- Keep visible controls usable while locked click-through is enabled, in window and fullscreen modes. Only their clipped input regions and pet scroll areas accept input; surrounding space still passes clicks to the game. Preserve an accepted pointer press through release and reject stale input-policy writes after mode or drawer changes.
+- Pin the pet the user selected from the displayed suggestion without silently cancelling when its recent-hit timer expires. Keep a pressed suggestion connected through the click.
+- Expand and show the tracker after adding a pet, scroll the added row into view and confirm the action. Preserve existing pins and the six-pet limit.
+
 ## 0.20.2 preview · 2026-10-18
 
 - Preserve the server NPC template ID through the combat engine and live target snapshot. Match it to validated pet-location IDs even when the spawn has no monster name; scene actor IDs are never used as template IDs.

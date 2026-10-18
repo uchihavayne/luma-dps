@@ -10,7 +10,7 @@ import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from '
 import * as scheduling from './events.mjs';
 import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
 import { createPreferenceCommitter } from './persistence.mjs';
-import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl } from './dom.mjs';
+import { setText, setAttribute, reconcileKeyedRows, isDrawerDragStart, delegatedControl, visibleInputRegions } from './dom.mjs';
 import { createHistoryCache, clearImportedHistory } from './history.mjs';
 import { createHistoryNotebook, historyRecordKey, queryHistory, historyTrend, parseHistoryTags } from './history-tools.mjs';
 import { SETTINGS_SECTIONS, ANALYSIS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from './navigation.mjs';
@@ -28,7 +28,7 @@ import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
-import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, PET_PIN_LIMIT } from './pets.mjs';
+import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -302,20 +302,23 @@ function syncOverlayGeometry() {
 }
 
 function scheduleOverlayRegions() {
-  if (!native || !prefs.fullscreenOverlay || overlayRegionFrame) return;
+  const needed = () => prefs.fullscreenOverlay || prefs.locked && prefs.clickThroughWhenLocked;
+  if (!native || !needed() || overlayRegionFrame) return;
   overlayRegionFrame = requestAnimationFrame(() => {
     overlayRegionFrame = 0;
-    if (!prefs.fullscreenOverlay) { overlayRegionFingerprint = ''; return; }
+    if (!needed()) { overlayRegionFingerprint = ''; return; }
     const rect = $('#meter').getBoundingClientRect();
-    const regions = hudGesture ? [{ x: 0, y: 0, width: innerWidth, height: innerHeight }] : [{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
-    const fingerprint = JSON.stringify(regions);
+    const regions = !prefs.fullscreenOverlay ? [] : hudGesture ? [{ x: 0, y: 0, width: innerWidth, height: innerHeight }] : [{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }];
+    const interactiveRegions = visibleInputRegions($('#meter'), { width: innerWidth, height: innerHeight });
+    const fingerprint = JSON.stringify([regions, interactiveRegions, prefs.locked, prefs.clickThroughWhenLocked, Boolean(drawer)]);
     if (fingerprint === overlayRegionFingerprint) return;
     overlayRegionFingerprint = fingerprint;
-    invoke('set_overlay_hit_regions', { regions }).then(() => { overlayRegionFailures = 0; }).catch(() => {
+    invoke('set_overlay_hit_regions', { regions, interactiveRegions }).then(() => { overlayRegionFailures = 0; }).catch(() => {
       overlayRegionFingerprint = '';
-      if (!prefs.fullscreenOverlay) return;
+      if (!needed()) return;
       if (++overlayRegionFailures < 3) setTimeout(scheduleOverlayRegions, 100);
-      else { toast(prefs.locale === 'tr' ? 'Panel etkileşimi hazırlanamadı; pencere görünümüne dönülüyor.' : 'HUD input could not initialize; returning to window mode.', true); toggleFullscreenOverlay(false); }
+      else if (prefs.fullscreenOverlay) { toast(prefs.locale === 'tr' ? 'Panel etkileşimi hazırlanamadı; pencere görünümüne dönülüyor.' : 'HUD input could not initialize; returning to window mode.', true); toggleFullscreenOverlay(false); }
+      else { toast(prefs.locale === 'tr' ? 'Düğme etkileşimi hazırlanamadı; tıklamaları oyuna geçirme kapatıldı.' : 'Control input could not initialize; click-through was disabled.', true); savePreferences({ clickThroughWhenLocked: false }); }
     });
   });
 }
@@ -1075,6 +1078,9 @@ function currentTargetPets() {
 
 function renderTargetPetPin() {
   const host = $('#target-pet-pin'), tr = prefs.locale === 'tr', value = currentTargetPets();
+  // Keep the visible choice connected between press and click, even if the
+  // combat suggestion expires or changes during that press.
+  if (host.querySelector('button:active')) return;
   const status = petTargetStatus(state, petPinObservation, value.matches), labels = targetPetStatusLabels(status);
   host.dataset.status = status;
   host.hidden = !prefs.displayModules.pets || status === 'waiting-personal-hit' || status === 'self-identity-pending' && state.capture?.status !== 'capturing';
@@ -1137,6 +1143,7 @@ function renderPetTracking() {
   setText(chip, `${t('pets')}${prefs.petPins.length ? ` · ${prefs.petPins.length}` : ''}`);
   chip.title = petLabels(prefs.locale).title;
   renderModuleHome(plan, rows);
+  scheduleOverlayRegions();
 }
 
 function renderModuleHome(plan, tracked) {
@@ -1156,11 +1163,16 @@ function openPetGuide(id = null) {
 }
 
 function togglePetPin(id) {
-  if (!Number.isSafeInteger(id) || !currentPetPlan().rows.some(row => row.id === id)) return;
+  const plan = currentPetPlan(), change = petPinTransition(prefs, id, plan);
+  if (change.status === 'invalid') { toast(prefs.locale === 'tr' ? 'Bu pet sabitlenemedi; rehberi yenileyip tekrar seç.' : 'This pet could not be pinned; refresh the guide and select it again.', true); return; }
   const restorePin = document.activeElement?.dataset.action === 'pet-pin';
-  if (prefs.petPins.includes(id)) savePreferences({ petPins: prefs.petPins.filter(value => value !== id) });
-  else if (prefs.petPins.length < PET_PIN_LIMIT) savePreferences({ petPins: [...prefs.petPins, id], showPetTracker: true });
-  else toast(petLabels(prefs.locale).limit);
+  if (change.patch) savePreferences(change.patch);
+  if (change.status === 'limit') toast(petLabels(prefs.locale).limit);
+  else if (change.status === 'added') {
+    const name = plan.rows.find(row => row.id === id)?.name || t('pets');
+    toast(`${name} · ${prefs.locale === 'tr' ? 'Sabitlendi' : 'Pinned'}`);
+    requestAnimationFrame(() => $(`#pet-tracker [data-pet-action="open"][data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }
   if (drawer === 'analysis' && tab === 'pets') { refreshPetsDrawer(); if (restorePin) $(`#drawer-content [data-action="pet-pin"][data-id="${id}"]`)?.focus({ preventScroll: true }); }
 }
 
@@ -1579,6 +1591,7 @@ function beep() {
 
 function tickTimers() {
   renderTargetPetPin();
+  scheduleOverlayRegions();
   $('#meter').classList.toggle('idle-fade', prefs.fadeWhenIdle && !drawer && !state.encounter_active && !['combat', 'combat_active'].includes(state.status));
   if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   const event = activeEvent(), bossTimer = chosenBossTimer(), scheduled = event ? scheduleTiming(event) : null, timing = scheduled ? { next: scheduled.nextOpening, remaining: scheduled.remainingMs } : bossTimer?.status === 'countdown' ? { next: bossTimer.server_time_ms, remaining: bossTimer.remaining } : null;
@@ -1628,10 +1641,13 @@ $('#target-pet-pin').addEventListener('click', event => {
   const control = delegatedControl(event, event.currentTarget, 'button[data-target-pet-pin]');
   if (!control || control.disabled || !prefs.displayModules.pets) return;
   const id = Number(control.dataset.targetPetPin);
-  if (!currentTargetPets().matches.some(pet => pet.id === id)) return;
+  // Pinning selects a known catalog pet. A displayed choice does not become
+  // invalid merely because the last-hit timer expired just before this click.
   togglePetPin(id);
   renderTargetPetPin();
 });
+for (const type of ['pointerup', 'pointercancel', 'keyup']) document.addEventListener(type, () => requestAnimationFrame(() => { renderTargetPetPin(); scheduleOverlayRegions(); }));
+document.addEventListener('scroll', scheduleOverlayRegions, true);
 $('#identity-button').addEventListener('click', () => openDrawer('character'));
 $('#modules-button').addEventListener('click', () => openDrawer('settings', 'appearance'));
 $('#module-home').addEventListener('click', event => {

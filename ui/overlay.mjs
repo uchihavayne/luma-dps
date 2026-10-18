@@ -4,6 +4,20 @@ const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 export const fullscreenLayout = preferences => preferences?.fullscreenLayout === 'hud' ? 'hud' : 'dashboard';
 export const isFullscreenDashboard = preferences => preferences?.fullscreenOverlay === true && fullscreenLayout(preferences) === 'dashboard';
 
+// Regions use WebView CSS pixels. Clip controls to the viewport and every
+// scrolling/clipping ancestor; off-screen buttons must not catch game clicks.
+export function clippedInputRegion(rect, viewport, clips = []) {
+  const valid = value => value && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(value[key])) && value.width > 0 && value.height > 0;
+  if (!valid(rect) || !Number.isFinite(viewport?.width) || !Number.isFinite(viewport?.height) || viewport.width <= 0 || viewport.height <= 0) return null;
+  let left = rect.x, top = rect.y, right = left + rect.width, bottom = top + rect.height;
+  for (const clip of [{ x: 0, y: 0, width: Math.min(32768, viewport.width), height: Math.min(32768, viewport.height) }, ...clips]) {
+    if (!valid(clip)) return null;
+    left = Math.max(left, clip.x); top = Math.max(top, clip.y);
+    right = Math.min(right, clip.x + clip.width); bottom = Math.min(bottom, clip.y + clip.height);
+  }
+  return right > left && bottom > top ? { x: left, y: top, width: right - left, height: bottom - top } : null;
+}
+
 // Both layouts use CSS pixels; the saved HUD and native window geometry stay separate.
 export function overlayRect(preferences = {}, viewport = {}, { panelOpen = false } = {}) {
   const screenWidth = Math.max(1, finite(viewport.width, 1280)), screenHeight = Math.max(1, finite(viewport.height, 720));

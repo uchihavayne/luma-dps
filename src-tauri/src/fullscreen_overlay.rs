@@ -83,8 +83,16 @@ pub struct HitRegion {
 }
 
 pub fn validate_regions(regions: &[HitRegion]) -> Result<(), String> {
-    if regions.len() > 16 {
-        return Err("At most sixteen overlay input regions are supported".into());
+    validate_bounded_regions(regions, 16)
+}
+
+pub fn validate_interactive_regions(regions: &[HitRegion]) -> Result<(), String> {
+    validate_bounded_regions(regions, 128)
+}
+
+fn validate_bounded_regions(regions: &[HitRegion], limit: usize) -> Result<(), String> {
+    if regions.len() > limit {
+        return Err("Too many overlay input regions".into());
     }
     for region in regions {
         if ![region.x, region.y, region.width, region.height]
@@ -103,6 +111,113 @@ pub fn validate_regions(regions: &[HitRegion]) -> Result<(), String> {
     Ok(())
 }
 
+pub fn logical_cursor(cursor: (i32, i32), origin: (i32, i32), scale: f64) -> Option<(f64, f64)> {
+    (scale.is_finite() && (0.5..=8.0).contains(&scale)).then(|| {
+        (
+            (f64::from(cursor.0) - f64::from(origin.0)) / scale,
+            (f64::from(cursor.1) - f64::from(origin.1)) / scale,
+        )
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PointerMode {
+    #[default]
+    Window,
+    Meter,
+    Controls,
+}
+
+impl PointerMode {
+    pub fn from_policy(
+        fullscreen: bool,
+        locked: bool,
+        click_through: bool,
+        panel_open: bool,
+    ) -> Self {
+        if locked && click_through && !panel_open {
+            Self::Controls
+        } else if fullscreen {
+            Self::Meter
+        } else {
+            Self::Window
+        }
+    }
+}
+
+pub fn accepts_pointer(
+    mode: PointerMode,
+    regions: &[HitRegion],
+    interactive_regions: &[HitRegion],
+    point: Option<(f64, f64)>,
+) -> bool {
+    if mode == PointerMode::Window {
+        return true;
+    }
+    point.is_some_and(|(x, y)| {
+        contains(
+            if mode == PointerMode::Controls {
+                interactive_regions
+            } else {
+                regions
+            },
+            x,
+            y,
+        )
+    })
+}
+
+#[derive(Default)]
+pub struct PointerHold {
+    initialized: bool,
+    previous_down: bool,
+    held: bool,
+    passed: bool,
+    release_grace: u8,
+    pass_release_grace: u8,
+    mode: PointerMode,
+}
+
+impl PointerHold {
+    pub fn ignore_cursor(&mut self, mode: PointerMode, inside: bool, primary_down: bool) -> bool {
+        if mode != self.mode {
+            self.initialized = false;
+            self.held = false;
+            self.passed = false;
+            self.release_grace = 0;
+            self.pass_release_grace = 0;
+            self.mode = mode;
+        }
+        if primary_down && (!self.initialized || !self.previous_down) {
+            // A press already in progress at startup or a mode change has no
+            // verified overlay origin. Keep it with the game until release.
+            self.held = self.initialized && inside;
+            self.passed = !self.held;
+            self.release_grace = 0;
+            self.pass_release_grace = 0;
+        }
+        if !primary_down {
+            if self.held {
+                self.release_grace = 2;
+            }
+            if self.passed {
+                self.pass_release_grace = 2;
+            }
+            self.held = false;
+            self.passed = false;
+        }
+        let accepted = mode == PointerMode::Window
+            || (!self.passed
+                && self.pass_release_grace == 0
+                && (inside || self.held || self.release_grace > 0));
+        self.release_grace = self.release_grace.saturating_sub(1);
+        self.pass_release_grace = self.pass_release_grace.saturating_sub(1);
+        self.previous_down = primary_down;
+        self.initialized = true;
+        !accepted
+    }
+}
+
 pub fn contains(regions: &[HitRegion], x: f64, y: f64) -> bool {
     x.is_finite()
         && y.is_finite()
@@ -116,6 +231,7 @@ pub struct State {
     pub active: bool,
     pub normal: Option<Geometry>,
     pub regions: Vec<HitRegion>,
+    pub interactive_regions: Vec<HitRegion>,
     pub revision: u64,
 }
 
@@ -124,6 +240,7 @@ impl State {
         self.active = active;
         self.normal = if active { normal } else { None };
         self.regions.clear();
+        self.interactive_regions.clear();
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -131,8 +248,14 @@ impl State {
     /// outlived a mode exit, a lock change or a HUD move. Reject it before the
     /// native input policy changes. Failed native writes are retried using a
     /// fresh revision on the next worker iteration.
-    pub fn apply_pointer_update(&mut self, revision: u64, apply: impl FnOnce() -> bool) -> bool {
-        if !self.active || self.revision != revision {
+    pub fn apply_pointer_update(
+        &mut self,
+        revision: u64,
+        expected_mode: PointerMode,
+        current_mode: PointerMode,
+        apply: impl FnOnce() -> bool,
+    ) -> bool {
+        if self.revision != revision || expected_mode != current_mode {
             return false;
         }
         let applied = apply();
@@ -152,6 +275,25 @@ pub fn cursor_position() -> Option<(i32, i32)> {
         .then_some((point.x, point.y))
 }
 
+#[cfg(windows)]
+pub fn primary_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+    let primary = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 {
+        VK_RBUTTON
+    } else {
+        VK_LBUTTON
+    };
+    unsafe { GetAsyncKeyState(i32::from(primary)) as u16 & 0x8000 != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn primary_button_down() -> bool {
+    false
+}
+
 #[cfg(not(windows))]
 pub fn cursor_position() -> Option<(i32, i32)> {
     None
@@ -162,37 +304,263 @@ mod tests {
     use super::*;
 
     #[test]
+    fn locked_controls_work_in_window_and_fullscreen_while_background_passes_through() {
+        let meter = [HitRegion {
+            x: 10.0,
+            y: 10.0,
+            width: 420.0,
+            height: 340.0,
+        }];
+        let controls = [HitRegion {
+            x: 30.0,
+            y: 80.0,
+            width: 100.0,
+            height: 28.0,
+        }];
+        for fullscreen in [false, true] {
+            let mode = PointerMode::from_policy(fullscreen, true, true, false);
+            assert_eq!(mode, PointerMode::Controls);
+            assert!(accepts_pointer(mode, &meter, &controls, Some((50.0, 90.0))));
+            assert!(!accepts_pointer(
+                mode,
+                &meter,
+                &controls,
+                Some((50.0, 180.0))
+            ));
+            assert!(!accepts_pointer(mode, &meter, &controls, None));
+        }
+        assert_eq!(
+            PointerMode::from_policy(false, false, true, false),
+            PointerMode::Window
+        );
+        assert_eq!(
+            PointerMode::from_policy(false, true, true, true),
+            PointerMode::Window
+        );
+        assert_eq!(
+            PointerMode::from_policy(true, true, true, true),
+            PointerMode::Meter
+        );
+        assert_eq!(
+            PointerMode::from_policy(true, false, true, false),
+            PointerMode::Meter
+        );
+        assert!(accepts_pointer(PointerMode::Window, &[], &[], None));
+        assert!(accepts_pointer(
+            PointerMode::Meter,
+            &meter,
+            &controls,
+            Some((50.0, 180.0))
+        ));
+        assert!(!accepts_pointer(
+            PointerMode::Meter,
+            &meter,
+            &controls,
+            Some((500.0, 180.0))
+        ));
+    }
+
+    #[test]
+    fn locked_button_regions_use_client_logical_coordinates_at_mixed_dpi_and_negative_origins() {
+        let controls = [HitRegion {
+            x: 20.0,
+            y: 40.0,
+            width: 80.0,
+            height: 30.0,
+        }];
+        for (cursor, origin, scale) in [
+            ((30, 55), (0, 0), 1.0),
+            ((-1875, 182), (-1920, 100), 1.5),
+            ((-1240, -690), (-1300, -800), 2.0),
+        ] {
+            assert!(accepts_pointer(
+                PointerMode::Controls,
+                &[],
+                &controls,
+                logical_cursor(cursor, origin, scale)
+            ));
+        }
+        assert!(!accepts_pointer(
+            PointerMode::Controls,
+            &[],
+            &controls,
+            logical_cursor((-1600, 182), (-1920, 100), 1.5)
+        ));
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 9.0] {
+            assert!(logical_cursor((0, 0), (0, 0), invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn control_regions_are_bounded_independently_and_keep_the_legacy_meter_limit() {
+        let rect = HitRegion {
+            x: 1.0,
+            y: 1.0,
+            width: 20.0,
+            height: 20.0,
+        };
+        assert!(validate_interactive_regions(&[rect; 128]).is_ok());
+        assert!(validate_interactive_regions(&[rect; 129]).is_err());
+        assert!(validate_regions(&[rect; 16]).is_ok());
+        assert!(validate_regions(&[rect; 17]).is_err());
+        for rect in [
+            HitRegion { x: -1.0, ..rect },
+            HitRegion {
+                width: f64::NAN,
+                ..rect
+            },
+            HitRegion {
+                height: 0.0,
+                ..rect
+            },
+        ] {
+            assert!(validate_interactive_regions(&[rect]).is_err());
+        }
+    }
+
+    #[test]
+    fn queued_locked_writes_cannot_override_drawer_unlock_or_fullscreen_mode_changes() {
+        let mut state = State::default();
+        let revision = state.revision;
+        let mut writes = 0;
+        for current in [PointerMode::Window, PointerMode::Meter] {
+            assert!(
+                !state.apply_pointer_update(revision, PointerMode::Controls, current, || {
+                    writes += 1;
+                    true
+                })
+            );
+        }
+        // Control hit testing also runs while the window is not fullscreen.
+        assert!(!state.active);
+        assert!(state.apply_pointer_update(
+            revision,
+            PointerMode::Controls,
+            PointerMode::Controls,
+            || {
+                writes += 1;
+                true
+            }
+        ));
+        state.revision += 1;
+        assert!(!state.apply_pointer_update(
+            revision,
+            PointerMode::Controls,
+            PointerMode::Controls,
+            || {
+                writes += 1;
+                true
+            }
+        ));
+        assert_eq!(writes, 1);
+    }
+
+    #[test]
+    fn a_press_started_on_a_control_keeps_input_through_release_without_capturing_game_drags() {
+        let mut hold = PointerHold::default();
+        assert!(hold.ignore_cursor(PointerMode::Controls, false, false));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, true, true));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, false, true));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, false, false));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, false, false));
+        assert!(hold.ignore_cursor(PointerMode::Controls, false, false));
+        assert!(hold.ignore_cursor(PointerMode::Controls, false, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, false, true));
+        assert!(!hold.ignore_cursor(PointerMode::Window, false, true));
+    }
+
+    #[test]
+    fn game_originated_presses_do_not_transfer_input_when_dragged_over_controls() {
+        for mode in [PointerMode::Controls, PointerMode::Meter] {
+            let mut hold = PointerHold::default();
+            assert!(hold.ignore_cursor(mode, false, false));
+            assert!(hold.ignore_cursor(mode, false, true));
+            assert!(hold.ignore_cursor(mode, true, true));
+            assert!(hold.ignore_cursor(mode, false, true));
+            assert!(hold.ignore_cursor(mode, true, true));
+            // Keep the release with its original recipient, then restore hover.
+            assert!(hold.ignore_cursor(mode, true, false));
+            assert!(hold.ignore_cursor(mode, true, false));
+            assert!(!hold.ignore_cursor(mode, true, false));
+            // A subsequent press actually started on a control is independent.
+            assert!(!hold.ignore_cursor(mode, true, true));
+            assert!(!hold.ignore_cursor(mode, false, true));
+        }
+    }
+
+    #[test]
+    fn already_down_at_startup_or_mode_change_keeps_the_original_input_recipient() {
+        let mut hold = PointerHold::default();
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, false));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, false));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, true, false));
+        assert!(!hold.ignore_cursor(PointerMode::Window, true, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, true));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, false));
+        assert!(hold.ignore_cursor(PointerMode::Controls, true, false));
+        assert!(!hold.ignore_cursor(PointerMode::Controls, true, false));
+    }
+
+    #[test]
     fn queued_pointer_writes_cannot_override_an_exit_or_a_newer_layout() {
         let mut state = State::default();
         state.commit(true, None);
         let queued = state.revision;
         let mut native_writes = 0;
         state.commit(false, None);
-        assert!(!state.apply_pointer_update(queued, || {
-            native_writes += 1;
-            true
-        }));
+        assert!(!state.apply_pointer_update(
+            queued,
+            PointerMode::Meter,
+            PointerMode::Meter,
+            || {
+                native_writes += 1;
+                true
+            }
+        ));
         assert_eq!(native_writes, 0);
 
         state.commit(true, None);
-        assert!(!state.apply_pointer_update(queued, || {
-            native_writes += 1;
-            true
-        }));
+        assert!(!state.apply_pointer_update(
+            queued,
+            PointerMode::Meter,
+            PointerMode::Meter,
+            || {
+                native_writes += 1;
+                true
+            }
+        ));
         assert_eq!(native_writes, 0);
         let current = state.revision;
-        assert!(state.apply_pointer_update(current, || {
-            native_writes += 1;
-            true
-        }));
+        assert!(state.apply_pointer_update(
+            current,
+            PointerMode::Meter,
+            PointerMode::Meter,
+            || {
+                native_writes += 1;
+                true
+            }
+        ));
         assert_eq!(native_writes, 1);
 
-        assert!(!state.apply_pointer_update(current, || false));
+        assert!(!state.apply_pointer_update(
+            current,
+            PointerMode::Meter,
+            PointerMode::Meter,
+            || false
+        ));
         assert_ne!(state.revision, current);
-        assert!(!state.apply_pointer_update(current, || {
-            native_writes += 1;
-            true
-        }));
+        assert!(!state.apply_pointer_update(
+            current,
+            PointerMode::Meter,
+            PointerMode::Meter,
+            || {
+                native_writes += 1;
+                true
+            }
+        ));
         assert_eq!(native_writes, 1);
     }
 

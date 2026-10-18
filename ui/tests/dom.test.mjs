@@ -1,6 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isDrawerDragStart, DRAG_CONTROL_SELECTOR, reconcileKeyedRows, setText, setAttribute, delegatedControl } from '../dom.mjs';
+import { isDrawerDragStart, DRAG_CONTROL_SELECTOR, reconcileKeyedRows, setText, setAttribute, delegatedControl, visibleInputRegions } from '../dom.mjs';
+
+test('locked input regions include visible pet controls, not hidden, disabled or clipped-out actions', () => {
+  const visible = { display: 'block', visibility: 'visible', opacity: '1', pointerEvents: 'auto', overflowX: 'visible', overflowY: 'visible' };
+  const root = { ownerDocument: { defaultView: { getComputedStyle: element => element.style || visible } }, parentElement: null, style: { ...visible, overflowY: 'hidden' },
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 320, height: 240 }), clientLeft: 0, clientTop: 0, clientWidth: 320, clientHeight: 240 };
+  const button = (rect, extra = {}) => ({ parentElement: root, style: visible, matches: () => false, closest: () => null, getClientRects: () => [rect], getBoundingClientRect: () => rect, ...extra });
+  const pin = button({ x: 20, y: 100, width: 270, height: 28 });
+  const clipped = button({ x: 20, y: 230, width: 270, height: 28 });
+  const outside = button({ x: 20, y: 250, width: 270, height: 28 });
+  const disabled = button({ x: 20, y: 50, width: 270, height: 28 }, { matches: () => true });
+  const hidden = button({ x: 20, y: 50, width: 270, height: 28 }, { closest: () => ({ hidden: true }) });
+  root.querySelectorAll = () => [pin, clipped, outside, disabled, hidden];
+  assert.deepEqual(visibleInputRegions(root, { width: 320, height: 240 }), [{ x: 20, y: 100, width: 270, height: 28 }, { x: 20, y: 230, width: 270, height: 10 }]);
+  root.querySelectorAll = () => Array.from({ length: 140 }, () => pin);
+  assert.equal(visibleInputRegions(root, { width: 320, height: 240 }).length, 128);
+});
 
 test('drawer title and blank header start primary drag; interactive descendants never do', () => {
   const header = { contains: target => target.inside };
