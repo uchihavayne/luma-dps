@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connectionStatus, normalizeState } from '../model.mjs';
+import { connectionStatus, normalizeState, recentPetTarget } from '../model.mjs';
 
 const status = value => connectionStatus(value, { native: true, locale: 'tr', now: 10000 });
 
@@ -24,10 +24,64 @@ test('structured admin state works without parsing an English error', () => {
   assert.equal(status({ capture: { status: 'error', admin: { required: true, elevated: false, status: 'unknown' } } }).kind, 'error');
 });
 
-test('unsupported Windows and capture failures take precedence over retained combat', () => {
-  assert.equal(status({ status: 'combat', total_damage: 100, capture: { status: 'unsupported' } }).kind, 'unsupported');
+test('legacy API-unavailable and capture failures take precedence over retained combat without blaming the Windows version', () => {
+  const legacy = { status: 'combat', total_damage: 100, capture: { status: 'unsupported', error_code: 'win32:193' } };
+  const tr = status(legacy), en = connectionStatus(legacy, { native: true, locale: 'en' });
+  assert.equal(tr.kind, 'unsupported'); assert.equal(tr.label, 'Yakalama API’si kullanılamıyor');
+  assert.equal(en.label, 'Capture API unavailable');
+  assert.ok(!/güncelle|Windows sürüm|update Windows|Windows version/i.test(`${tr.message} ${en.message}`));
+  assert.ok(tr.detail.includes('win32:193'));
   assert.equal(status({ status: 'paused', paused: true, capture: { status: 'error', detail: 'Initialization failed' } }).kind, 'error');
-  assert.equal(status({ capture: { status: 'error', detail: 'Windows Packet Monitor streaming API unavailable' } }).kind, 'unsupported');
+  assert.equal(status({ capture: { status: 'error', detail: 'Windows Packet Monitor streaming API unavailable' } }).kind, 'error');
+});
+
+test('explicit API failure statuses stay distinct and retain the underlying loader or operation error', () => {
+  const cases = [
+    ['api-unavailable', 'api_unavailable', 'win32:193'],
+    ['api-version-mismatch', 'api_version_mismatch', '0x8007051A'],
+    ['operation-not-supported', 'operation_not_supported', '0x80070032'],
+  ];
+  for (const [captureStatus, kind, code] of cases) {
+    const input = { status: 'combat', paused: true, total_damage: 500, diagnostics: { stream_gaps: 2 }, capture: { status: captureStatus, error_code: code, detail: 'Native capture failed', game_connections: 0 } };
+    for (const locale of ['tr', 'en']) {
+      const result = connectionStatus(input, { native: true, locale });
+      assert.equal(result.kind, kind); assert.equal(result.tone, 'error');
+      assert.ok(result.detail.includes(code));
+      assert.ok(!/Windows sürüm|Windows version|güncelle|update Windows/i.test(result.message));
+    }
+  }
+});
+
+test('generic and unknown capture errors cannot become an OS support claim from free text', () => {
+  const details = ['Windows Packet Monitor streaming API unavailable', 'Unsupported network address family', 'Windows is unavailable', 'Access denied while reading network state'];
+  for (const detail of details) assert.equal(status({ capture: { status: 'error', detail } }).kind, 'error');
+  for (const error_code of ['win32:193', '193', '0x800700C1']) {
+    const result = status({ capture: { status: 'error', error_code, detail: 'Windows unavailable; unsupported loader format; old text: 0x80070005' } });
+    assert.equal(result.kind, 'error'); assert.ok(result.detail.includes(error_code));
+  }
+  for (const captureStatus of ['failed', 'server-failure', 'new-capture-state', 'unavailable']) assert.equal(status({ status: 'combat', total_damage: 500, capture: { status: captureStatus, game_connections: 0 } }).kind, 'error');
+  assert.equal(status({ status: 'capture initialization failed' }).kind, 'error');
+});
+
+test('actual permission status, admin flags and error codes keep priority over loader diagnoses', () => {
+  for (const captureStatus of ['api-unavailable', 'api-version-mismatch', 'operation-not-supported', 'unsupported', 'error']) {
+    for (const error_code of ['win32:5', '0x80070005', '0x80070522', 'win32:1314', '0x800702E4', '740']) {
+      const result = status({ capture: { status: captureStatus, error_code, detail: 'Loader unavailable, unsupported operation' } });
+      assert.equal(result.kind, 'permission'); assert.ok(result.detail.includes(error_code));
+    }
+    assert.equal(status({ capture: { status: captureStatus, error_code: 'win32:193', admin: { required: true, elevated: false, status: 'required' } } }).kind, 'permission');
+  }
+});
+
+test('API failures invalidate a recent pet target and do not revive it on recovery', () => {
+  const live = normalizeState({ local_player_id: 7, local_identity_source: 'server', capture: { status: 'capturing' }, recent_personal_target: { actor_id: 7, target_id: 99, target_npc_id: 2100075, hit_at_ms: 1000, source: 'server-self-hit' } });
+  const observed = recentPetTarget(null, live, 1000);
+  assert.equal(observed.target.id, '99');
+  for (const captureStatus of ['api-unavailable', 'api-version-mismatch', 'operation-not-supported']) {
+    const stopped = recentPetTarget(observed, { ...live, capture: { status: captureStatus } }, 1500);
+    assert.equal(stopped.target, null);
+    assert.equal(recentPetTarget(stopped, live, 2000).target, null);
+  }
 });
 
 test('game presence, packets and combat are separate factual states', () => {

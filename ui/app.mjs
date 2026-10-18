@@ -28,6 +28,7 @@ import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
+import { normalizeCaptureDiagnostics, captureDiagnosticText, renderCaptureDiagnostics, PACKET_MONITOR_EXPORTS } from './capture-diagnostics.mjs';
 import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -63,6 +64,15 @@ let petPinObservation = null, petDiagnosticsOpen = false, petDiagnosticPending =
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
 let appVersion = demo ? 'Demo' : '';
+let captureDiagnostics = null, captureDiagnosticRequest = null, captureDiagnosticFingerprint = '', captureDiagnosticActionPending = false;
+const captureDiagnosticDemo = demo && new URLSearchParams(location.search).get('captureDiagnosticsDemo') === 'missing-api';
+if (captureDiagnosticDemo) captureDiagnostics = normalizeCaptureDiagnostics({
+  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.20.4', mode: 'demo',
+  compatibility: { schema_version: 1, diagnostic_only: true, capture_started: false,
+    os: { status: 'ready', label: 'Windows 10', major: 10, minor: 0, build: 19045, ubr: null, architecture: 'x86_64', process_architecture: 'x86_64', version_source: 'RtlGetVersion', error_code: null },
+    packet_monitor: { status: 'api-unavailable', system32_only: true, load_status: 'loaded', load_error_code: null, exports_present: PACKET_MONITOR_EXPORTS.slice(0, 8), exports_missing: PACKET_MONITOR_EXPORTS.slice(8) } },
+  capture: { status: 'api-unavailable', error_code: 'win32:127', operation: 'GetProcAddress', elevated: true },
+});
 const remindedEventCycles = new Set();
 let calendarHorizonDays = 7;
 let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true, obsLanEnabled = false, obsPort = '';
@@ -512,6 +522,10 @@ function renderMeter() {
   $('#players').setAttribute('aria-label', board ? $('#target-roster-label').textContent : t(scopes.fallback ? 'rosterObserved' : { personal: 'rosterPersonal', party: 'rosterParty', observed: 'rosterObserved' }[prefs.rosterScope]));
   if (roster.players.length && !scopeMessage && ['traffic', 'combat', 'combat_active'].includes(status.kind)) notice.hidden = true;
   if (prefs.displayModules.dps && state.diagnostics.ambiguous_periodic_events > 0) { notice.hidden = false; notice.classList.add('warning'); setText(notice, `${prefs.locale === 'tr' ? 'Ölçüm kısmi: belirsiz NPC tetikleyicileri hasara katılmadı' : 'Partial measurement: ambiguous NPC procs excluded from damage'} · ${fullNumber(state.diagnostics.ambiguous_periodic_events)}`); }
+  const canDiagnose = native && !notice.hidden && status.tone === 'error';
+  notice.dataset.diagnostics = String(canDiagnose);
+  notice.setAttribute('role', canDiagnose ? 'button' : 'status'); notice.tabIndex = canDiagnose ? 0 : -1;
+  if (canDiagnose) setText(notice, `${notice.textContent} · ${prefs.locale === 'tr' ? 'Tanı ↗' : 'Diagnostics ↗'}`);
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
@@ -646,10 +660,70 @@ function combatSettingsContent() {
   return `<label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
+function captureDiagnosticsContent() {
+  return `<div id="capture-diagnostics">${renderCaptureDiagnostics(captureDiagnostics, { locale: prefs.locale, native, busy: Boolean(captureDiagnosticRequest) || captureDiagnosticActionPending, mode: captureDiagnosticDemo ? 'demo' : native ? 'native' : 'browser' })}</div>`;
+}
+
+function refreshCaptureDiagnosticsPanel() {
+  const host = $('#capture-diagnostics');
+  if (!host) return;
+  const content = renderCaptureDiagnostics(captureDiagnostics, { locale: prefs.locale, native, busy: Boolean(captureDiagnosticRequest) || captureDiagnosticActionPending, mode: captureDiagnosticDemo ? 'demo' : native ? 'native' : 'browser' });
+  if (host.innerHTML !== content) host.innerHTML = content;
+  scheduleOverlayRegions();
+}
+
+async function readCaptureDiagnostics() {
+  if (!native) return captureDiagnostics;
+  if (captureDiagnosticRequest) return captureDiagnosticRequest;
+  captureDiagnosticRequest = Promise.resolve().then(() => invoke('get_capture_diagnostics'))
+    .then(value => { captureDiagnostics = normalizeCaptureDiagnostics(value, { mode: 'native' }); return captureDiagnostics; })
+    .catch(() => { captureDiagnostics = null; return null; })
+    .finally(() => { captureDiagnosticRequest = null; refreshCaptureDiagnosticsPanel(); });
+  refreshCaptureDiagnosticsPanel();
+  return captureDiagnosticRequest;
+}
+
+async function captureDiagnosticAction(actionName) {
+  if (captureDiagnosticActionPending) return;
+  captureDiagnosticActionPending = true; refreshCaptureDiagnosticsPanel();
+  try { await performCaptureDiagnosticAction(actionName); }
+  finally {
+    const fallback = $('#capture-diagnostics textarea');
+    captureDiagnosticActionPending = false; refreshCaptureDiagnosticsPanel();
+    if (fallback && $('#capture-diagnostics')) { $('#capture-diagnostics').append(fallback); fallback.focus(); fallback.select(); scheduleOverlayRegions(); }
+    else $(`#capture-diagnostics button[data-action="${actionName}"]`)?.focus();
+  }
+}
+
+async function performCaptureDiagnosticAction(actionName) {
+  if (actionName === 'refresh-capture-diagnostics') {
+    const result = await readCaptureDiagnostics();
+    if (!result && native) toast(t('failed'), true);
+    return;
+  }
+  const report = native ? await readCaptureDiagnostics() : captureDiagnostics;
+  const content = captureDiagnosticText(report, { locale: prefs.locale, mode: captureDiagnosticDemo ? 'demo' : native ? 'native' : 'browser' });
+  if (!content) { toast(t('failed'), true); return; }
+  if (actionName === 'copy-capture-diagnostics') {
+    try { await navigator.clipboard.writeText(content); toast(t('copied')); }
+    catch {
+      const host = $('#capture-diagnostics');
+      if (!host) { toast(t('failed'), true); return; }
+      let field = host.querySelector('textarea');
+      if (!field) { field = document.createElement('textarea'); field.className = 'diagnostic-copy'; field.readOnly = true; field.setAttribute('aria-label', prefs.locale === 'tr' ? 'Kopyalanacak tanı' : 'Diagnostics to copy'); host.append(field); }
+      field.value = content; field.focus(); field.select();
+      toast(prefs.locale === 'tr' ? 'Tanı seçildi; Ctrl+C ile kopyala.' : 'Diagnostics selected; press Ctrl+C to copy.'); scheduleOverlayRegions();
+    }
+  } else {
+    try { if (native) await invoke('export_document', { format: 'json', content }); else download('luma-capture-diagnostics-demo.json', content, 'application/json'); toast(t('exported')); }
+    catch { toast(t('failed'), true); }
+  }
+}
+
 function controlsContent() {
   const tr = prefs.locale === 'tr';
   const options = [['fullscreenOverlay', tr ? 'Tam ekran görünümünü aç' : 'Enable fullscreen view'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Pencere ve HUD için tek satır kompakt görünüm' : 'One-line compact view for the window and HUD']];
-  return `<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Üstteki tam ekran düğmesi ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The toolbar fullscreen button opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
+  return `${captureDiagnosticsContent()}<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Üstteki tam ekran düğmesi ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The toolbar fullscreen button opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}`;
 }
 
 async function readRuntimeState() {
@@ -1801,6 +1875,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (theme) { savePreferences({ theme }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === theme))); return; }
   const control = delegatedControl(event, event.currentTarget, 'button[data-action]'); if (!control) return;
   const actionName = control.dataset.action, id = control.dataset.id;
+  if (['refresh-capture-diagnostics', 'copy-capture-diagnostics', 'save-capture-diagnostics'].includes(actionName)) { await captureDiagnosticAction(actionName); return; }
   if (['check-update', 'download-update', 'install-update'].includes(actionName)) { await runUpdate(actionName); return; }
   if (actionName === 'refresh-insights') { await readCurveRecord(); return; }
   if (actionName === 'team-create') { await teamAction('create_team_room'); return; }
@@ -1996,6 +2071,8 @@ function receiveState(value) {
   receivedStateCount++;
   const previous = state;
   state = normalizeState(value);
+  const diagnosticFingerprint = JSON.stringify([state.capture.status, state.capture.error_code, state.capture.admin?.elevated]);
+  if (diagnosticFingerprint !== captureDiagnosticFingerprint) { captureDiagnosticFingerprint = diagnosticFingerprint; readCaptureDiagnostics(); }
   const petMetadata = petMetadataTransition(previous, state, { previousActorId: liveServerActorId(previous), currentActorId: liveServerActorId(state) });
   if (petMetadata.clear) { characterData = characterSnapshot(); if (drawer === 'analysis' && ['build', 'pets'].includes(tab)) refreshDrawer(); }
   else if ((previous.diagnostics?.stream_gaps ?? 0) !== (state.diagnostics?.stream_gaps ?? 0) || (previous.capture?.missed_packets ?? 0) !== (state.capture?.missed_packets ?? 0)) markPetSnapshotStale('capture-gap');
@@ -2006,6 +2083,14 @@ function receiveState(value) {
   renderMeter();
 }
 
+function openCaptureDiagnostics(event) {
+  if ($('#notice').dataset.diagnostics !== 'true' || (event.type === 'keydown' && !['Enter', ' '].includes(event.key))) return;
+  event.preventDefault(); openDrawer('settings', 'controls');
+  $('#capture-diagnostics')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  readCaptureDiagnostics();
+}
+$('#notice').addEventListener('click', openCaptureDiagnostics);
+$('#notice').addEventListener('keydown', openCaptureDiagnostics);
 window.addEventListener('resize', syncOverlayGeometry);
 window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
 if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
@@ -2027,6 +2112,7 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(await invoke('get_preferences'))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
   await refreshState();
   readRuntimeState();
+  readCaptureDiagnostics();
   readWorldData();
   readEventSchedule();
   readCubeState();

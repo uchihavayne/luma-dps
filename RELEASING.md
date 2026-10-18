@@ -34,9 +34,12 @@ Automated tests and browser layout checks cover their specified cases. The final
 | Nearby players | Personal total excludes strangers while Observed shows received actors | Pending on final preview |
 | Real party | Automatic/explicit roster, personal versus party totals, reconnect invalidation | Pending on final preview |
 | Window interaction | Drag settings, close/Escape, resize/lock, minimum size, DPI/multi-monitor placement | Final native check pending |
+| Capture compatibility | Local Windows build/architecture, System32 DLL/export results, actual failure code/operation and copy/local export; inspection starts no capture or extra UAC/network activity | Automated paths covered; final native report/UI check pending |
 | Observed telemetry | Own login names/build, supported boss windup/effects and map slots | Content-specific live coverage pending |
 | Automatic party cooldowns | Current party identity, ordinary cooldowns, charges/recharge and reconnect clearing without a room | Replay tested; synchronized live EU check pending |
 | Hidden Cube sound | Real chime/other-sound negatives, stereo pan and camera turn, silence/stop/device change | Reference replay tested; live game check pending |
+
+A report showing all required exports is a capability observation, not a successful `PacketMonitorInitialize` or live-capture test. Do not describe this diagnostic addition as a Windows 10 compatibility fix or a new capture fallback.
 
 Confirm no DEMO data enters a native session, calendar updates fail safely offline, reports preserve scope/unknown values and OBS remains off until requested. Preserve the known limitations in the release notes: ambiguous live healing/PvP, partial equipment/catalog names, native capture constraints, supported Odyle/cooldown layouts and no official game-verified world rankings. Community rankings cover opted-in uploaded summaries only; confirm the deployed service's current audience before advertising public availability.
 
@@ -54,7 +57,7 @@ The app embeds a Luma RSA-3072 public trust anchor. The publisher private key is
 After CI passes, download and audit the exact commit's artifacts. Extract the matching EXE, then sign its update manifest on the publisher machine:
 
 ```powershell
-python tools/sign_update.py --version 0.20.3 --exe release/Luma-DPS-0.20.3.exe --commit <exact-40-character-commit> --notes-file <release-notes-file> --out-dir release
+python tools/sign_update.py --version 0.20.4 --exe release/Luma-DPS-0.20.4.exe --commit <exact-40-character-commit> --notes-file <release-notes-file> --out-dir release
 ```
 
 Publisher tooling additionally requires `cryptography`; the built app verifies signatures through Windows CNG. Publish the standalone versioned EXE, `luma-update.json` and `luma-update.sig` alongside the portable/source ZIPs and checksum file in the same GitHub release. The manifest signs the exact version, commit, asset name, byte length, SHA-256 and release notes. Regenerate the public checksum file after signing to include every published artifact except the checksum file itself. Do not sign an unreviewed binary or mutate an asset after signing.

@@ -2,6 +2,12 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.20.4 preview · 2026-10-18
+
+- Automatically report the local Windows version/build, system/app architectures and System32 Packet Monitor DLL/export availability in **Settings → Controls → Capture compatibility**, also reached from a capture error notice. Copy or save the bounded JSON report locally; no automatic upload is added.
+- Keep the inspection read-only: no capture initialization, extra UAC prompt or network request. Required exports being present does not confirm that a capture session can start.
+- Distinguish API loading, version and unsupported-operation failures; retain actual permission codes and stop treating generic error text as an unsupported Windows version. No capture fallback or Windows 10 compatibility fix is claimed.
+
 ## 0.20.3 preview · 2026-10-18
 
 - Keep visible controls usable while locked click-through is enabled, in window and fullscreen modes. Only their clipped input regions and pet scroll areas accept input; surrounding space still passes clicks to the game. Preserve an accepted pointer press through release and reject stale input-policy writes after mode or drawer changes.

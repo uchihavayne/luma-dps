@@ -6,6 +6,21 @@
 use serde::Serialize;
 use std::sync::Arc;
 
+#[path = "capture_compatibility.rs"]
+mod compatibility;
+pub use compatibility::{compatibility_report, CompatibilityReport};
+
+pub fn diagnostic_operation(detail: &str) -> Option<&'static str> {
+    compatibility::REQUIRED_EXPORTS
+        .into_iter()
+        .chain(["LoadLibraryExW", "GetProcAddress"])
+        .find(|operation| {
+            detail
+                .strip_prefix(operation)
+                .is_some_and(|suffix| suffix.starts_with(" failed") || suffix.starts_with(':'))
+        })
+}
+
 #[derive(Clone, Serialize)]
 pub struct AdminCapability {
     pub required: bool,
@@ -251,7 +266,7 @@ pub fn open_support_url(url: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 mod windows {
-    use super::{update, CaptureFailure, NetworkLatency};
+    use super::{compatibility, update, CaptureFailure, NetworkLatency};
     use std::{
         collections::{HashMap, HashSet},
         ffi::c_void,
@@ -277,7 +292,6 @@ mod windows {
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
-            LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32},
             Threading::{GetCurrentProcess, OpenProcessToken},
         },
     };
@@ -662,51 +676,42 @@ mod windows {
 
     impl Api {
         unsafe fn load() -> Result<Self, CaptureFailure> {
-            let name: Vec<u16> = "pktmonapi.dll".encode_utf16().chain(Some(0)).collect();
-            let module =
-                LoadLibraryExW(name.as_ptr(), ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
-            if module.is_null() {
-                return Err(CaptureFailure {
-                    status: "unsupported",
-                    code: Some(format!("win32:{}", GetLastError())),
-                    detail: "This Windows build does not provide the Packet Monitor streaming API required by Luma".into(),
-                });
-            }
+            let module = compatibility::windows::SystemModule::load("pktmonapi.dll").map_err(|code| CaptureFailure {
+                status: compatibility::loader_failure_status(code),
+                code: Some(format!("win32:{code}")),
+                detail: format!("LoadLibraryExW failed for the Windows Packet Monitor API (Windows error {code}); automatic compatibility diagnostics contain the local capability result"),
+            })?;
             macro_rules! symbol {
-                ($name:literal, $kind:ty) => {{
-                    let function = GetProcAddress(module, concat!($name, "\0").as_ptr());
+                ($index:literal, $kind:ty) => {{
+                    let name = compatibility::REQUIRED_EXPORTS[$index];
+                    let function = module.symbol(name);
                     match function {
                         Some(function) => {
                             transmute::<unsafe extern "system" fn() -> isize, $kind>(function)
                         }
                         None => {
                             return Err(CaptureFailure {
-                                status: "unsupported",
+                                status: "api-unavailable",
                                 code: Some("win32:127".into()),
-                                detail: concat!(
-                                    "Windows Packet Monitor does not export ",
-                                    $name,
-                                    "; native capture unavailable on this Windows build"
-                                )
-                                .into(),
+                                detail: format!("GetProcAddress failed: Windows Packet Monitor does not export {name}; the capture API is unavailable"),
                             })
                         }
                     }
                 }};
             }
             Ok(Self {
-                _module: module,
-                initialize: symbol!("PacketMonitorInitialize", Init),
-                uninitialize: symbol!("PacketMonitorUninitialize", Close),
-                create_session: symbol!("PacketMonitorCreateLiveSession", CreateSession),
-                close_session: symbol!("PacketMonitorCloseSessionHandle", Close),
-                create_stream: symbol!("PacketMonitorCreateRealtimeStream", CreateStream),
-                close_stream: symbol!("PacketMonitorCloseRealtimeStream", Close),
-                set_active: symbol!("PacketMonitorSetSessionActive", SetActive),
-                attach: symbol!("PacketMonitorAttachOutputToSession", Attach),
-                enumerate: symbol!("PacketMonitorEnumDataSources", Enumerate),
-                add_source: symbol!("PacketMonitorAddSingleDataSourceToSession", AddSource),
-                add_constraint: symbol!("PacketMonitorAddCaptureConstraint", AddConstraint),
+                initialize: symbol!(0, Init),
+                uninitialize: symbol!(1, Close),
+                create_session: symbol!(2, CreateSession),
+                close_session: symbol!(3, Close),
+                create_stream: symbol!(4, CreateStream),
+                close_stream: symbol!(5, Close),
+                set_active: symbol!(6, SetActive),
+                attach: symbol!(7, Attach),
+                enumerate: symbol!(8, Enumerate),
+                add_source: symbol!(9, AddSource),
+                add_constraint: symbol!(10, AddConstraint),
+                _module: module.into_raw(),
             })
         }
     }
@@ -724,9 +729,13 @@ mod windows {
                 "permission-required",
                 " Close Luma and reopen the executable, then approve the Windows administrator prompt.",
             ),
-            0x8007051A | 0x80070032 => (
-                "unsupported",
-                " This Windows build does not support Luma's native packet capture API.",
+            0x8007051A if operation == "PacketMonitorInitialize" => (
+                "api-version-mismatch",
+                " Windows Packet Monitor rejected the requested API revision; automatic diagnostics identify the Windows build and available exports.",
+            ),
+            0x80070032 => (
+                "operation-not-supported",
+                " Windows Packet Monitor does not support this capture operation in the current configuration.",
             ),
             _ => (
                 "error",
@@ -744,7 +753,19 @@ mod windows {
     }
 
     pub fn inspect() -> Result<(), String> {
-        unsafe { Api::load().map(|_| ()).map_err(|error| error.detail) }
+        let report = compatibility::compatibility_report().packet_monitor;
+        if report.status == "exports-available" {
+            Ok(())
+        } else if let Some(code) = report.load_error_code {
+            Err(format!(
+                "LoadLibraryExW failed for the Windows Packet Monitor API (Windows error {code})"
+            ))
+        } else {
+            Err(format!(
+                "Windows Packet Monitor is missing required exports: {}",
+                report.exports_missing.join(", ")
+            ))
+        }
     }
 
     struct Session<'a> {
@@ -2221,8 +2242,22 @@ mod windows {
             let unsupported = check(0x8007051Au32 as i32, "PacketMonitorInitialize")
                 .err()
                 .unwrap();
-            assert_eq!(unsupported.status, "unsupported");
+            assert_eq!(unsupported.status, "api-version-mismatch");
             assert_eq!(unsupported.code.as_deref(), Some("0x8007051A"));
+            let operation = check(0x80070032u32 as i32, "PacketMonitorAddCaptureConstraint")
+                .err()
+                .unwrap();
+            assert_eq!(operation.status, "operation-not-supported");
+            assert!(operation
+                .detail
+                .starts_with("PacketMonitorAddCaptureConstraint failed"));
+            assert_eq!(
+                check(0x8007051Au32 as i32, "PacketMonitorCreateRealtimeStream")
+                    .err()
+                    .unwrap()
+                    .status,
+                "error"
+            );
             assert!(check(0, "PacketMonitorInitialize").is_ok());
         }
 

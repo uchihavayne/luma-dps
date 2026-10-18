@@ -1919,6 +1919,39 @@ mod shell_tests {
     }
 
     #[test]
+    fn automatic_capture_diagnostics_exclude_private_state_and_do_not_start_capture() {
+        let mut preferences = Preferences::default();
+        preferences.extra.insert(
+            "characterName".into(),
+            Value::String("PRIVATE-CHARACTER".into()),
+        );
+        let shared = fixture_shared(MeterEngine::default(), preferences);
+        {
+            let mut capture = shared.capture.lock().unwrap();
+            capture.status = "api-version-mismatch".into();
+            capture.error_code = Some("0x8007051A".into());
+            capture.detail = "PacketMonitorInitialize failed: PRIVATE-PATH PRIVATE-IP".into();
+            capture.admin.detail = "PRIVATE-ADMIN-DETAIL".into();
+        }
+        let report = capture_diagnostics(&shared).unwrap();
+        assert_eq!(report["mode"], "native");
+        assert_eq!(report["app_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(report["compatibility"]["diagnostic_only"], true);
+        assert_eq!(report["compatibility"]["capture_started"], false);
+        assert_eq!(report["capture"]["status"], "api-version-mismatch");
+        assert_eq!(report["capture"]["error_code"], "0x8007051A");
+        assert_eq!(report["capture"]["operation"], "PacketMonitorInitialize");
+        assert_eq!(report["capture"].as_object().unwrap().len(), 4);
+        assert!(!report.to_string().contains("PRIVATE-"));
+        assert!(shared.capture_worker.lock().unwrap().is_none());
+        assert!(!shared.stopping.load(Ordering::Relaxed));
+        assert_eq!(
+            shared.capture.lock().unwrap().status,
+            "api-version-mismatch"
+        );
+    }
+
+    #[test]
     fn successive_snapshots_are_ordered_without_changing_engine_damage_or_rates() {
         let shared = fixture_shared(MeterEngine::default(), Preferences::default());
         let mut previous_revision = 0;
@@ -2546,6 +2579,32 @@ fn get_app_info() -> Value {
         "edition": "independent",
         "capture": "windows-packet-monitor",
     })
+}
+
+fn capture_diagnostics(shared: &Shared) -> Result<Value, String> {
+    let compatibility = native_capture::compatibility_report();
+    let capture = shared
+        .capture
+        .lock()
+        .map_err(|_| "Capture state unavailable")?;
+    Ok(serde_json::json!({
+        "type": "luma-capture-diagnostics",
+        "schema_version": 1,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "mode": "native",
+        "compatibility": compatibility,
+        "capture": {
+            "status": capture.status,
+            "error_code": capture.error_code,
+            "operation": native_capture::diagnostic_operation(&capture.detail),
+            "elevated": capture.admin.elevated,
+        },
+    }))
+}
+
+#[tauri::command]
+fn get_capture_diagnostics(shared: State<Arc<Shared>>) -> Result<Value, String> {
+    capture_diagnostics(shared.inner())
 }
 
 #[tauri::command]
@@ -3661,6 +3720,7 @@ fn run_probe_if_requested() -> bool {
     let result = (|| -> Result<(), String> {
         let mut state = snapshot(&shared)?;
         if let Some(object) = state.as_object_mut() {
+            object.insert("capture_diagnostics".into(), capture_diagnostics(&shared)?);
             object.insert("probe".into(), serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "duration_ms": started.elapsed().as_millis(),
                 "capture_requested": capture_requested, "api_exports_present": backend.is_ok(), "api_error": backend.err(), "window_opened": false }));
         }
@@ -3710,6 +3770,7 @@ fn main() {
             import_cube_reference,
             reset_cube_reference,
             get_app_info,
+            get_capture_diagnostics,
             get_event_schedule,
             refresh_event_schedule,
             get_obs_state,

@@ -269,7 +269,7 @@ export function recentPetTarget(previous, state = {}, now = Date.now()) {
   const epoch = `${actor}:${ownName}:${state.diagnostics?.stream_gaps ?? 0}:${capture.missed_packets ?? 0}`;
   const notBefore = previous && previous.epoch !== epoch ? now : previous?.notBefore ?? 0;
   const empty = { target: null, at: null, epoch, notBefore };
-  if (['stopped', 'disconnected', 'error', 'no-game', 'waiting', 'starting', 'permission-required', 'unavailable', 'unsupported'].includes(capture.status)) return { ...empty, notBefore: now };
+  if (['stopped', 'disconnected', 'error', 'no-game', 'waiting', 'starting', 'permission-required', 'unavailable', 'unsupported', 'api-unavailable', 'api-version-mismatch', 'operation-not-supported'].includes(capture.status)) return { ...empty, notBefore: now };
   const received = normalizeRecentPersonalTarget(state.recent_personal_target);
   if (received) {
     if (received.actor_id !== actor || received.hit_at_ms < notBefore || now < received.hit_at_ms || now - received.hit_at_ms >= 10000) return empty;
@@ -346,7 +346,10 @@ const CONNECTION_TEXT = Object.freeze({
     browser: ['Tarayıcı önizlemesi', 'Tarayıcı önizlemesi · Canlı yakalama için masaüstü uygulaması gerekir.'],
     demo: ['DEMO', 'DEMO · Sabit örnek veriler. Canlı oyun verisi değildir.'],
     permission: ['Yönetici gerekli', 'Yönetici olarak yeniden açın. Windows paket yakalama izni reddedildi.'],
-    unsupported: ['Windows desteklenmiyor', 'Windows sürümünüz bu yakalama API’sini desteklemiyor. Windows’u güncelleyin.'],
+    unsupported: ['Yakalama API’si kullanılamıyor', 'Windows paket yakalama API’si kullanılamıyor. Nedeni belirlemek için uyumluluk tanısını açın.'],
+    api_unavailable: ['Yakalama API’si kullanılamıyor', 'Windows paket yakalama API’si yüklenemedi. Ayrıntılar ve hata kodu için uyumluluk tanısını açın.'],
+    api_version_mismatch: ['Yakalama API sürümü uyumsuz', 'Yüklenen paket yakalama API’si ile istenen sürüm uyuşmuyor. Uyumluluk tanısını açın.'],
+    operation_not_supported: ['Yakalama işlemi desteklenmiyor', 'Paket yakalama API’si istenen işlemi desteklemiyor. Uyumluluk tanısını açın.'],
     disabled: ['Yakalama kapalı', 'Bu başlatmada paket yakalama kapalı. Canlı olaylar alınmıyor.'],
     error: ['Yakalama hatası', 'Paket yakalama başlatılamadı. Ayrıntı için bu bildirimin üzerine gelin.'],
     disconnected: ['Bağlantı yok', 'Yakalama durumu alınamıyor. Masaüstü uygulamasını yeniden açın.'],
@@ -364,7 +367,10 @@ const CONNECTION_TEXT = Object.freeze({
     browser: ['Browser preview', 'Browser preview · Live capture requires the desktop app.'],
     demo: ['DEMO', 'DEMO · Fixed sample data. These are not live game statistics.'],
     permission: ['Admin required', 'Reopen as administrator. Windows denied packet capture permission.'],
-    unsupported: ['Windows unsupported', 'This Windows version does not support the capture API. Update Windows.'],
+    unsupported: ['Capture API unavailable', 'The Windows packet capture API is unavailable. Open compatibility diagnostics to identify the cause.'],
+    api_unavailable: ['Capture API unavailable', 'The Windows packet capture API could not be loaded. Open compatibility diagnostics for details and the error code.'],
+    api_version_mismatch: ['Capture API version mismatch', 'The loaded packet capture API does not match the requested version. Open compatibility diagnostics.'],
+    operation_not_supported: ['Capture operation unsupported', 'The packet capture API does not support the requested operation. Open compatibility diagnostics.'],
     disabled: ['Capture disabled', 'Packet capture is disabled for this launch. No live events are being received.'],
     error: ['Capture error', 'Packet capture could not start. Hover over this notice for details.'],
     disconnected: ['Disconnected', 'Capture status is unavailable. Reopen the desktop app.'],
@@ -384,24 +390,32 @@ const CONNECTION_TEXT = Object.freeze({
 export function connectionStatus(value, { native = false, demo = false, locale = 'tr', now = Date.now() } = {}) {
   const s = normalizeState(value), c = s.capture;
   const engineStatus = s.status.toLowerCase(), captureStatus = c.status.toLowerCase();
-  const error = `${captureStatus} ${c.error_code} ${c.detail} ${c.admin.status}`.toLowerCase();
+  const code = c.error_code.toLowerCase().trim(), adminStatus = c.admin.status.toLowerCase();
+  const permissionCode = /^(?:0x80070005|0x80070522|0x800702e4|win32:(?:5|740|1314)|5|740|1314|e_accessdenied)$/;
+  const legacyPermissionCode = !code && /(?:^|[^a-z0-9])(?:0x80070005|0x80070522|0x800702e4|win32:(?:5|740|1314))\b/i.test(c.detail);
+  const permissionRequired = captureStatus === 'permission-required' || permissionCode.test(code) || legacyPermissionCode || adminStatus === 'required' || c.admin.required && c.admin.elevated === false && adminStatus !== 'unknown';
   let kind;
   if (demo && !native) kind = 'demo';
   else if (!native) kind = 'browser';
-  else if (/permission[-_ ]required|0x80070005|win32:5\b|access denied|elevation required|administrator required/.test(error) || c.admin.status === 'required' || (c.admin.required && c.admin.elevated === false && c.admin.status !== 'unknown')) kind = 'permission';
-  else if (/unsupported|unavailable.*windows|windows.*unavailable|0x80070032|0x80004001/.test(error)) kind = 'unsupported';
+  else if (permissionRequired) kind = 'permission';
+  else if (captureStatus === 'unsupported') kind = 'unsupported';
+  else if (captureStatus === 'api-unavailable') kind = 'api_unavailable';
+  else if (captureStatus === 'api-version-mismatch') kind = 'api_version_mismatch';
+  else if (captureStatus === 'operation-not-supported') kind = 'operation_not_supported';
   else if (captureStatus === 'disabled') kind = 'disabled';
-  else if (/error|failed/.test(captureStatus)) kind = 'error';
+  else if (captureStatus && !['capturing', 'starting', 'waiting', 'disconnected', 'stopped', 'no-game'].includes(captureStatus)) kind = 'error';
+  else if (!captureStatus && (code || /error|failed|unavailable|unsupported/.test(engineStatus))) kind = 'error';
+  else if (captureStatus === 'disconnected' || captureStatus === 'stopped') kind = 'disconnected';
   else if (engineStatus === 'disconnected' && !captureStatus) kind = 'disconnected';
   else if (captureStatus === 'starting') kind = 'starting';
-  else if (captureStatus === 'waiting' || c.game_connections === 0) kind = c.game_processes > 0 ? 'waiting_connection' : 'waiting_game';
+  else if (captureStatus === 'waiting' || captureStatus === 'no-game' || c.game_connections === 0) kind = c.game_processes > 0 ? 'waiting_connection' : 'waiting_game';
   else if (/capture[-_]gap|capture[-_]loss/.test(engineStatus) || c.missed_packets > 0 || s.diagnostics.stream_gaps > 0) kind = 'loss';
   else if (s.paused || engineStatus === 'paused') kind = 'paused';
   else if (captureStatus === 'capturing' && c.last_packet_at_ms !== null && now >= c.last_packet_at_ms && now - c.last_packet_at_ms <= 5000) kind = s.encounter_active === true ? 'combat_active' : engineStatus === 'combat' || s.total_damage > 0 ? 'combat' : 'traffic';
   else if (captureStatus === 'capturing' && c.game_connections > 0) kind = 'waiting_traffic';
   else kind = 'disconnected';
   const [label, message] = CONNECTION_TEXT[locale === 'en' ? 'en' : 'tr'][kind];
-  const tone = ['permission', 'unsupported', 'error', 'disconnected'].includes(kind) ? 'error' : kind === 'loss' ? 'warning' : ['traffic', 'combat', 'combat_active'].includes(kind) ? 'live' : kind === 'demo' ? 'demo' : 'waiting';
+  const tone = ['permission', 'unsupported', 'api_unavailable', 'api_version_mismatch', 'operation_not_supported', 'error', 'disconnected'].includes(kind) ? 'error' : kind === 'loss' ? 'warning' : ['traffic', 'combat', 'combat_active'].includes(kind) ? 'live' : kind === 'demo' ? 'demo' : 'waiting';
   return { kind, tone, label, message, detail: [c.detail, c.error_code, c.admin.detail].filter(Boolean).join(' · ') || s.status };
 }
 

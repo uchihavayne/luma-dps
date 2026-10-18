@@ -11,6 +11,36 @@ approval on launch. Debug and unit-test builds keep the normal as-invoker policy
 The meter reports the process elevation status and actual HRESULT if Windows
 refuses capture. `LUMA_CAPTURE_DISABLED=1` suppresses capture for QA.
 
+## Automatic capture compatibility diagnostics
+
+The 0.20.4 preview automatically prepares a bounded local capability report for
+the same-app **Settings → Controls → Capture compatibility** panel. Capture
+error notices also provide a direct shortcut to it. It records the Windows family,
+version/build (and update revision when available), system and process
+architectures, and whether System32's `pktmonapi.dll` loads and provides the eleven
+required exports. The report also shows the current capture status, failure
+operation, actual error code and elevation state. Copy JSON/save JSON controls
+are explicit local actions; the report is not sent automatically. Its allowlisted
+fields exclude character names, network addresses, file paths, packet contents
+and audio.
+
+This is read-only capability detection. It queries local OS information, loads
+only the System32 API DLL and resolves fixed export names; it does not call
+`PacketMonitorInitialize`, create/activate a capture session, request UAC approval,
+change system settings or make a network request. The normal release executable's
+launch/elevation policy remains separate. A report with `exports-available`
+confirms symbol presence only: permissions, API revision or session initialization
+can still fail. It does not prove that Windows 10 capture is supported or fixed,
+and no alternate capture backend is introduced.
+
+Missing/failed API loading, API-version mismatch and unsupported operations remain
+separate from permission errors. Legacy `unsupported` reports use the neutral
+**Capture API unavailable** label. A generic error mentioning Windows or an
+unsupported network operation is not evidence that the OS version is unsupported;
+actual error codes and structured backend states are retained for troubleshooting.
+
+## Bounded headless probe
+
 The executable supports a bounded headless diagnostic:
 `luma-desktop.exe --probe-seconds 2 --probe-output native-probe.json`.
 This opens no window and writes a state/capability snapshot. Native capture is
