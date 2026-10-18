@@ -161,6 +161,7 @@ pub enum CharacterEvent {
     Inspection(InspectedCharacter),
     PetInventory {
         active_pet_id: Option<u32>,
+        active_pet_known: bool,
         pets: Vec<ObservedPetProgress>,
     },
     PetGains {
@@ -686,10 +687,10 @@ fn pet_inventory_prefix(frame: &[u8]) -> Result<(CharacterEvent, usize), Charact
         bytes: frame,
         offset: 2,
     };
+    // This word matches the summoned pet on the observed client. Other
+    // published captures leave its meaning unknown, so an unrecognized value
+    // cannot invalidate the independently counted collection which follows.
     let active = reader.word()?;
-    if active != 0 && !(1_000..=99_999).contains(&active) {
-        return Err(CharacterError::Invalid);
-    }
     let count = reader.variable()? as usize;
     if count > MAX_PETS {
         return Err(CharacterError::Limit);
@@ -700,32 +701,35 @@ fn pet_inventory_prefix(frame: &[u8]) -> Result<(CharacterEvent, usize), Charact
         let id = reader.word()?;
         let repeated_id = reader.word()?;
         let level = reader.word()?;
-        if !(1_000..=99_999).contains(&id)
-            || id != repeated_id
-            || !(1..=3).contains(&level)
-            || !ids.insert(id)
-        {
+        if !(1_000..=99_999).contains(&id) || id != repeated_id || level > 3 || !ids.insert(id) {
             return Err(CharacterError::Invalid);
         }
         pets.push(ObservedPetProgress::observed(id, Some(level), None, 0));
     }
-    if active != 0 && !ids.contains(&active) {
-        return Err(CharacterError::Invalid);
-    }
+    let active_pet_known = active == 0 || ids.contains(&active);
     let progress_count = reader.variable()? as usize;
-    if progress_count > count {
-        return Err(CharacterError::Invalid);
+    if progress_count > MAX_PETS {
+        return Err(CharacterError::Limit);
     }
     let mut progress_ids = BTreeSet::new();
     for _ in 0..progress_count {
         let id = reader.word()?;
         let progress = reader.word()?;
-        if !progress_ids.insert(id) {
+        if !(1_000..=99_999).contains(&id) || !progress_ids.insert(id) {
             return Err(CharacterError::Invalid);
         }
-        let Some(pet) = pets.iter_mut().find(|pet| pet.pet_id == id) else {
-            return Err(CharacterError::Invalid);
+        let index = if let Some(index) = pets.iter().position(|pet| pet.pet_id == id) {
+            index
+        } else {
+            if pets.len() >= MAX_PETS {
+                return Err(CharacterError::Limit);
+            }
+            // Points and levels are separate server lists. A points-only row
+            // is a real observation, but supplies no explicit level.
+            pets.push(ObservedPetProgress::observed(id, None, None, 0));
+            pets.len() - 1
         };
+        let pet = &mut pets[index];
         pet.progress = Some(u64::from(progress));
         pet.progress_source = "server-absolute".into();
     }
@@ -734,7 +738,8 @@ fn pet_inventory_prefix(frame: &[u8]) -> Result<(CharacterEvent, usize), Charact
     pets.sort_by_key(|pet| pet.pet_id);
     Ok((
         CharacterEvent::PetInventory {
-            active_pet_id: (active != 0).then_some(active),
+            active_pet_id: (active_pet_known && active != 0).then_some(active),
+            active_pet_known,
             pets,
         },
         reader.offset,
@@ -950,6 +955,7 @@ fn valid_pet_event(event: &CharacterEvent) -> bool {
     match event {
         CharacterEvent::PetInventory {
             active_pet_id,
+            active_pet_known,
             pets,
         } => {
             if pets.len() > MAX_PETS {
@@ -959,11 +965,12 @@ fn valid_pet_event(event: &CharacterEvent) -> bool {
             pets.iter().all(|pet| {
                 valid_id(pet.pet_id)
                     && ids.insert(pet.pet_id)
-                    && pet.level.is_some_and(|level| (1..=3).contains(&level))
+                    && pet.level.is_none_or(|level| level <= 3)
+                    && (pet.level.is_some() || pet.progress.is_some())
                     && pet
                         .progress
                         .is_none_or(|progress| progress <= u64::from(u32::MAX))
-            }) && active_pet_id.is_none_or(|id| ids.contains(&id))
+            }) && active_pet_id.is_none_or(|id| *active_pet_known && ids.contains(&id))
         }
         CharacterEvent::PetGains { gains } => {
             let mut ids = BTreeSet::new();
@@ -1216,6 +1223,7 @@ impl CharacterStore {
         match event {
             CharacterEvent::PetInventory {
                 active_pet_id,
+                active_pet_known,
                 mut pets,
             } => {
                 for pet in &mut pets {
@@ -1228,7 +1236,7 @@ impl CharacterStore {
                 }
                 pets.sort_by_key(|pet| pet.pet_id);
                 state.active_pet_id = active_pet_id;
-                state.active_pet_known = true;
+                state.active_pet_known = active_pet_known;
                 state.inventory_complete = true;
                 state.pets = pets;
             }

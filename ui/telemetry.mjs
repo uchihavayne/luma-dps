@@ -37,7 +37,7 @@ export function petProgress(value, { localPlayerId } = {}) {
     if (pet === null || seen.has(pet)) continue;
     seen.add(pet);
     const progress = ['server-absolute', 'server-delta'].includes(row.progress_source) ? integer(row.progress) : null;
-    pets.push({ pet_id: pet, level: integer(row.level, 1, 3), progress,
+    pets.push({ pet_id: pet, level: integer(row.level, 0, 3), progress,
       progress_source: progress === null ? 'unknown' : row.progress_source,
       required_progress: null, session_gained: integer(row.session_gained) ?? 0,
       session_started_at_ms: integer(row.session_started_at_ms), session_baseline_gained: integer(row.session_baseline_gained) ?? 0,

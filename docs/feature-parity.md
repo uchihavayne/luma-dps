@@ -1,6 +1,6 @@
 # Feature coverage and comparison
 
-Publisher pages checked on **15–16 October 2026**; the pet reference sources were reviewed on **18 October 2026**. Luma coverage describes the independent **0.19.0 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier.
+Publisher pages checked on **15–16 October 2026**; the pet reference sources were reviewed on **18 October 2026**. Luma coverage describes the independent **0.19.1 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier.
 
 ## What the published products describe
 

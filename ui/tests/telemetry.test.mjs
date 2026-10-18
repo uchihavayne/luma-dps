@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { networkLatency, latencyPresentation, petProgress, cooldownObservation, staggerState, staggerPresentation } from '../telemetry.mjs';
+import { characterSnapshot } from '../character.mjs';
 
 const latency = () => ({ status: 'ready', source: 'windows-tcp-estats', selection: 'worst-active-game-tcp', rtt_ms: 83, latest_rtt_ms: 90, variation_ms: 4, observed_at_ms: 1000, sampled_at_ms: 2000, fresh_for_ms: 5000, measured_connections: 1, game_connections: 2 });
 const pets = () => ({ actor_id: 7, source: 'server-self', observed_at_ms: 2000, active_pet_id: 1042, active_pet_known: true, inventory_complete: true, pets: [{ pet_id: 1042, level: 2, progress: 32, progress_source: 'server-absolute', required_progress: 75, session_gained: 2, observed_at_ms: 2000 }] });
@@ -49,6 +50,20 @@ test('pet lists deduplicate and preserve unknown progress rather than displaying
   assert.equal(value.pets[1].level, null); assert.equal(value.pets[1].progress, null);
   assert.equal(value.pets[1].session_gained, 0); assert.equal(value.inventory_complete, false);
   assert.equal(petProgress({ ...pets(), active_pet_id: 9999 }).active_pet_id, null);
+});
+
+test('received registration level zero survives native and character snapshot normalization without filling missing levels', () => {
+  const input = pets();
+  input.pets = [
+    { pet_id: 1002, level: 0, progress: 3, progress_source: 'server-absolute', observed_at_ms: 2000 },
+    { pet_id: 1003, progress: 1, progress_source: 'server-delta', observed_at_ms: 2000 },
+    { pet_id: 1004, level: null, progress: 0, progress_source: 'server-absolute', observed_at_ms: 2000 },
+  ];
+  const first = petProgress(input, { localPlayerId: 7 });
+  assert.equal(first.pets[0].level, 0); assert.equal(first.pets[0].progress, 3);
+  assert.equal(first.pets[1].level, null); assert.equal(first.pets[2].level, null);
+  assert.deepEqual(petProgress(first, { localPlayerId: '7' }), first);
+  assert.deepEqual(petProgress(characterSnapshot({ pet_progress: input }).pet_progress, { localPlayerId: '7' }), first);
 });
 
 test('cooldown expiry differs from server-confirmed ready and keeps unknown charges unknown', () => {

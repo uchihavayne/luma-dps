@@ -26,7 +26,7 @@ import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } 
 import { bossPresentation, targetVital, targetSummary } from './bosses.mjs';
 import { targetDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
-import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, PET_PIN_LIMIT } from './pets.mjs';
+import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -1725,9 +1725,10 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'arm-training' || actionName === 'cancel-training') { const duration = validateTrainingDuration(trainingDurationDraft); if (actionName === 'arm-training' && duration === null) { toast(t('invalidTrainingDuration'), true); $('[name=trainingSeconds]')?.reportValidity(); return; } try { await action(actionName === 'arm-training' ? 'arm_training' : 'cancel_training', actionName === 'arm-training' ? { duration_ms: duration, target_id: trainingTargetId ? Number(trainingTargetId) : null } : {}); await refreshState(); refreshDrawer(); } catch {} }
   if (actionName === 'refresh-curve') await readCurveRecord();
   if (actionName === 'refresh-effects') await readAssistTimeline();
-  if (actionName === 'refresh-build') await readCharacterData();
+  if (actionName === 'refresh-build' || actionName === 'refresh-pets') await readCharacterData();
   if (actionName === 'open-pet-guide') openPetGuide();
   if (actionName === 'pet-pin') togglePetPin(Number(id));
+  if (['pet-guide-reset', 'pet-guide-catalog'].includes(actionName)) { petSelectedId = null; petFilters = petGuideFilterAction(petFilters, actionName); refreshDrawer(); }
   if (actionName === 'pet-guide-previous' || actionName === 'pet-guide-next') { petSelectedId = null; petFilters.page = Math.max(0, petFilters.page + (actionName === 'pet-guide-next' ? 1 : -1)); refreshDrawer(); }
   if (actionName === 'refresh-world') await readWorldData();
   if (actionName === 'refresh-comparison') await readComparisonRecord();

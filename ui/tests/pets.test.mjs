@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PET_CATALOG, PET_DATA_NOTICE } from '../pet-catalog.mjs';
 import { normalizePreferences, liveServerActorId } from '../model.mjs';
-import { normalizePetCatalog, petCompletion, petPlan, filteredPets, trackedPets, normalizePetPins, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
+import { normalizePetCatalog, petCompletion, petPlan, filteredPets, petGuideFilterAction, trackedPets, normalizePetPins, petReferenceUrl, petMetadataTransition, renderPetGuide, renderPetTracker } from '../pets.mjs';
 
 const now = 1_000_000;
 const catalog = normalizePetCatalog(PET_CATALOG);
@@ -37,8 +37,27 @@ test('remaining souls use the current tier counter rather than a lifetime count'
   assert.equal(petCompletion(pet({ level: 3, progress: null }), catalog.requirements, { now }).remaining, 0);
 });
 
+test('explicit received level zero tracks registration souls while absent levels remain unknown', () => {
+  const registration = petCompletion(pet({ level: 0, progress: 2 }), catalog.requirements, { now });
+  assert.equal(registration.level, 0);
+  assert.equal(registration.status, 'progress');
+  assert.equal(registration.required, 5);
+  assert.equal(registration.nextRemaining, 3);
+  assert.equal(registration.maxRemaining, 103);
+  assert.equal(registration.percent, 40);
+  assert.equal(petCompletion(pet({ level: 0, progress: 2 }), catalog.requirements, { now, goal: 'next' }).remaining, 3);
+  assert.equal(petCompletion(pet({ level: 0, progress: 5 }), catalog.requirements, { now }).status, 'awaiting-level');
+  const registered = plan([pet({ level: 0, progress: 2 })]);
+  assert.equal(registered.observedCount, 1);
+  assert.equal(registered.rows.find(row => row.id === 1002).remaining, 103);
+  for (const level of [null, undefined]) {
+    const missing = petCompletion(pet({ level, progress: 2 }), catalog.requirements, { now });
+    assert.equal(missing.level, null); assert.equal(missing.remaining, null);
+  }
+});
+
 test('missing counters, unsupported levels, malformed requirements and rollover cannot invent a remaining count', () => {
-  for (const value of [{ level: null }, { level: 0 }, { progress: null }, { progress_source: 'unknown' }, { observed_at_ms: now + 1000 }]) assert.equal(petCompletion(pet(value), catalog.requirements, { now }).remaining, null);
+  for (const value of [{ level: null }, { level: 4 }, { progress: null }, { progress_source: 'unknown' }, { observed_at_ms: now + 1000 }]) assert.equal(petCompletion(pet(value), catalog.requirements, { now }).remaining, null);
   for (const requirements of [null, {}, { souls: [5, 25] }, { souls: [5, -25, 75] }]) assert.equal(petCompletion(pet(), requirements, { now }).remaining, null);
   for (const progress of [25, 26, 1000]) { const value = petCompletion(pet({ progress }), catalog.requirements, { now }); assert.equal(value.status, 'awaiting-level'); assert.equal(value.percent, null); assert.equal(value.remaining, null); }
   assert.equal(plan([]).rows.find(row => row.id === 1002).remaining, null);
@@ -76,6 +95,52 @@ test('filtering and pagination preserve live unknowns without treating unobserve
   assert.equal(filteredPets(value, { status: 'pinned', pins: [1002] }).total, 1);
   assert.equal(filteredPets(value, { status: 'incomplete' }).total, 206);
   assert.equal(filteredPets(value, { page: 999 }).page, 8);
+});
+
+test('received-only empty state exposes reference catalog without inventing live data or losing the search', () => {
+  const value = petPlan(null, catalog, { localPlayerId: '7', now });
+  const filters = { query: 'Distorted Mutant', genus: 'Varian', status: 'observed', faction: 'all', sort: 'remaining', page: 3 };
+  const guide = renderPetGuide(value, catalog, { filters });
+  assert.equal(filteredPets(value, filters).total, 0);
+  assert.ok(guide.includes('Canlı pet sayaçları bekleniyor'));
+  assert.ok(guide.includes('Henüz verisi alınan pet yok.'));
+  assert.ok(guide.includes('data-action="pet-guide-catalog"'));
+  assert.ok(guide.includes('data-action="pet-guide-reset"'));
+  assert.ok(guide.includes('data-action="refresh-pets"'));
+  assert.ok(guide.includes('karakter seçimine dönüp bir kez tekrar giriş yap'));
+  assert.ok(!guide.includes('class="pet-guide-card'));
+  const catalogFilters = petGuideFilterAction(filters, 'pet-guide-catalog');
+  assert.deepEqual(catalogFilters, { ...filters, status: 'all', page: 0 });
+  const result = filteredPets(value, catalogFilters);
+  assert.equal(result.total, 1); assert.equal(result.rows[0].name, 'Distorted Mutant');
+  assert.equal(result.rows[0].observed, false); assert.equal(result.rows[0].remaining, null);
+  const reference = renderPetGuide(value, catalog, { filters: catalogFilters });
+  assert.ok(reference.includes('data-action="pet-pin" data-id="1142"'));
+  assert.ok(reference.includes('Sayaç alınmadı'));
+  assert.equal(value.observedCount, 0);
+});
+
+test('filter reset preserves sort and distinguishes unmatched searches from empty pins', () => {
+  const value = plan();
+  const filters = { query: 'No such pet', genus: 'Varian', status: 'complete', faction: 'asmodian', sort: 'recent', page: 7 };
+  const reset = petGuideFilterAction(filters, 'pet-guide-reset');
+  assert.deepEqual(reset, { query: '', genus: 'all', status: 'all', faction: 'all', sort: 'recent', page: 0 });
+  assert.equal(filteredPets(value, reset).total, 207);
+  assert.deepEqual(petGuideFilterAction(filters, 'other'), filters);
+  assert.equal(filters.query, 'No such pet');
+  const unmatched = renderPetGuide(value, catalog, { filters: { query: 'No such pet' } });
+  assert.ok(unmatched.includes('Filtrelere uyan pet yok.'));
+  assert.ok(unmatched.includes('Başka bir ad, bölge veya tür dene'));
+  assert.ok(!unmatched.includes('Henüz verisi alınan pet yok.'));
+  const pinned = renderPetGuide(value, catalog, { filters: { status: 'pinned' } });
+  assert.ok(pinned.includes('Henüz pet sabitlenmedi.'));
+  assert.ok(pinned.includes('Canlı sayacı alınmadan da pet sabitlenebilir.'));
+  assert.ok(!pinned.includes('Filtrelere uyan pet yok.'));
+  const all = renderPetGuide(value, catalog);
+  assert.ok(all.includes('data-action="pet-guide-reset"'));
+  const selected = renderPetGuide(value, catalog, { filters: { query: 'No such pet' }, selectedId: 1002 });
+  assert.ok(selected.includes('data-state-key="pet-1002" open'));
+  assert.ok(!selected.includes('class="status-card pet-empty-state"'));
 });
 
 test('pins persist uniquely and stay bounded; explicit pins take priority over automatic tracking', () => {

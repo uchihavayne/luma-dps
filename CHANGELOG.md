@@ -2,6 +2,14 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.19.1 preview · 2026-10-18
+
+- Preserve explicitly received level-zero pets and independently counted soul rows. A soul row without a level remains an observation with an unknown level, rather than rejecting the full pet list or inventing registration progress. An unrecognized header word no longer discards the collection or claims a summoned pet.
+- Carry explicit level zero through the UI and calculate ordinary-pet registration progress only from a valid received counter. Keep malformed, duplicate and truncated collections atomic.
+- Explain when the initial pet list has not been received. Add clear-filter and reference-catalog actions so received-only filters cannot hide all location, bonus and pinning information without an explanation. The refresh action reads data Luma has already received; it does not request missing packets from the game.
+
+Opening Luma after character login does not recover an earlier pet list. Start Luma before one character re-entry to receive the initial collection; subsequent supported gains update automatically. Live EU validation remains pending.
+
 ## 0.19.0 preview · 2026-10-18
 
 - Make the main fullscreen control open a responsive dashboard that fills the viewport, with larger measurements, readable participants and an integrated Cube dock. Preserve the small draggable/resizable transparent HUD as a separate layout, its saved size and the normal window geometry. Compact-strip preferences no longer collapse the fullscreen dashboard.

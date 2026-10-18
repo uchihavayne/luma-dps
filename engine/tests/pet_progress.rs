@@ -77,6 +77,77 @@ fn pet_login_prefix_preserves_actual_levels_progress_and_unknown_targets() {
 }
 
 #[test]
+fn independently_counted_login_rows_keep_zero_level_and_points_only_pets() {
+    // Synthetic wire fixture, written directly from the published full-state
+    // layout rather than the inventory helper: opaque u32 header; two level
+    // triples; three independent point pairs. The last pet has no level row.
+    let frame = [
+        0x00, 0x90, 0xff, 0xff, 0xff, 0xff, 0x02, // header and level count
+        0x12, 0x04, 0x00, 0x00, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 1042 Lv.0
+        0x64, 0x04, 0x00, 0x00, 0x64, 0x04, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, // 1124 Lv.2
+        0x03, // point count may exceed level count
+        0x12, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, // 1042: 3
+        0x64, 0x04, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, // 1124: 32
+        0xb4, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // 1204: 1, no level
+    ];
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &frame, 200);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(snapshot.actor_id, Some(7));
+    assert!(!snapshot.active_pet_known);
+    assert_eq!(snapshot.active_pet_id, None);
+    assert!(snapshot.inventory_complete);
+    assert_eq!(snapshot.pets.len(), 3);
+    assert_eq!(snapshot.pets[0].level, Some(0));
+    assert_eq!(snapshot.pets[0].progress, Some(3));
+    assert_eq!(snapshot.pets[1].level, Some(2));
+    assert_eq!(snapshot.pets[1].progress, Some(32));
+    assert_eq!(snapshot.pets[2].level, None);
+    assert_eq!(snapshot.pets[2].progress, Some(1));
+    receive(&mut engine, &gains(&[(1042, 1), (1204, 2)]), 300);
+    let updated = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(updated.pets[0].level, Some(0));
+    assert_eq!(updated.pets[0].progress, Some(4));
+    assert_eq!(updated.pets[2].level, None);
+    assert_eq!(updated.pets[2].progress, Some(3));
+}
+
+#[test]
+fn points_only_collection_is_received_without_inventing_levels_or_active_pet() {
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(
+        &mut engine,
+        &inventory(1124, &[], &[(1042, 3), (1204, 2)]),
+        200,
+    );
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    assert!(snapshot.inventory_complete);
+    assert!(!snapshot.active_pet_known);
+    assert_eq!(snapshot.active_pet_id, None);
+    assert_eq!(snapshot.pets.len(), 2);
+    assert!(snapshot.pets.iter().all(|pet| pet.level.is_none()));
+    assert_eq!(snapshot.pets[0].progress, Some(3));
+    assert_eq!(snapshot.pets[1].progress, Some(2));
+}
+
+#[test]
+fn malformed_independent_point_lists_still_fail_atomically() {
+    for frame in [
+        inventory(0, &[], &[(1042, 1), (1042, 2)]),
+        inventory(0, &[(1042, 0)], &[(0, 1)]),
+        inventory(0, &[(1042, 0)], &[(100_000, 1)]),
+    ] {
+        assert!(character::decode(&frame).is_err());
+    }
+    let mut excessive_count = inventory(0, &[], &[]);
+    excessive_count.pop();
+    excessive_count.extend([0xd1, 0x0f]); // 2,001 independently counted point rows
+    assert!(character::decode(&excessive_count).is_err());
+}
+
+#[test]
 fn pet_deltas_are_automatic_and_absolute_refresh_does_not_double_count_session_gain() {
     let mut engine = MeterEngine::default();
     own(&mut engine, 7, 100);
@@ -190,9 +261,8 @@ fn malformed_pet_lists_and_deltas_are_atomic_errors() {
     }
     for invalid in [
         inventory(0, &[(1042, 2), (1042, 2)], &[]),
-        inventory(9999, &[(1042, 2)], &[]),
         inventory(0, &[(1042, 4)], &[]),
-        inventory(0, &[(1042, 2)], &[(1204, 1)]),
+        inventory(0, &[(1042, 2)], &[(0, 1)]),
         inventory(0, &[(1042, 2), (1204, 2)], &[(1042, 1), (1042, 2)]),
         gains(&[(1042, 1), (1042, 1)]),
         gains(&[(1042, 0)]),
@@ -235,6 +305,40 @@ fn wire(frame: &[u8]) -> Vec<u8> {
     let mut bytes = vec![(frame.len() + 4) as u8];
     bytes.extend(frame);
     bytes
+}
+
+#[test]
+fn compressed_login_recovers_zero_level_and_independent_points_before_self_binding() {
+    let raw = wire(&inventory(0, &[(1042, 0)], &[(1042, 3), (1204, 1)]));
+    let mut bundle = vec![0xff, 0xff];
+    bundle.extend((raw.len() as u32).to_le_bytes());
+    bundle.extend(lz4_flex::block::compress(&raw));
+    let data = wire(&bundle);
+    let mut engine = MeterEngine::default();
+    engine.ingest_tcp(&tcp(100, 0x18, &data), true, 1_000);
+    assert!(engine.character_snapshot().pet_progress.is_none());
+    own(&mut engine, 7, 21_000);
+    let snapshot = engine.character_snapshot().pet_progress.unwrap();
+    assert_eq!(snapshot.actor_id, Some(7));
+    assert_eq!(snapshot.pets.len(), 2);
+    assert_eq!(snapshot.pets[0].level, Some(0));
+    assert_eq!(snapshot.pets[0].progress, Some(3));
+    assert_eq!(snapshot.pets[1].level, None);
+    assert_eq!(snapshot.pets[1].progress, Some(1));
+    assert_eq!(engine.live_state(21_000).total_damage, 0);
+}
+
+#[test]
+fn truncated_points_only_inventory_never_overwrites_an_existing_collection() {
+    let complete = inventory(0, &[(1042, 0)], &[(1042, 3), (1204, 2)]);
+    let mut engine = MeterEngine::default();
+    own(&mut engine, 7, 100);
+    receive(&mut engine, &complete, 200);
+    let previous = engine.character_snapshot();
+    for length in 2..complete.len() {
+        assert!(packets::decode(&complete[..length]).is_err());
+        assert_eq!(engine.character_snapshot(), previous);
+    }
 }
 
 #[test]
@@ -443,6 +547,7 @@ fn invalid_typed_pet_events_are_atomic_even_with_an_earlier_clock() {
     store.ingest(
         CharacterEvent::PetInventory {
             active_pet_id: None,
+            active_pet_known: true,
             pets: valid.clone(),
         },
         200,
@@ -472,18 +577,22 @@ fn invalid_typed_pet_events_are_atomic_even_with_an_earlier_clock() {
         },
         CharacterEvent::PetInventory {
             active_pet_id: Some(9999),
+            active_pet_known: true,
             pets: valid.clone(),
         },
         CharacterEvent::PetInventory {
             active_pet_id: None,
+            active_pet_known: true,
             pets: vec![valid[0].clone(), valid[0].clone()],
         },
         CharacterEvent::PetInventory {
             active_pet_id: None,
+            active_pet_known: true,
             pets: invalid_level,
         },
         CharacterEvent::PetInventory {
             active_pet_id: None,
+            active_pet_known: true,
             pets: invalid_progress,
         },
     ] {
@@ -512,6 +621,7 @@ fn typed_inventory_normalizes_provenance_metadata_and_order_before_future_deltas
     store.ingest(
         CharacterEvent::PetInventory {
             active_pet_id: Some(1042),
+            active_pet_known: true,
             pets,
         },
         200,
