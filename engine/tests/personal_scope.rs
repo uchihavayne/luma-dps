@@ -1,5 +1,5 @@
 use luma_engine::{
-    packets::{decode, Event, Hit},
+    packets::{decode, Event, Hit, MemberProfile},
     Encounter, MeterEngine,
 };
 
@@ -581,8 +581,29 @@ fn character_frame(opcode: u8, name: &str, server: u16) -> Vec<u8> {
 #[test]
 fn identity_decoding_uses_mask_name_and_self_profile_only() {
     for opcode in [0x33, 0x44, 0x45] {
-        assert!(
-            matches!(decode(&character_frame(opcode, "弓手", 1304)), Ok(Some(Event::Identity {id: 7, own, ..})) if own == (opcode == 0x33))
+        let identity = Event::Identity {
+            id: 7,
+            name: "弓手".into(),
+            class: (opcode == 0x33).then_some(14),
+            own: opcode == 0x33,
+        };
+        let expected = if opcode == 0x33 {
+            Event::Updates(vec![
+                identity,
+                Event::MemberProfiles {
+                    members: vec![MemberProfile {
+                        id: 7,
+                        name: "弓手".into(),
+                        server: 1304,
+                    }],
+                },
+            ])
+        } else {
+            identity
+        };
+        assert_eq!(
+            decode(&character_frame(opcode, "弓手", 1304)).unwrap(),
+            Some(expected)
         );
     }
     assert!(decode(&character_frame(0x33, "Local", 5)).is_err());

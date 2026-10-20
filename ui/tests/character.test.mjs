@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { characterSnapshot, characterCollections, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from '../character.mjs';
+import { characterSnapshot, characterCollections, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch, characterSnapshotReader } from '../character.mjs';
 import { normalizePreferences, normalizeState, normalizeEncounter } from '../model.mjs';
 
 test('unbound gear stays unbound and unavailable equipment attributes stay unknown', () => {
@@ -97,4 +97,31 @@ test('collection cards distinguish bound, pending and imported observations with
   assert.match(renderCharacterCollections({ ...input, actor_id: null }, { locale: 'en' }), /Waiting for self identity/);
   assert.match(renderCharacterCollections({ ...input, source: 'imported' }, { locale: 'en' }), /Imported · unverified/);
   assert.equal(renderCharacterCollections({}), '');
+});
+
+
+test('concurrent character reads wait for one current snapshot through an identity change', async () => {
+  let currentEpoch = 'old', calls = 0, settled = 0;
+  const waiting = [], accepted = [];
+  const read = characterSnapshotReader({ epoch: () => currentEpoch,
+    read: () => { calls++; return new Promise(resolve => waiting.push(resolve)); },
+    accept: value => accepted.push(value), settled: () => settled++ });
+  const first = read(), exported = read();
+  assert.equal(first, exported); assert.equal(calls, 1);
+  currentEpoch = 'new'; waiting.shift()({ owner: 'old' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 2); assert.deepEqual(accepted, []); assert.equal(settled, 0);
+  assert.equal(read(), first);
+  waiting.shift()({ owner: 'new', progress: 12 });
+  await exported;
+  assert.deepEqual(accepted, [{ owner: 'new', progress: 12 }]); assert.equal(settled, 1);
+});
+
+test('a failed character read settles all callers and permits an automatic retry', async () => {
+  let fail = true, errors = 0, accepted = 0;
+  const read = characterSnapshotReader({ epoch: () => 1,
+    read: async () => { if (fail) throw new Error('temporary'); return { progress: 12 }; },
+    accept: () => accepted++, failed: () => errors++ });
+  await Promise.all([read(), read()]); assert.equal(errors, 1); assert.equal(accepted, 0);
+  fail = false; await read(); assert.equal(accepted, 1);
 });

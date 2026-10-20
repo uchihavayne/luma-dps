@@ -197,11 +197,13 @@ fn character_identity(
         offset: name_at,
     };
     let name = bytes.character_text()?;
+    let mut home_server = None;
     let class = if own {
         let server = u16::from(bytes.byte()?) | u16::from(bytes.byte()?) << 8;
         if !(1000..3000).contains(&server) {
             return Err(ReadError::Invalid);
         }
+        home_server = Some(server);
         Some(bytes.word()?)
     } else {
         bytes.word().ok().filter(|code| (5..=64).contains(code))
@@ -209,11 +211,26 @@ fn character_identity(
     if require_class && class.is_none_or(|code| !(5..=64).contains(&code)) {
         return Err(ReadError::Invalid);
     }
-    Ok(Event::Identity {
+    let profile = home_server.map(|server| MemberProfile {
+        id,
+        server,
+        name: name.clone(),
+    });
+    let identity = Event::Identity {
         id,
         name,
         class,
         own,
+    };
+    Ok(if let Some(profile) = profile {
+        Event::Updates(vec![
+            identity,
+            Event::MemberProfiles {
+                members: vec![profile],
+            },
+        ])
+    } else {
+        identity
     })
 }
 
@@ -729,7 +746,12 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             };
             if own {
                 if let Some(wing) = crate::character::decode_own_wing(frame) {
-                    return Ok(Some(Event::Updates(vec![identity, Event::Character(wing)])));
+                    let mut updates = match identity {
+                        Event::Updates(updates) => updates,
+                        identity => vec![identity],
+                    };
+                    updates.push(Event::Character(wing));
+                    return Ok(Some(Event::Updates(updates)));
                 }
             }
             Ok(Some(identity))
@@ -1043,12 +1065,21 @@ mod tests {
         let decoded=decode(&raw("3336ed745e91c12837064e616963686118051e000000011c0000007f0100007f0100001c000000d002040000000000")).unwrap();
         assert_eq!(
             decoded,
-            Some(Event::Identity {
-                id: 14957,
-                name: "Naicha".into(),
-                class: Some(30),
-                own: true
-            })
+            Some(Event::Updates(vec![
+                Event::Identity {
+                    id: 14957,
+                    name: "Naicha".into(),
+                    class: Some(30),
+                    own: true
+                },
+                Event::MemberProfiles {
+                    members: vec![MemberProfile {
+                        id: 14957,
+                        server: 1304,
+                        name: "Naicha".into(),
+                    }]
+                }
+            ]))
         );
         assert!(decode(&raw("3336ed745e91c12837064e6169")).is_err());
     }

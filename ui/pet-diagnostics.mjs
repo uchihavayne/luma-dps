@@ -28,7 +28,9 @@ export function petDiagnosticReport({ version, mode, state = {}, character = {},
       target_id: current.target_id, npc_id: npcId(current.target_npc_id), hit_at_ms: current.hit_at_ms, age_ms: age } : null,
     pet_snapshot: { received: observed !== null, inventory_complete: observed?.inventory_complete ?? false,
       continuity: observed?.continuity || 'unknown', observed_at_ms: observed?.observed_at_ms ?? null,
-      observed_pet_count: observed?.pets.length ?? 0 },
+      observed_pet_count: observed?.pets.length ?? 0,
+      restored_from_previous_session: observed?.stale_reason === 'previous-session',
+      storage_error: Boolean(character.pet_storage_error) },
     tracked_pets: selected.map(id => {
       const row = observed?.pets.find(pet => pet.pet_id === id);
       return { pet_id: id, received: Boolean(row), level: row?.level ?? null,

@@ -11,6 +11,7 @@ mod hotkeys;
 mod local_history;
 mod native_capture;
 mod obs_server;
+mod pet_cache;
 mod pet_reference;
 mod team_sync;
 mod update_key;
@@ -1264,6 +1265,8 @@ struct Shared {
     history_write: Mutex<()>,
     history_saved_revision: AtomicU64,
     history_storage_error: Mutex<String>,
+    pet_cache: Mutex<pet_cache::Store>,
+    pet_cache_revision: AtomicU64,
     preference_change: Mutex<()>,
     geometry_save_due: AtomicU64,
     capture_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -1278,6 +1281,23 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn refresh_pet_cache(shared: &Shared, force: bool) {
+    let received = shared.engine.lock().ok().and_then(|engine| {
+        let revision = engine.character_revision();
+        (revision > shared.pet_cache_revision.load(Ordering::Relaxed))
+            .then(|| (revision, engine.character_snapshot()))
+    });
+    if let Ok(mut cache) = shared.pet_cache.lock() {
+        if let Some((revision, snapshot)) = received {
+            if revision > shared.pet_cache_revision.load(Ordering::Relaxed) {
+                cache.observe(&snapshot, now_ms());
+                shared.pet_cache_revision.store(revision, Ordering::Relaxed);
+            }
+        }
+        cache.flush(now_ms(), force);
+    }
 }
 
 #[cfg(windows)]
@@ -1910,6 +1930,8 @@ mod shell_tests {
             history_write: Mutex::new(()),
             history_saved_revision: AtomicU64::new(0),
             history_storage_error: Mutex::new(String::new()),
+            pet_cache: Mutex::new(pet_cache::Store::open(PathBuf::new())),
+            pet_cache_revision: AtomicU64::new(0),
             preference_change: Mutex::new(()),
             geometry_save_due: AtomicU64::new(0),
             capture_worker: Mutex::new(None),
@@ -2880,7 +2902,19 @@ fn get_character_state(shared: State<Arc<Shared>>) -> Result<Value, String> {
         .lock()
         .map_err(|_| "Meter state unavailable")?
         .character_snapshot();
-    serde_json::to_value(data).map_err(|e| e.to_string())
+    let cache = shared
+        .pet_cache
+        .lock()
+        .map_err(|_| "Pet cache unavailable")?;
+    let mut value =
+        serde_json::to_value(cache.project(data, now_ms())).map_err(|e| e.to_string())?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "pet_storage_error".into(),
+            Value::String(cache.error.clone()),
+        );
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -3701,6 +3735,8 @@ fn run_probe_if_requested() -> bool {
         history_write: Mutex::new(()),
         history_saved_revision: AtomicU64::new(0),
         history_storage_error: Mutex::new(String::new()),
+        pet_cache: Mutex::new(pet_cache::Store::open(PathBuf::new())),
+        pet_cache_revision: AtomicU64::new(0),
         preference_change: Mutex::new(()),
         geometry_save_due: AtomicU64::new(0),
         capture_worker: Mutex::new(None),
@@ -3885,6 +3921,7 @@ fn main() {
                 }
             }
             let calendar = event_schedule::Service::start(data_dir.join("event-calendars.json"));
+            let pet_cache = pet_cache::Store::open(data_dir.join("pet-counters.json"));
             let shared = Arc::new(Shared {
                 engine: Mutex::new(engine),
                 preferences: Mutex::new(preferences),
@@ -3898,6 +3935,8 @@ fn main() {
                 history_write: Mutex::new(()),
                 history_saved_revision: AtomicU64::new(history_revision),
                 history_storage_error: Mutex::new(history_error),
+                pet_cache: Mutex::new(pet_cache),
+                pet_cache_revision: AtomicU64::new(0),
                 preference_change: Mutex::new(()),
                 geometry_save_due: AtomicU64::new(0),
                 capture_worker: Mutex::new(None),
@@ -4019,6 +4058,7 @@ fn main() {
                     if let Ok(mut engine) = shared.engine.lock() {
                         engine.tick(now_ms());
                     }
+                    refresh_pet_cache(&shared, false);
                     if let Ok(state) = snapshot(&shared) {
                         let _ = handle.emit("luma-state", state);
                     }
@@ -4128,6 +4168,7 @@ fn main() {
                         let _ = worker.join();
                     }
                 };
+                refresh_pet_cache(&shared, true);
                 if let Ok(mut engine) = shared.engine.lock() {
                     engine.reset();
                 }

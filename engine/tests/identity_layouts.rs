@@ -1,5 +1,5 @@
 use luma_engine::{
-    packets::{decode, Event, Hit, PartyMember},
+    packets::{decode, Event, Hit, MemberProfile, PartyMember},
     MeterEngine,
 };
 
@@ -97,14 +97,29 @@ fn character_snapshots_follow_canonical_variable_prefix_widths_and_received_clas
         for first in [0, 127, 128, 16384, 0x12345678] {
             for second in [1, 128, 16384, 0x12345678] {
                 let frame = snapshot(opcode, first, second, "Nearby");
+                let identity = Event::Identity {
+                    id: 17500,
+                    name: "Nearby".into(),
+                    class: Some(14),
+                    own: opcode == 0x33,
+                };
+                let expected = if opcode == 0x33 {
+                    Event::Updates(vec![
+                        identity,
+                        Event::MemberProfiles {
+                            members: vec![MemberProfile {
+                                id: 17500,
+                                server: 1304,
+                                name: "Nearby".into(),
+                            }],
+                        },
+                    ])
+                } else {
+                    identity
+                };
                 assert_eq!(
                     decode(&frame).unwrap(),
-                    Some(Event::Identity {
-                        id: 17500,
-                        name: "Nearby".into(),
-                        class: Some(14),
-                        own: opcode == 0x33,
-                    }),
+                    Some(expected),
                     "opcode {opcode}, prefix {first}/{second}"
                 );
             }

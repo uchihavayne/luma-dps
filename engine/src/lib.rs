@@ -1343,6 +1343,19 @@ impl MeterEngine {
                     }) {
                         identity.home_server = Some(profile.server);
                     }
+                    if self.own_id == Some(profile.id)
+                        && self
+                            .character
+                            .matches_server_self(profile.id, &profile.name)
+                    {
+                        self.character.bind_self(
+                            profile.id,
+                            &profile.name,
+                            Some(u32::from(profile.server)),
+                            now,
+                        );
+                        self.character_revision = self.character_revision.wrapping_add(1);
+                    }
                     if let Some(identity) = self
                         .completed
                         .as_mut()
@@ -3305,6 +3318,9 @@ impl MeterEngine {
         let mut snapshot = self.character.snapshot();
         snapshot.pet_collection_owner = self.pet_collection_owner();
         snapshot
+    }
+    pub fn character_revision(&self) -> u64 {
+        self.character_revision
     }
     fn pet_collection_owner(&self) -> Option<character::PetCollectionOwner> {
         let actor_id = self.own_id?;

@@ -25,6 +25,10 @@ test('independent live target remains visible when a boss category filter remove
   assert.equal(result.automatic, true);
   assert.equal(result.roster.kind, 'target');
   assert.equal(result.roster.totalDamage, 1000);
+  // A complete local capture still cannot certify events the server never
+  // broadcasts. This flag covers transport/retention, not world-wide ranks.
+  assert.equal(result.roster.complete, true);
+  assert.equal(result.roster.coverage, 'received-only');
 });
 
 test('stale, future and capture-invalidated own observations cannot supply a target', () => {

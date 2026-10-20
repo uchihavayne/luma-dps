@@ -71,7 +71,25 @@ export function petCollectionOwner(value = {}) {
 
 export function characterSnapshot(value = {}) {
   value = value && typeof value === 'object' ? value : {};
-  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })), pet_progress: petProgress(value.pet_progress), pet_collection_owner: petCollectionOwner(value) };
+  return { own: build(value.own), unbound_own: build(value.unbound_own), inspected: list(value.inspected, 32).map(character => ({ ...build(character), name: text(character.name), class_code: metric(character.class_code), level: metric(character.level), gear_score: metric(character.gear_score) })), pet_progress: petProgress(value.pet_progress), pet_collection_owner: petCollectionOwner(value), pet_storage_error: text(value.pet_storage_error) };
+}
+
+// All callers await the same read, including any retry after an identity or
+// revision change. An export cannot race an in-flight character refresh.
+export function characterSnapshotReader({ epoch, read, accept, failed, settled }) {
+  let pending = null;
+  return function request() {
+    if (pending) return pending;
+    pending = (async () => {
+      let started;
+      do {
+        started = epoch();
+        try { const value = await read(); if (started === epoch()) accept(value); }
+        catch (error) { if (started === epoch()) failed?.(error); }
+      } while (started !== epoch());
+    })().finally(() => { pending = null; settled?.(); });
+    return pending;
+  };
 }
 
 export function fieldBossSnapshot(value = {}) {

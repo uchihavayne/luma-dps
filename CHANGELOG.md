@@ -2,6 +2,15 @@
 
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
+## 0.21.1 preview · 2026-10-20
+
+- Automatically save received pet counters locally for each server-confirmed character and home server. Restore prior-session counters as visibly last received after the same profile is confirmed. New server baselines take precedence; missing offline gains are never invented or added to stale counters.
+- Retain the validated home-server field from the own identity packet so saved pet profiles remain isolated across servers without manual configuration. Keep storage bounded, validate disk records and report storage failures in the pet guide.
+- Show actual session soul gains even before the initial inventory baseline arrives. Pinning the pet preserves that counter; it no longer replaces a received gain with only “counter not received”. Unknown totals do not receive a fabricated percentage or ETA.
+- Label target rankings as received/observed contributions; local capture completeness does not prove that every world-boss hit was broadcast. Refresh the publisher comparison and record this protocol limitation.
+- Coalesce character reads through identity/revision changes so refresh and diagnostic export wait for the current in-flight snapshot instead of returning early.
+- Add disk roundtrip, profile/server isolation, stale/future data, fresh-level replacement and concurrent-read regressions. First-time missing login data, full live pet continuity and live World Boss coverage remain separate validation limits.
+
 ## 0.21.0 preview · 2026-10-18
 
 - Add a reproducible automated release gate with source fingerprints, fail-closed test discovery/timeouts, local JSON reports and a CI build barrier. Independently review the gate itself and test stale-success and missing-module failures.

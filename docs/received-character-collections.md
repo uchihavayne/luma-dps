@@ -10,6 +10,8 @@ This implementation uses received records on the existing local connection. It d
 
 These fields use the existing authoritative self binding. Pending own data expires after 30 seconds and cannot bind through a manually selected damage row. Each field preserves its receipt timestamp. A later equipment record cannot rejuvenate an older pending combat-power observation. Character changes and connection invalidation clear live ownership. Encounter-start build copies remain immutable.
 
+The validated own `33 36` identity suffix supplies a two-byte home-server ID before the class word. Luma retains that already-validated field with the exact own name for local pet-cache isolation. It is not a manually entered name, nearby-player identity, official API lookup or inferred server from a network endpoint. Cache projection never establishes combat self and cannot turn an old collection into fresh live counters.
+
 ## Zone announcements
 
 `21 36` provides a local transition counter followed by a little-endian zone ID. Luma records the received ID separately from field-monster map lists. A different observed zone can segment encounter context. A repeated zone ID alone does not prove a new dungeon run; this implementation does not invent instance category, difficulty, boss identity or restart boundaries from numeric ranges or position proximity.

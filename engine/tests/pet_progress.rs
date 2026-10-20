@@ -51,6 +51,28 @@ fn receive(engine: &mut MeterEngine, frame: &[u8], at: u64) {
     engine.ingest_event(packets::decode(frame).unwrap().unwrap(), at);
 }
 
+#[test]
+fn own_login_keeps_its_validated_home_server_for_automatic_pet_cache_isolation() {
+    let mut engine = MeterEngine::default();
+    let mut frame = vec![0x33, 0x36, 7, 0, 0, 0, 0, 1, 6];
+    frame.extend(b"Player");
+    frame.extend(1304u16.to_le_bytes());
+    frame.extend(14u32.to_le_bytes());
+    receive(&mut engine, &frame, 100);
+    let snapshot = engine.character_snapshot();
+    assert_eq!(snapshot.own.unwrap().server_id, Some(1304));
+    assert_eq!(snapshot.pet_collection_owner.unwrap().actor_id, 7);
+    receive(&mut engine, &inventory(0, &[(1042, 1)], &[(1042, 12)]), 200);
+    receive(&mut engine, &frame, 300);
+    let snapshot = engine.character_snapshot();
+    assert_eq!(snapshot.own.unwrap().server_id, Some(1304));
+    assert_eq!(snapshot.pet_progress.unwrap().pets[0].progress, Some(12));
+    assert!(engine.party_identity_roster()["members"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
 fn own(engine: &mut MeterEngine, id: u64, at: u64) {
     engine.ingest_event(
         Event::Identity {

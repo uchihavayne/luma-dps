@@ -5,7 +5,7 @@ import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSe
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
-import { characterSnapshot, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch } from './character.mjs';
+import { characterSnapshot, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch, characterSnapshotReader } from './character.mjs';
 import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from './game-reports.mjs';
 import * as scheduling from './events.mjs';
 import { DEMO_STATE, DEMO_PARTY_STATE } from './demo.mjs';
@@ -72,7 +72,7 @@ let appVersion = demo ? 'Demo' : '';
 let captureDiagnostics = null, captureDiagnosticRequest = null, captureDiagnosticFingerprint = '', captureDiagnosticActionPending = false;
 const captureDiagnosticDemo = demo && new URLSearchParams(location.search).get('captureDiagnosticsDemo') === 'missing-api';
 if (captureDiagnosticDemo) captureDiagnostics = normalizeCaptureDiagnostics({
-  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.21.0', mode: 'demo',
+  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.21.1', mode: 'demo',
   compatibility: { schema_version: 1, diagnostic_only: true, capture_started: false,
     os: { status: 'ready', label: 'Windows 10', major: 10, minor: 0, build: 19045, ubr: null, architecture: 'x86_64', process_architecture: 'x86_64', version_source: 'RtlGetVersion', error_code: null },
     packet_monitor: { status: 'api-unavailable', system32_only: true, load_status: 'loaded', load_error_code: null, exports_present: PACKET_MONITOR_EXPORTS.slice(0, 8), exports_missing: PACKET_MONITOR_EXPORTS.slice(8) } },
@@ -136,6 +136,15 @@ if (telemetryDemo && new URLSearchParams(location.search).get('petDemo') === '1'
     characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, active_pet_id: 1010, active_pet_known: true, inventory_complete: true,
       pets: [{ pet_id: 1010, level: 2, progress: tierDemo === 'reset' ? 0 : 3, progress_source: tierDemo === 'reset' ? 'server-level-reset' : 'server-delta', session_gained: tierDemo === 'reset' ? 0 : 3, observed_at_ms: at }] } });
     prefs = normalizePreferences({ ...prefs, petPins: [1010] });
+  }
+  const baselineDemo = new URLSearchParams(location.search).get('petBaselineDemo');
+  if (['gains', 'cache'].includes(baselineDemo)) {
+    const restored = baselineDemo === 'cache';
+    characterData = characterSnapshot({ ...characterData, pet_progress: { actor_id: 7, source: 'server-self', observed_at_ms: at, inventory_complete: false,
+      continuity: restored ? 'last-known' : 'live', stale_reason: restored ? 'previous-session' : null, stale_at_ms: restored ? at : null,
+      pets: [{ pet_id: 1002, level: restored ? 1 : null, progress: restored ? 12 : null, progress_source: restored ? 'server-absolute' : 'unknown',
+        progress_stale: restored, session_gained: 7, last_gain_at_ms: at - 1000, observed_at_ms: restored ? at - 3600000 : at }] } });
+    prefs = normalizePreferences({ ...prefs, petPins: [1002] });
   }
   if (new URLSearchParams(location.search).get('petStaleDemo') === '1') characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(characterData.pet_progress, { localPlayerId: liveServerActorId(state), now: at, reason: 'demo-capture-gap' }) });
 }
@@ -521,9 +530,9 @@ function renderMeter() {
   $('#sort').disabled = Boolean(board); $('#sort').title = board ? (prefs.locale === 'tr' ? 'Bu hedefe verilen hasara göre ilk 10' : 'Top ten by damage to this target') : t('sort');
   $('#target-roster-strip').hidden = !targetScoped;
   if (targetScoped) {
-    setText($('#target-roster-label'), board ? `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Ortak hedef' : 'Shared target'} · ${prefs.locale === 'tr' ? 'İlk 10' : 'Top 10'}` : prefs.locale === 'tr' ? 'Hedef DPS' : 'Target DPS');
-    setText($('#target-roster-coverage'), board ? `${prefs.locale === 'tr' ? 'Gözlenen' : 'Observed'} ${board.participantCount ?? board.rows.length}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}` : prefs.locale === 'tr' ? 'Alınan katkı' : 'Received contribution');
-    $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Yalnız seçili hedefe verilen ve bağlantında alınan hasar. Parti şartı yok; bu sunucudaki herkesin doğrulanmış sıralaması değildir.' : 'Received damage to the selected target. No party is required; this is not a verified ranking of every player on the server.';
+    setText($('#target-roster-label'), board ? `${board.kind === 'boss' ? 'Boss' : prefs.locale === 'tr' ? 'Ortak hedef' : 'Shared target'} · ${prefs.locale === 'tr' ? 'Gözlenen İlk 10' : 'Observed Top 10'}` : prefs.locale === 'tr' ? 'Hedef DPS' : 'Target DPS');
+    setText($('#target-roster-coverage'), board ? `${board.participantCount ?? board.rows.length} ${prefs.locale === 'tr' ? 'oyuncu · alınan veri' : 'players · received data'}${board.complete ? '' : prefs.locale === 'tr' ? ' · kısmi' : ' · partial'}` : prefs.locale === 'tr' ? 'Alınan katkı' : 'Received contribution');
+    $('#target-roster-strip').title = prefs.locale === 'tr' ? 'Seçili hedefe bağlantında alınan katkılar. Dünya bosslarında diğer oyuncuların doğrudan vuruşları gönderilmeyebilir; eksiksiz sunucu sıralaması değildir.' : 'Received contributions to the selected target. World bosses may not broadcast other players’ direct hits; this is not a complete server ranking.';
     renderTargetDpsPanel(targetView);
   }
   for (const [scope, original] of Object.entries(scopes.summaries)) {
@@ -1219,24 +1228,24 @@ function renderCombatWarning() {
 
 function characterDataEpoch() { return `${metadataEpoch(state, 'character')}:${petCollectionEpoch(state)}`; }
 
-async function readCharacterData() {
-  if (characterPending || !native) return;
-  const epoch = characterDataEpoch();
-  characterPending = true;
-  try {
-    const result = await invoke('get_character_state');
-    if (epoch === characterDataEpoch()) {
-      if (acceptsPetCollectionSnapshot(state, result)) characterData = characterSnapshot(result);
-      else if (!petCollectionOwner(state) && !petCollectionOwner(result)) characterData = characterSnapshot({ ...result, pet_progress: null });
-    }
-  }
-  catch { if (epoch === characterDataEpoch()) markPetSnapshotStale('snapshot-unavailable'); }
-  finally {
+const requestCharacterSnapshot = characterSnapshotReader({
+  epoch: characterDataEpoch,
+  read: () => invoke('get_character_state'),
+  accept: result => {
+    if (acceptsPetCollectionSnapshot(state, result)) characterData = characterSnapshot(result);
+    else if (!petCollectionOwner(state) && !petCollectionOwner(result)) characterData = characterSnapshot({ ...result, pet_progress: null });
+  },
+  failed: () => markPetSnapshotStale('snapshot-unavailable'),
+  settled: () => {
     characterPending = false; renderPetTracking();
     if (drawer === 'analysis' && tab === 'pets') refreshPetsDrawer();
     else if (drawer === 'analysis' && tab === 'build') refreshDrawer();
-    if (epoch !== characterDataEpoch()) readCharacterData();
-  }
+  },
+});
+function readCharacterData() {
+  if (!native) return Promise.resolve();
+  characterPending = true;
+  return requestCharacterSnapshot();
 }
 
 function markPetSnapshotStale(reason) {
@@ -1244,7 +1253,7 @@ function markPetSnapshotStale(reason) {
   characterData = characterSnapshot({ ...characterData, pet_progress: stalePetProgress(owned, { reason }) });
 }
 
-function currentPetPlan() { return petPlan(petCollectionProgress(state, characterData), petCatalog, { localPlayerId: petCollectionOwner(state)?.actor_id ?? null, goal: prefs.petGoal, pins: prefs.petPins }); }
+function currentPetPlan() { return { ...petPlan(petCollectionProgress(state, characterData), petCatalog, { localPlayerId: petCollectionOwner(state)?.actor_id ?? null, goal: prefs.petGoal, pins: prefs.petPins }), storageError: characterData.pet_storage_error }; }
 
 function currentTargetPets() {
   const now = targetPetDemo && telemetryDemo ? state.recent_personal_target?.hit_at_ms : Date.now();

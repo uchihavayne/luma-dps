@@ -1,6 +1,6 @@
 # Feature coverage and comparison
 
-Publisher feature pages rechecked on **18 October 2026**; the pet reference sources were reviewed on the same date. Luma coverage describes the independent **0.21.0 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier.
+Publisher feature pages rechecked on **20 October 2026**; the pet reference sources were reviewed on the same date. Luma coverage describes the independent **0.21.1 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier.
 
 ## What the published products describe
 
@@ -18,6 +18,14 @@ These are publisher descriptions, not independent accuracy guarantees. Luma's me
 The current publisher descriptions separate core free meters from paid storage, collected website data or extra panels. [Abyss Logs](https://abysslogs.com/) lists its meter as free, while the [Aion2t Premium page](https://aion2t.com/premium) places opponent/ally cooldown and boss-assist panels, extended history and collected genus/pet/wing data behind Premium. No paywall was bypassed and no third-party meter implementation was imported for this comparison.
 
 Some competing meters are free; supporter storage or website data is a separate offering. “Everything premium is implemented” would not accurately describe this preview.
+
+## Follow-up review · 20 October 2026
+
+The [A2Tools 2.0.70 release notes](https://github.com/taengu/A2Tools-DPS-Meter/releases/tag/v2.0.70) explicitly describe missing world-boss direct hits for players outside the local party. Its newer [2.0.73 notes](https://github.com/taengu/A2Tools-DPS-Meter/releases/tag/v2.0.73) also address focus/position behavior and event widgets. Transport loss of zero therefore does not establish a complete world-boss participant ranking. Luma labels its board as observed contributions and does not manufacture named rows or an exact global rank from missing hits. HP depletion alone is not safely attributable damage when the first HP point, healing or reset context is missing.
+
+The current [A2Tools pet tracker description](https://a2tools.app/) and [PetTracker setup](https://github.com/0Fox2Give/PetTracker#readme) both obtain the initial collection at character login. Opening a meter after that transmission cannot reconstruct it passively. Luma 0.21.1 now automatically retains prior counters by validated character/home server and restores them as last received; new session gains remain visible and pinnable while the current baseline is unavailable. Repeated diagnostic exports or a manual sync button are not normal operation. A first unseen baseline, offline changes and unreceived actor names remain explicit limits.
+
+The current [Aion2t Premium](https://aion2t.com/premium), [DaevaMeter](https://daevameter.online/features) and [Shugo.GG](https://shugo.gg/app) descriptions still identify additional collected datasets, spatial radar/replay and broader game-counter coverage. Those remain gaps in the independent Luma implementation, rather than completed features inferred from having a panel with the same name. These comparisons use published behavior and protocol descriptions; no external implementation has been incorporated by this follow-up.
 
 ## Corrections prioritized in 0.21.0
 

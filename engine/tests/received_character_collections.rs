@@ -168,7 +168,7 @@ fn only_unique_own_character_wing_anchor_establishes_wing_observation() {
         }
     ));
     assert!(matches!(
-        &updates[1],
+        &updates[2],
         Event::Character(CharacterEvent::Wing { .. })
     ));
     let mut other = frame.clone();

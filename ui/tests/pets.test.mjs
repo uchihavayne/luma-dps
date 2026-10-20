@@ -218,6 +218,30 @@ test('received points without a level remain visible in the tracker without inve
   assert.ok(!en.includes('Counter not received'));
 });
 
+test('pinning a gains-only pet keeps its live session counter visible before the login baseline arrives', () => {
+  const value = plan([pet({ level: null, progress: null, progress_source: 'unknown', session_gained: 11 })]);
+  const row = value.rows.find(row => row.id === 1002);
+  for (const automatic of [false, true]) for (const compact of [false, true]) {
+    const html = renderPetTracker([{ ...row, automatic }], { compact });
+    assert.ok(html.includes('Bu oturumda +11 ruh'));
+    assert.ok(html.includes('Seviye ve toplam sayaç bekleniyor'));
+    assert.ok(!html.includes('Sayaç alınmadı'));
+    assert.ok(!html.includes('role="progressbar"'));
+    assert.ok(!html.includes('11 / 25'));
+    assert.ok(!html.includes('Tahmini'));
+    assert.ok(html.includes(automatic ? 'data-pet-action="pin"' : 'data-pet-action="unpin"'));
+  }
+  const english = renderPetTracker([row], { locale: 'en' });
+  assert.ok(english.includes('This session +11 souls'));
+  assert.ok(english.includes('Waiting for level and total counter'));
+  const guide = renderPetGuide(value, catalog, { filters: { query: 'Krall Laborer' }, pins: [1002] });
+  assert.ok(guide.includes('Bu oturumda +11 ruh'));
+  assert.ok(!guide.includes('Sayaç alınmadı'));
+  const baseline = renderPetTracker([plan([pet({ session_gained: 11 })]).rows.find(row => row.id === 1002)]);
+  assert.ok(baseline.includes('12 / 25'));
+  assert.ok(baseline.includes('Bu oturumda +11'));
+});
+
 test('raw counters with unknown requirements and stale points keep their precise missing-data reason', () => {
   const value = plan([pet({ pet_id: 1001, progress: 8 }), pet({ pet_id: 1002, level: null, progress: 0, progress_stale: true })]);
   const special = value.rows.find(row => row.id === 1001), stale = value.rows.find(row => row.id === 1002);
@@ -290,7 +314,8 @@ test('received-only empty state exposes reference catalog without inventing live
   assert.ok(guide.includes('data-action="pet-guide-catalog"'));
   assert.ok(guide.includes('data-action="pet-guide-reset"'));
   assert.ok(guide.includes('data-action="refresh-pets"'));
-  assert.ok(guide.includes('karakter seçimine dönüp bir kez tekrar giriş yap'));
+  assert.ok(guide.includes('Pet verileri doğrulanan karakter ve sunucu için otomatik kaydedilir'));
+  assert.ok(!guide.includes('karakter seçimine dönüp'));
   assert.ok(!guide.includes('class="pet-guide-card'));
   const catalogFilters = petGuideFilterAction(filters, 'pet-guide-catalog');
   assert.deepEqual(catalogFilters, { ...filters, status: 'all', page: 0 });
@@ -444,4 +469,19 @@ test('rendered guide and tracker escape names and retain ordinary source attribu
   assert.ok(guide.includes('&lt;img src=x'));
   assert.ok(guide.includes('href="https://metabot.gg/en/aion-2/mounts/krall-laborer"'));
   assert.ok(!guide.includes('nofollow'));
+});
+
+
+test('a fresh soul event can auto-track a cached pet without pretending its older counter is live', () => {
+  const current = petPlan(inventory([pet({ progress_stale: true })], { continuity: 'last-known', stale_reason: 'previous-session', inventory_complete: false }), catalog, { localPlayerId: '7', now });
+  const rows = trackedPets(current, [], { now });
+  assert.equal(rows.length, 1); assert.equal(rows[0].automatic, true); assert.equal(rows[0].stale, true);
+  assert.equal(rows[0].etaMs, null);
+  const html = renderPetTracker(rows);
+  assert.ok(html.includes('Son alınan')); assert.ok(html.includes('Bu oturumda +12'));
+  assert.ok(html.includes('data-pet-action="pin"')); assert.ok(!html.includes('Tahmini'));
+  for (const input of [{ session_gained: 0 }, { last_gain_at_ms: null }]) {
+    const oldOnly = petPlan(inventory([pet({ ...input, progress_stale: true })], { continuity: 'last-known', stale_reason: 'previous-session' }), catalog, { localPlayerId: '7', now });
+    assert.deepEqual(trackedPets(oldOnly, [], { now }), []);
+  }
 });

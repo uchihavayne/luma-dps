@@ -105,7 +105,7 @@ export function bossRoster(target, state = {}) {
   const participantCount = Number.isSafeInteger(target.participant_count) && target.participant_count >= rows.length ? target.participant_count : null;
   return { rows, participantCount, totalDamage: total, dps: total / Math.max(elapsedMs / 1000, 1), elapsedMs,
     complete: target.capture_complete === true && !(state.diagnostics?.stream_gaps > 0), own, ownRank,
-    scope: 'observed-target', kind: target.is_boss === true ? 'boss' : 'target' };
+    scope: 'observed-target', coverage: 'received-only', kind: target.is_boss === true ? 'boss' : 'target' };
 }
 
 export function targetSummary(target, state = {}, scope = 'personal') {
