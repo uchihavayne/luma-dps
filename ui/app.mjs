@@ -1226,10 +1226,11 @@ function renderCombatWarning() {
   if (key !== warnedWindup) { warnedWindup = key; beep(); }
 }
 
-function characterDataEpoch() { return `${metadataEpoch(state, 'character')}:${petCollectionEpoch(state)}`; }
+function characterDataEpoch() { return `${state.local_player_id ?? ''}:${petCollectionEpoch(state)}`; }
 
 const requestCharacterSnapshot = characterSnapshotReader({
   epoch: characterDataEpoch,
+  revision: () => metadataEpoch(state, 'character'),
   read: () => invoke('get_character_state'),
   accept: result => {
     if (acceptsPetCollectionSnapshot(state, result)) characterData = characterSnapshot(result);

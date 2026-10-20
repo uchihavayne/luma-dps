@@ -125,3 +125,15 @@ test('a failed character read settles all callers and permits an automatic retry
   await Promise.all([read(), read()]); assert.equal(errors, 1); assert.equal(accepted, 0);
   fail = false; await read(); assert.equal(accepted, 1);
 });
+
+test('continuous same-character metadata changes cannot starve accepted pet snapshots or keep readers pending forever', async () => {
+  let revision = 0, calls = 0, settled = 0;
+  const accepted = [];
+  const read = characterSnapshotReader({ epoch: () => 'same-owner-generation', revision: () => revision,
+    read: async () => { calls++; revision++; return { progress: calls }; },
+    accept: snapshot => accepted.push(snapshot.progress), settled: () => settled++ });
+  await read();
+  assert.deepEqual(accepted, [1, 2, 3]); assert.equal(calls, 3); assert.equal(settled, 1);
+  await read();
+  assert.deepEqual(accepted, [1, 2, 3, 4, 5, 6]); assert.equal(settled, 2);
+});

@@ -76,17 +76,19 @@ export function characterSnapshot(value = {}) {
 
 // All callers await the same read, including any retry after an identity or
 // revision change. An export cannot race an in-flight character refresh.
-export function characterSnapshotReader({ epoch, read, accept, failed, settled }) {
+export function characterSnapshotReader({ epoch, revision = epoch, read, accept, failed, settled }) {
   let pending = null;
   return function request() {
     if (pending) return pending;
     pending = (async () => {
-      let started;
+      let started, observedRevision, attempts = 0;
       do {
         started = epoch();
+        observedRevision = revision();
         try { const value = await read(); if (started === epoch()) accept(value); }
         catch (error) { if (started === epoch()) failed?.(error); }
-      } while (started !== epoch());
+        attempts++;
+      } while ((started !== epoch() || observedRevision !== revision()) && attempts < 3);
     })().finally(() => { pending = null; settled?.(); });
     return pending;
   };
