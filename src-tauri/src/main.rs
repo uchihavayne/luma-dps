@@ -11,6 +11,7 @@ mod hotkeys;
 mod local_history;
 mod native_capture;
 mod obs_server;
+mod personal_bests;
 mod pet_cache;
 mod pet_reference;
 mod team_sync;
@@ -1266,6 +1267,7 @@ struct Shared {
     history_saved_revision: AtomicU64,
     history_storage_error: Mutex<String>,
     pet_cache: Mutex<pet_cache::Store>,
+    personal_bests: Mutex<personal_bests::Store>,
     pet_cache_revision: AtomicU64,
     preference_change: Mutex<()>,
     geometry_save_due: AtomicU64,
@@ -1275,6 +1277,29 @@ struct Shared {
 }
 
 static STATE_REVISION: AtomicU64 = AtomicU64::new(0);
+
+fn refresh_personal_bests(shared: &Shared, force: bool) {
+    let observations = shared
+        .engine
+        .lock()
+        .map(|mut engine| engine.take_record_observations())
+        .unwrap_or_default();
+    if let Ok(mut store) = shared.personal_bests.lock() {
+        for observation in observations {
+            store.observe(observation);
+        }
+        store.flush(now_ms(), force);
+    }
+}
+
+#[tauri::command]
+fn get_personal_bests(shared: State<'_, Arc<Shared>>) -> Result<Value, String> {
+    shared
+        .personal_bests
+        .lock()
+        .map(|store| store.snapshot())
+        .map_err(|_| "Personal bests unavailable".into())
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -1374,6 +1399,12 @@ fn resized_meter_dimensions(
 }
 
 fn snapshot(shared: &Shared) -> Result<Value, String> {
+    // Read the disk-backed ledger before holding the live engine lock.
+    let record_status = shared
+        .personal_bests
+        .lock()
+        .map_err(|_| "Personal bests unavailable")?
+        .status(now_ms());
     let mut engine = shared
         .engine
         .lock()
@@ -1389,6 +1420,7 @@ fn snapshot(shared: &Shared) -> Result<Value, String> {
     }
     let mut state = serde_json::to_value(engine.live_state(now)).map_err(|e| e.to_string())?;
     if let Some(object) = state.as_object_mut() {
+        object.insert("personal_bests".into(), record_status);
         object.insert(
             "history_storage_error".into(),
             Value::String(
@@ -1931,6 +1963,7 @@ mod shell_tests {
             history_saved_revision: AtomicU64::new(0),
             history_storage_error: Mutex::new(String::new()),
             pet_cache: Mutex::new(pet_cache::Store::open(PathBuf::new())),
+            personal_bests: Mutex::new(personal_bests::Store::open(PathBuf::new())),
             pet_cache_revision: AtomicU64::new(0),
             preference_change: Mutex::new(()),
             geometry_save_due: AtomicU64::new(0),
@@ -3736,6 +3769,7 @@ fn run_probe_if_requested() -> bool {
         history_saved_revision: AtomicU64::new(0),
         history_storage_error: Mutex::new(String::new()),
         pet_cache: Mutex::new(pet_cache::Store::open(PathBuf::new())),
+        personal_bests: Mutex::new(personal_bests::Store::open(PathBuf::new())),
         pet_cache_revision: AtomicU64::new(0),
         preference_change: Mutex::new(()),
         geometry_save_due: AtomicU64::new(0),
@@ -3800,6 +3834,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_state,
+            get_personal_bests,
             get_cube_state,
             start_cube_locator,
             stop_cube_locator,
@@ -3922,6 +3957,7 @@ fn main() {
             }
             let calendar = event_schedule::Service::start(data_dir.join("event-calendars.json"));
             let pet_cache = pet_cache::Store::open(data_dir.join("pet-counters.json"));
+            let personal_bests = personal_bests::Store::open(data_dir.join("personal-bests.json"));
             let shared = Arc::new(Shared {
                 engine: Mutex::new(engine),
                 preferences: Mutex::new(preferences),
@@ -3936,6 +3972,7 @@ fn main() {
                 history_saved_revision: AtomicU64::new(history_revision),
                 history_storage_error: Mutex::new(history_error),
                 pet_cache: Mutex::new(pet_cache),
+                personal_bests: Mutex::new(personal_bests),
                 pet_cache_revision: AtomicU64::new(0),
                 preference_change: Mutex::new(()),
                 geometry_save_due: AtomicU64::new(0),
@@ -4059,6 +4096,7 @@ fn main() {
                         engine.tick(now_ms());
                     }
                     refresh_pet_cache(&shared, false);
+                    refresh_personal_bests(&shared, false);
                     if let Ok(state) = snapshot(&shared) {
                         let _ = handle.emit("luma-state", state);
                     }
@@ -4172,6 +4210,7 @@ fn main() {
                 if let Ok(mut engine) = shared.engine.lock() {
                     engine.reset();
                 }
+                refresh_personal_bests(&shared, true);
                 let _ = persist_history(&shared);
             }
         });

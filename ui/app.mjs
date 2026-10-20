@@ -3,6 +3,7 @@ import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } f
 import { playerBarColor } from './model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus, petCollectionOwner, petCollectionEpoch, acceptsPetCollectionSnapshot, petCollectionProgress } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
+import { createRecordNotifier, recordSnapshot, recordPresentation, renderRecords } from './records.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
 import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
 import { characterSnapshot, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch, characterSnapshotReader } from './character.mjs';
@@ -51,6 +52,8 @@ let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
 let deferredRosterRefresh = false;
 let selectedBoardTargetId = null;
 let automaticTargetFocus = null;
+const recordNotifier = createRecordNotifier();
+let recordData = recordSnapshot(), recordsPending = false, recordsRetryAt = 0, recordMetric = 'all', recordQuery = '';
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
 let receivedStateCount = 0;
@@ -72,12 +75,20 @@ let appVersion = demo ? 'Demo' : '';
 let captureDiagnostics = null, captureDiagnosticRequest = null, captureDiagnosticFingerprint = '', captureDiagnosticActionPending = false;
 const captureDiagnosticDemo = demo && new URLSearchParams(location.search).get('captureDiagnosticsDemo') === 'missing-api';
 if (captureDiagnosticDemo) captureDiagnostics = normalizeCaptureDiagnostics({
-  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.21.1', mode: 'demo',
+  type: 'luma-capture-diagnostics', schema_version: 1, app_version: '0.22.0', mode: 'demo',
   compatibility: { schema_version: 1, diagnostic_only: true, capture_started: false,
     os: { status: 'ready', label: 'Windows 10', major: 10, minor: 0, build: 19045, ubr: null, architecture: 'x86_64', process_architecture: 'x86_64', version_source: 'RtlGetVersion', error_code: null },
     packet_monitor: { status: 'api-unavailable', system32_only: true, load_status: 'loaded', load_error_code: null, exports_present: PACKET_MONITOR_EXPORTS.slice(0, 8), exports_missing: PACKET_MONITOR_EXPORTS.slice(8) } },
   capture: { status: 'api-unavailable', error_code: 'win32:127', operation: 'GetProcAddress', elevated: true },
 });
+const recordsDemo = demo && new URLSearchParams(location.search).get('recordsDemo') === '1';
+if (recordsDemo) {
+  const at = Date.now(), base = { name: 'Liora', server_id: 1001, class_name: 'Ranger', actor_id: 7, is_local: true, metric: 'hit', amount: 10000, at_ms: at - 1000, skill_id: 14090000, critical: true, tick: false, target_name: 'Judge Urahum', target_npc_id: 1201, map_id: 15, boss_max_hp: 5220000, elapsed_ms: null };
+  const best = { ...base, amount: 13000, at_ms: at };
+  const boss = { ...base, metric: 'boss-dps', skill_id: null, amount: 908000, elapsed_ms: 60000 };
+  recordData = recordSnapshot({ revision: 3, records: [{ best, previous: base }, { best: { ...best, name: 'Arien', is_local: false, amount: 12000, class_name: 'Cleric' }, previous: { ...base, name: 'Arien', is_local: false, class_name: 'Cleric' } }, { best: boss, previous: { ...boss, amount: 770000 } }] });
+  state = normalizeState({ ...state, personal_bests: { revision: 3, count: 3, notices: [{ sequence: 1, best, previous: base }] } });
+}
 const remindedEventCycles = new Set();
 let calendarHorizonDays = 7;
 let obsState = { running: false }, obsPending = false, obsScope = prefs.damageScope, obsHideNames = true, obsLanEnabled = false, obsPort = '';
@@ -497,7 +508,34 @@ function renderTargetVitals(target, vital) {
   track.querySelector('b').style.width = `${vital.percent ?? 100}%`;
 }
 
+Object.assign(words.tr, { records: 'Rekorlar' });
+Object.assign(words.en, { records: 'Personal bests' });
+
+function renderRecordNotice() {
+  const notice = recordNotifier.update(state.personal_bests, { now: Date.now(), mode: prefs.recordNotifications, visible: prefs.displayModules.dps && !prefs.compactStrip && !drawer });
+  const host = $('#record-notice'); host.hidden = !notice;
+  if (!notice) return;
+  const view = recordPresentation(notice, { locale: prefs.locale, hideNames: prefs.hidePlayerNames, precision: prefs.numberPrecision });
+  for (const [id, value] of Object.entries({ title: view.title, name: view.name, label: view.label, value: view.value, gain: `${view.previous} → ${view.gain}` })) setText($(`#record-notice-${id}`), value);
+  $('#dismiss-record').setAttribute('aria-label', prefs.locale === 'tr' ? 'Rekor bildirimini kapat' : 'Dismiss record notice');
+  host.title = [view.label, view.detail].filter(Boolean).join(' · ');
+}
+
+async function readRecords() {
+  if (!native || recordsPending || Date.now() < recordsRetryAt) return;
+  recordsPending = true; recordsRetryAt = Date.now() + 1000;
+  try {
+    const value = recordSnapshot(await invoke('get_personal_bests'));
+    if (value.revision >= recordData.revision) recordData = value;
+  } catch { recordsRetryAt = Date.now() + 5000; recordData = { ...recordData, storage_error: 'read-unavailable' }; }
+  finally { recordsPending = false; if (drawer === 'analysis' && tab === 'records') refreshDrawer(); }
+}
+function recordsContent() {
+  return renderRecords(recordData, { locale: prefs.locale, hideNames: prefs.hidePlayerNames, precision: prefs.numberPrecision, metric: recordMetric, query: recordQuery });
+}
+
 function renderMeter() {
+  renderRecordNotice();
   if (telemetryDemo) state.actor_cooldowns = state.actor_cooldowns.map(row => ({ ...row, sampled_at_ms: Date.now() }));
   localizeControls();
   const status = connectionStatus(state, { native, demo, locale: prefs.locale });
@@ -758,7 +796,7 @@ function moduleSettingsContent() {
 }
 
 function combatSettingsContent() {
-  return `<label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
+  return `<label class="field"><span>${prefs.locale === 'tr' ? 'Kişisel rekor bildirimleri' : 'Personal best notices'}</span><select name="recordNotifications">${[['party', prefs.locale === 'tr' ? 'Ben ve takımım' : 'Me and my party'], ['self', prefs.locale === 'tr' ? 'Yalnız ben' : 'Only me'], ['off', prefs.locale === 'tr' ? 'Kapalı' : 'Off']].map(([id, label]) => `<option value="${id}" ${prefs.recordNotifications === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p class="help">${prefs.locale === 'tr' ? 'Rekorlar otomatik kaydedilir. Sessiz bildirim 4 saniye görünür; ayrıntıları Analiz → Rekorlar’da bulabilirsin.' : 'Records are saved automatically. The silent notice lasts 4 seconds; details are in Analysis → Personal bests.'}</p><label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
 function captureDiagnosticsContent() {
@@ -1682,7 +1720,7 @@ function renderDrawerContent() {
   }
   contentHost.setAttribute('role', drawer === 'analysis' ? 'tabpanel' : 'region');
   contentHost.setAttribute('aria-labelledby', drawer === 'analysis' ? `drawer-tab-analysis-${tab}` : 'drawer-title');
-  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, rotation: rotationContent, healing: healingContent, runs: runsContent, skills: skillsContent, training: trainingContent, curves: curvesContent, effects: effectsContent, team: teamContent, pets: petsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
+  const content = drawer === 'character' ? characterContent() : ({ overview: overviewContent, rotation: rotationContent, healing: healingContent, runs: runsContent, skills: skillsContent, training: trainingContent, records: recordsContent, curves: curvesContent, effects: effectsContent, team: teamContent, pets: petsContent, build: buildContent, worldBosses: worldContent, gameReport: gameReportContent, history: historyContent, community: communityContent, planner: plannerContent, alerts: alertsContent }[tab])();
   if (drawerContentFingerprint !== content) { const details = new Map([...contentHost.querySelectorAll('details[data-state-key]')].map(node => [node.dataset.stateKey, node.open])); const activeName = contentHost.contains(document.activeElement) ? document.activeElement.name : ''; contentHost.innerHTML = content; for (const node of contentHost.querySelectorAll('details[data-state-key]')) if (details.has(node.dataset.stateKey)) node.open = details.get(node.dataset.stateKey); if (activeName) contentHost.querySelector(`[name="${activeName}"]`)?.focus({ preventScroll: true }); drawerContentFingerprint = content; }
   tickTimers();
   if (drawer === 'analysis' && tab === 'effects') renderEffectLists();
@@ -1706,6 +1744,7 @@ function selectDrawerTab(name) {
     if (name === 'team') readTeamState();
     if (['curves', 'rotation', 'healing', 'overview', 'effects'].includes(name)) { historyCache?.retry(); readCurveRecord(); }
     if (name === 'runs') historyCache?.retry();
+    if (name === 'records') readRecords();
     if (name === 'effects') readAssistTimeline();
     if (['build', 'pets'].includes(name)) readCharacterData();
     if (name === 'worldBosses') readWorldData();
@@ -1736,6 +1775,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && requestedTab === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
   if (kind === 'analysis' && ['curves', 'rotation', 'healing', 'overview', 'effects'].includes(requestedTab)) { historyCache?.retry(); readCurveRecord(); }
   if (kind === 'analysis' && requestedTab === 'runs') historyCache?.retry();
+  if (kind === 'analysis' && requestedTab === 'records') readRecords();
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
   if (kind === 'analysis' && ['build', 'pets'].includes(requestedTab)) { if (requestedTab === 'pets') snapshot = null; readCharacterData(); }
   if (kind === 'analysis' && requestedTab === 'worldBosses') readWorldData();
@@ -1773,6 +1813,7 @@ function beep() {
 }
 
 function tickTimers() {
+  renderRecordNotice();
   renderTargetPetPin();
   scheduleOverlayRegions();
   $('#meter').classList.toggle('idle-fade', prefs.fadeWhenIdle && !drawer && !state.encounter_active && !['combat', 'combat_active'].includes(state.status));
@@ -1907,6 +1948,7 @@ document.addEventListener('keydown', event => {
     if (target) { event.preventDefault(); target.focus(); }
   }
 }, { capture: true });
+$('#dismiss-record').addEventListener('click', () => { recordNotifier.dismiss(); renderRecordNotice(); });
 $('#drawer-tabs').addEventListener('click', event => { const name = delegatedControl(event, event.currentTarget, 'button[data-tab]')?.dataset.tab; if (name) selectDrawerTab(name); });
 $('#drawer-tabs').addEventListener('keydown', event => { if (event.altKey || event.ctrlKey || event.metaKey) return; const next = nextTab($$('#drawer-tabs button').map(button => button.dataset.tab), drawer === 'settings' ? settingsTab : tab, event.key); if (next) { event.preventDefault(); selectDrawerTab(next); } });
 
@@ -1943,7 +1985,7 @@ $('#drawer-content').addEventListener('change', async event => {
     element.value = ''; return;
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
-  if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
+  if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode', 'recordNotifications'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
   if (['showClass', 'showShares', 'showTeamCooldowns', 'autoTargetRoster'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
@@ -1954,6 +1996,8 @@ $('#drawer-content').addEventListener('change', async event => {
   if (['onlyAboveGame', 'clickThroughWhenLocked', 'fadeWhenIdle', 'hidePlayerNames', 'compactStrip', 'autoCheckUpdates'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (name === 'obsHideNames') { obsHideNames = element.checked; return; }
   if (name?.startsWith('color-')) { savePreferences({ theme: 'custom', customColors: { ...prefs.customColors, [name.slice(6)]: element.value } }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === 'custom'))); return; }
+  if (name === 'recordMetric') { recordMetric = element.value; refreshDrawer(name); return; }
+  if (name === 'recordQuery') { recordQuery = element.value.slice(0, 100); refreshDrawer(name); return; }
   if (name === 'selectedPlayer') { selectedPlayer = element.value; refreshDrawer(name); return; }
   if (name === 'skillSort') { skillSort = element.value; refreshDrawer(name); return; }
   if (name === 'trainingTargetId') { trainingTargetId = element.value; return; }
@@ -1980,6 +2024,7 @@ $('#drawer-content').addEventListener('change', async event => {
 });
 
 $('#drawer-content').addEventListener('input', event => {
+  if (event.target.name === 'recordQuery') { recordQuery = event.target.value.slice(0, 100); refreshDrawer('recordQuery'); return; }
   if (event.target.name === 'petQuery') petFilters.query = event.target.value.slice(0, 120);
   const element = event.target;
   if (element.name === 'trainingSeconds') { trainingDurationDraft = element.value; const duration = validateTrainingDuration(trainingDurationDraft); if (duration !== null) trainingDuration = duration; updateTrainingLive(); return; }
@@ -2214,6 +2259,7 @@ function receiveState(value) {
   if (petMetadata.fetch) readCharacterData();
   if (metadataEpoch(previous, 'world') !== metadataEpoch(state, 'world') && state.field_boss_available && (prefs.activeEventId.startsWith('boss:') || drawer === 'analysis' && tab === 'worldBosses')) readWorldData();
   historyCache?.observe(state.history_revision);
+  if (drawer === 'analysis' && tab === 'records' && state.personal_bests.revision !== recordData.revision) readRecords();
   renderMeter();
 }
 

@@ -253,3 +253,32 @@ body.fullscreen-dashboard #meter .toast { bottom: 90px; font-size: 12px; max-wid
   body.fullscreen-dashboard #meter .player,
   body.fullscreen-dashboard #meter .player-bar { transition: none; }
 }
+
+/* Leave room for the actual roster on common laptop/720p displays. */
+@media (min-width: 761px) and (min-height: 621px) and (max-height: 900px) {
+  body.fullscreen-dashboard #meter.meter { padding: 16px 20px; grid-template-rows: 40px auto auto auto 46px minmax(0, 1fr) 52px; column-gap: 16px; }
+  body.fullscreen-dashboard #meter > .topbar { height: 34px; }
+  body.fullscreen-dashboard #meter > .encounter-header,
+  body.fullscreen-dashboard #meter > .metrics { min-height: 0; margin-top: 4px; padding: 10px 16px; border-radius: 12px; }
+  body.fullscreen-dashboard #meter .target-line { margin-top: 3px; min-height: 25px; }
+  body.fullscreen-dashboard #meter .target-line h1 { font-size: clamp(18px,calc(var(--target-size) * 1.3),28px); }
+  body.fullscreen-dashboard #meter .event-chip { margin-top: 5px; min-height: 22px; padding: 2px 7px; }
+  body.fullscreen-dashboard #meter .target-vitals { margin-top: 6px; }
+  body.fullscreen-dashboard #meter .target-vitals > i { height: 4px; margin-top: 3px; }
+  body.fullscreen-dashboard #meter .metrics strong { font-size: clamp(12px,calc(100cqw / var(--metric-length,6) / .68),40px); margin-top: 4px; }
+  body.fullscreen-dashboard #meter .metric-caption { margin-top: 3px; }
+  body.fullscreen-dashboard #meter > .notice,
+  body.fullscreen-dashboard #meter > .combat-warning { margin-top: 6px; padding: 5px 10px; }
+  body.fullscreen-dashboard #meter .roster-list { padding: 8px; border-radius: 12px; }
+  body.fullscreen-dashboard #meter .list-heading { padding: 3px 10px 7px; }
+  body.fullscreen-dashboard #meter .target-roster-strip { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,2fr); padding: 5px 10px; gap: 3px 12px; }
+  body.fullscreen-dashboard #meter .target-roster-strip > strong,
+  body.fullscreen-dashboard #meter .target-roster-strip > span { grid-column: 1; }
+  body.fullscreen-dashboard #meter .target-dps-panel { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  body.fullscreen-dashboard #meter #target-pet-pin[data-status=catalog-no-match] { padding: 5px 8px; margin-block: 4px; }
+  body.fullscreen-dashboard #meter #target-pet-pin[data-status=catalog-no-match] small { display: none; }
+  body.fullscreen-dashboard #meter[data-density=compact] .player { min-height: 38px; padding-block: 5px; margin-bottom: 4px; }
+  body.fullscreen-dashboard #meter[data-density=compact] .player-name { font-size: calc(14px * var(--scale)); }
+  body.fullscreen-dashboard #meter[data-density=compact] .player-numbers > .player-dps { font-size: calc(17px * var(--scale)); line-height: calc(23px * var(--scale)); }
+  body.fullscreen-dashboard #meter > .footer { min-height: 46px; padding-top: 5px; }
+}

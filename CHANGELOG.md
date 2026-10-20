@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.22.0 · 21 October 2026
+
+- Add automatic highest-single-PvE-hit records for server-identified self and confirmed game-party members, keyed by received character/home server/class. Ties and smaller hits do not create records. Received summon-owner attribution is respected; nearby strangers and manual rosters cannot establish party records.
+- Persist up to 512 local records with validated bounded JSON, atomic replacement, delayed writes and visible storage errors. Reconnects preserve records; startup, history imports and browser demos cannot replay or create native live notices.
+- Add a quiet same-window New personal best card, coalesced updates, fixed display lifetime, dismissal, hidden-name handling and Me/Party/Off notification preferences. Add searchable/filterable Personal bests cards with previous score and percentage improvement.
+- Keep single-hit damage distinct from DPS. Completed personal single-boss DPS records require complete retained samples, no stream gaps, at least ten seconds, and matching received character/class/server/map/NPC/reported-maximum-HP context. This does not verify difficulty or a boss kill.
+- Give the player roster more room on 720p/laptop fullscreen dashboards and improve DPS contrast over green/yellow/orange/red performance bars and retain separate total-damage/rate labels, saved typography, light/dark themes and responsive fullscreen layouts.
+- Add regression checks for strict increases, party/identity boundaries, summon attribution, pause, bounded persistence, exact rate comparison, notification throttling and safe rendering. Review current Questlog and A2 Pro public feature descriptions; spatial radar/replay and broader unreceived counters remain documented gaps.
+
+
 Entries describe preview builds. Live validation is listed separately from automated checks.
 
 ## 0.21.1 preview · 2026-10-20

@@ -1692,6 +1692,9 @@ mod windows {
                 pet_cache: std::sync::Mutex::new(crate::pet_cache::Store::open(
                     std::path::PathBuf::new(),
                 )),
+                personal_bests: std::sync::Mutex::new(crate::personal_bests::Store::open(
+                    std::path::PathBuf::new(),
+                )),
                 pet_cache_revision: AtomicU64::new(0),
                 preference_change: std::sync::Mutex::new(()),
                 geometry_save_due: AtomicU64::new(0),
@@ -2064,6 +2067,9 @@ mod windows {
                 history_saved_revision: AtomicU64::new(0),
                 history_storage_error: std::sync::Mutex::new(String::new()),
                 pet_cache: std::sync::Mutex::new(crate::pet_cache::Store::open(
+                    std::path::PathBuf::new(),
+                )),
+                personal_bests: std::sync::Mutex::new(crate::personal_bests::Store::open(
                     std::path::PathBuf::new(),
                 )),
                 pet_cache_revision: AtomicU64::new(0),

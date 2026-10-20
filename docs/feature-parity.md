@@ -27,6 +27,14 @@ The current [A2Tools pet tracker description](https://a2tools.app/) and [PetTrac
 
 The current [Aion2t Premium](https://aion2t.com/premium), [DaevaMeter](https://daevameter.online/features) and [Shugo.GG](https://shugo.gg/app) descriptions still identify additional collected datasets, spatial radar/replay and broader game-counter coverage. Those remain gaps in the independent Luma implementation, rather than completed features inferred from having a panel with the same name. These comparisons use published behavior and protocol descriptions; no external implementation has been incorporated by this follow-up.
 
+## Personal-record review · 21 October 2026
+
+[Questlog Desktop](https://questlog.gg/aion-2/en-nc/app) documents per-character boss-DPS personal bests and in-meter notices. [A2 Pro](https://a2prometer.com.br/) documents comparison against a previous best on the same boss. Luma 0.22.0 adds a distinct highest-single-PvE-hit record for server-identified self and confirmed game-party members, and a separate completed personal boss-DPS record. Neither is a global ranking or a percentile.
+
+Single-hit records advance only on strictly greater received amounts, with summon attribution only when its owner is already confirmed. Unknown name/home server/class or unconfirmed party membership cannot produce a record. The first eligible value establishes a baseline; later improvements produce a short, silent, coalesced same-window notice. Notifications can be self-only, self/party, or off without disabling local recording. Up to 512 records persist privately in `personal-bests.json`; imported history never enters the live record queue.
+
+Boss-DPS comparisons require a fully retained, gap-free completed single-boss personal encounter of at least ten seconds. Keys include character, home server, class, map, NPC template and reported maximum HP. The rate is compared with exact integer cross multiplication, not rounded display values or total damage. Received map/HP context is not independent verification of difficulty or a successful kill. Unknown comparison context stays in ordinary history without creating a boss-DPS record. The searchable same-window records section keeps hit damage and DPS units separate.
+
 ## Corrections prioritized in 0.21.0
 
 The automated quality gate now runs the complete listed test suites before CI builds and records a public-source fingerprint; its own failure modes have regression coverage. See [quality gate](quality-gate.md). Pet collection ownership survives ordinary self death separately from live combat identity; real character/session changes reject old snapshots. Completed boss classifications stay with the saved encounter across live connection boundaries. These fixes establish the tested cases, not universal live accuracy.

@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="pets.css">
   <link rel="stylesheet" href="fullscreen.css">
+  <link rel="stylesheet" href="records.css">
 </head>
 <body>
   <main id="meter" class="meter" aria-label="Luma DPS">
@@ -73,6 +74,12 @@
       <nav id="drawer-tabs" class="drawer-tabs" role="tablist" aria-label="Analiz bölümleri" hidden></nav>
       <div id="drawer-content" class="drawer-content"></div>
     </section>
+    <aside id="record-notice" class="record-notice" aria-label="Kişisel rekor" hidden>
+      <span class="record-notice-mark" aria-hidden="true">◇</span>
+      <div class="record-notice-copy" role="status" aria-live="polite" aria-atomic="true"><strong id="record-notice-title"></strong><span id="record-notice-name"></span><small id="record-notice-label"></small></div>
+      <div class="record-notice-score"><b id="record-notice-value"></b><small id="record-notice-gain"></small></div>
+      <button id="dismiss-record" type="button" class="icon-button" aria-label="Rekor bildirimini kapat">×</button>
+    </aside>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </main>
   <script type="module" src="app.mjs"></script>

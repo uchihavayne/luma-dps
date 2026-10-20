@@ -6,6 +6,7 @@ pub mod framing;
 pub mod latency;
 pub mod net;
 pub mod packets;
+pub mod records;
 pub mod resources;
 
 use packets::Event;
@@ -420,6 +421,7 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    record_observations: Vec<records::Observation>,
     collection_generation: u64,
     focus_epoch: u64,
     current_context: EncounterContext,
@@ -485,6 +487,7 @@ pub struct MeterEngine {
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            record_observations: Vec::new(),
             collection_generation: 0,
             focus_epoch: 0,
             current_context: EncounterContext::default(),
@@ -1487,6 +1490,7 @@ impl MeterEngine {
                 }
                 self.diagnostics.damage_events += 1;
                 if self.hit_count < MAX_HITS {
+                    self.observe_record_hit(&hit, now);
                     self.hit_count += 1;
                     if self.damage_samples.len() < MAX_SAMPLES {
                         self.damage_samples.push(DamageSample {
@@ -1558,6 +1562,117 @@ impl MeterEngine {
             }
         }
     }
+    fn record_actor(&self, actor: u64) -> Option<(&Identity, bool)> {
+        let identity = self.identities.get(&actor)?;
+        if !identity.player
+            || identity.removed
+            || identity.npc
+            || identity.pet
+            || identity.owner.is_some()
+        {
+            return None;
+        }
+        let local = self.own_id == Some(actor);
+        if local {
+            return Some((identity, true));
+        }
+        // A stranger's hit does not rescan the entire party/nearby roster.
+        let verified_party = self.party_sync_confirmed
+            && self.party_names.as_ref().is_some_and(|names| {
+                names.iter().any(|name| {
+                    self.party_name_matches(identity, name)
+                        && self
+                            .identities
+                            .values()
+                            .filter(|row| {
+                                !row.removed
+                                    && !row.npc
+                                    && !row.pet
+                                    && row.owner.is_none()
+                                    && self.party_name_matches(row, name)
+                            })
+                            .take(2)
+                            .count()
+                            == 1
+                })
+            });
+        verified_party.then_some((identity, false))
+    }
+
+    fn record_observation(
+        &self,
+        actor: u64,
+        target: u64,
+        amount: u64,
+        now: u64,
+    ) -> Option<records::Observation> {
+        let (identity, local) = self.record_actor(actor)?;
+        let target = self.identities.get(&target)?;
+        if !target.npc || target.player || target.pet {
+            return None;
+        }
+        Some(records::Observation {
+            name: identity.name.clone()?,
+            server_id: identity.home_server?,
+            class_name: identity.class.clone()?,
+            actor_id: actor,
+            is_local: local,
+            metric: "hit".into(),
+            amount,
+            at_ms: now,
+            skill_id: None,
+            critical: false,
+            tick: false,
+            target_name: target.name.clone().unwrap_or_default(),
+            target_npc_id: target.npc_model_id,
+            map_id: self.current_context.map_id,
+            boss_max_hp: target.reported_max_hp,
+            elapsed_ms: None,
+        })
+    }
+
+    fn observe_record_hit(&mut self, hit: &packets::Hit, now: u64) {
+        let actor = Self::owner_in(&self.identities, hit.source);
+        if let Some(mut observation) = self.record_observation(actor, hit.target, hit.amount, now) {
+            observation.skill_id = Some(hit.skill);
+            observation.critical = hit.critical;
+            observation.tick = hit.tick;
+            records::enqueue(&mut self.record_observations, observation);
+        }
+    }
+
+    fn observe_boss_record(&mut self, record: &Encounter) {
+        if record.source != "captured"
+            || record.local_identity_source != "server"
+            || !record.sample_complete
+            || self.diagnostics.truncated_encounter
+            || self.diagnostics.stream_gaps != 0
+            || record.personal_targets.len() != 1
+        {
+            return;
+        }
+        let target = &record.personal_targets[0];
+        if !target.is_boss || record.personal_total_damage != Some(target.damage) {
+            return;
+        }
+        let Some(actor) = record.local_player_id else {
+            return;
+        };
+        if let Some(mut observation) =
+            self.record_observation(actor, target.id, target.damage, record.ended_ms)
+        {
+            observation.metric = "boss-dps".into();
+            observation.elapsed_ms = Some(record.personal_elapsed_ms);
+            observation.map_id = record.context.map_id;
+            records::enqueue(&mut self.record_observations, observation);
+        }
+    }
+
+    /// Native persistence consumes only live accepted observations, never history imports.
+    pub fn take_record_observations(&mut self) -> Vec<records::Observation> {
+        std::mem::take(&mut self.record_observations)
+    }
+
     fn observe_healing(&mut self, hit: packets::Hit, now: u64) {
         if self.paused
             || hit.source == 0
@@ -2915,6 +3030,7 @@ impl MeterEngine {
             .assist
             .timeline
             .retain(|event| event.at_ms >= record.started_ms && event.at_ms <= now);
+        self.observe_boss_record(&record);
         if measured_record(&record) {
             self.history.push_front(record.clone());
             self.history.truncate(200);
@@ -3725,6 +3841,119 @@ fn class_name(code: u32) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn record_fixture() -> MeterEngine {
+        let mut engine = MeterEngine::default();
+        for id in 1..=3 {
+            engine.identities.insert(
+                id,
+                Identity {
+                    player: true,
+                    name: Some(format!("Archer{id}")),
+                    home_server: Some(1001),
+                    class: Some("Ranger".into()),
+                    ..Default::default()
+                },
+            );
+        }
+        engine.own_id = Some(1);
+        engine.identities.insert(
+            10,
+            Identity {
+                npc: true,
+                npc_model_id: Some(100),
+                name: Some("Test Boss".into()),
+                reported_max_hp: Some(1000000),
+                ..Default::default()
+            },
+        );
+        engine
+    }
+    #[test]
+    fn records_accept_only_live_self_and_verified_party_at_hit_time() {
+        let mut engine = record_fixture();
+        engine.ingest_event(hit(1, 10, 10000, false), 1000);
+        engine.ingest_event(hit(2, 10, 20000, false), 1001);
+        assert_eq!(
+            engine
+                .take_record_observations()
+                .iter()
+                .map(|row| row.amount)
+                .collect::<Vec<_>>(),
+            vec![10000]
+        );
+        engine.manual_party_ids = Some(vec![2]);
+        engine.ingest_event(hit(2, 10, 21000, false), 1002);
+        assert!(engine.take_record_observations().is_empty());
+        engine.party_names = Some(vec!["Archer2".into()]);
+        engine.party_sync_confirmed = true;
+        engine.ingest_event(hit(2, 10, 12000, true), 1003);
+        engine.ingest_event(hit(3, 10, 30000, false), 1004);
+        let rows = engine.take_record_observations();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Archer2");
+        assert!(!rows[0].is_local);
+        assert!(rows[0].critical);
+        engine.party_names = Some(vec![]);
+        engine.ingest_event(hit(2, 10, 90000, false), 1005);
+        assert!(engine.take_record_observations().is_empty());
+    }
+    #[test]
+    fn record_queue_coalesces_bursts_ignores_pause_and_credits_confirmed_summons() {
+        let mut engine = record_fixture();
+        engine.ingest_event(hit(1, 10, 10000, false), 1000);
+        engine.ingest_event(hit(1, 10, 12000, false), 1001);
+        engine.ingest_event(hit(1, 10, 11000, false), 1002);
+        assert_eq!(engine.take_record_observations()[0].amount, 12000);
+        assert!(engine.take_record_observations().is_empty());
+        engine.identities.insert(
+            20,
+            Identity {
+                pet: true,
+                owner: Some(1),
+                ..Default::default()
+            },
+        );
+        engine.ingest_event(hit(20, 10, 13000, false), 1003);
+        assert_eq!(engine.take_record_observations()[0].actor_id, 1);
+        engine.set_paused_at(true, 1004);
+        engine.ingest_event(hit(1, 10, 99999, false), 1005);
+        assert!(engine.take_record_observations().is_empty());
+        engine.set_paused_at(false, 1006);
+        engine.identities.get_mut(&1).unwrap().home_server = None;
+        engine.ingest_event(hit(1, 10, 99999, false), 1007);
+        assert!(engine.take_record_observations().is_empty());
+    }
+    #[test]
+    fn boss_dps_records_require_complete_single_boss_timing_and_comparison_context() {
+        let mut engine = record_fixture();
+        engine.current_context = EncounterContext {
+            source: "server-zone".into(),
+            map_id: Some(5),
+            ..Default::default()
+        };
+        engine.set_boss_targets(&[10]);
+        for (at, amount) in [(1000, 1000), (6000, 2000), (11000, 3000)] {
+            engine.ingest_event(hit(1, 10, amount, false), at);
+        }
+        engine.take_record_observations();
+        engine.reset();
+        let rows = engine.take_record_observations();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].metric, "boss-dps");
+        assert_eq!(rows[0].amount, 6000);
+        assert_eq!(rows[0].elapsed_ms, Some(10000));
+        // Losing capture coverage or unknown reported HP cannot create a comparable best.
+        for hp in [None, Some(1000000)] {
+            engine.identities.get_mut(&10).unwrap().reported_max_hp = hp;
+            engine.diagnostics.stream_gaps = u64::from(hp.is_some());
+            for at in [20000, 25000, 30000] {
+                engine.ingest_event(hit(1, 10, 3000, false), at);
+            }
+            engine.take_record_observations();
+            engine.reset();
+            assert!(engine.take_record_observations().is_empty());
+        }
+    }
     fn hit(source: u64, target: u64, amount: u64, critical: bool) -> Event {
         Event::Damage(Hit {
             source,
