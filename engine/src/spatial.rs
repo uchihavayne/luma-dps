@@ -280,7 +280,9 @@ impl Store {
     }
     fn push(&mut self, point: Point) {
         if self.track.len() == MAX_TRACK {
-            self.floor = self.track.pop_front().map(|p| p.at_ms);
+            if let Some(p) = self.track.pop_front() {
+                self.floor = Some(self.floor.unwrap_or(0).max(p.at_ms));
+            }
         }
         self.track.push_back(point);
     }
@@ -354,7 +356,9 @@ impl Store {
             return;
         }
         if self.aims.len() == 512 {
-            self.aims.pop_front();
+            if let Some(aim) = self.aims.pop_front() {
+                self.floor = Some(self.floor.unwrap_or(0).max(aim.at_ms));
+            }
         }
         self.bound_generations(cast.actor_id);
         let generation = *self.generations.entry(cast.actor_id).or_default();

@@ -28,7 +28,7 @@ export function spatialFrame(value, { at = Date.now(), selfId, partyIds = [], re
   }
   const self = latest.get(String(selfId)), fresh = p => p?.present && at >= p.at_ms && at - p.at_ms <= 15000;
   // Without a fresh, received self position a relative distance is unknowable.
-  if (!fresh(self) || !replay && self.epoch !== data.epoch) return { available: false, mapId: data.map_id, markers: [], aims: [], reason: 'self-position' };
+  if (!fresh(self) || !replay && self.epoch !== data.epoch) return { available: false, retentionLimited: data.retention_limited, mapId: data.map_id, markers: [], aims: [], reason: 'self-position' };
   const members = new Set(partyIds.map(String)), markers = [];
   for (const p of latest.values()) {
     if (!fresh(p) || p.epoch !== self.epoch) continue;
@@ -40,7 +40,7 @@ export function spatialFrame(value, { at = Date.now(), selfId, partyIds = [], re
   }
   const aims = data.aims.filter(a => a.map_id === self.map_id && a.epoch === self.epoch && a.at_ms <= at && a.until_ms > at)
     .map(a => ({ ...a, dx: (a.x - self.x) / 100, dy: (a.y - self.y) / 100 }));
-  return { available: true, mapId: data.map_id, self, markers: markers.sort((a, b) => a.distance - b.distance), aims, stale: at - self.at_ms > 5000 };
+  return { available: true, retentionLimited: data.retention_limited, mapId: data.map_id, self, markers: markers.sort((a, b) => a.distance - b.distance), aims, stale: at - self.at_ms > 5000 };
 }
 
 export function renderRadar(frame, { locale = 'tr', range = 100, hideNames = false, compact = false, pinnedIds = [] } = {}) {

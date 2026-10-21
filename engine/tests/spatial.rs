@@ -140,6 +140,14 @@ fn coordinates_continue_while_damage_is_paused_and_history_survives_reset() {
     let record = e.current_record(1700);
     assert!(!record.spatial.track.is_empty());
     assert!(record.spatial.valid(record.started_ms, record.ended_ms));
+    e.ingest_event(Event::Position(point(7, 3000.0)), 1800);
+    let record = e.current_record(1900);
+    assert!(record.spatial.valid(record.started_ms, record.ended_ms));
+    assert!(record
+        .spatial
+        .track
+        .iter()
+        .all(|point| point.at_ms <= record.ended_ms));
     e.reset();
     assert!(!e
         .history_snapshot()

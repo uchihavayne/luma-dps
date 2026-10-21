@@ -3495,7 +3495,10 @@ impl MeterEngine {
             .completed
             .as_ref()
             .map(|c| c.record.spatial.clone())
-            .unwrap_or_else(|| self.spatial.snapshot(now, Some((record.started_ms, now))));
+            .unwrap_or_else(|| {
+                self.spatial
+                    .snapshot(record.ended_ms, Some((record.started_ms, record.ended_ms)))
+            });
         self.attach_samples(&mut record);
         record.character_build = if let Some(completed) = &self.completed {
             completed.record.character_build.clone()

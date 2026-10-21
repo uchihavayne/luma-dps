@@ -1818,6 +1818,7 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis') { const allowed = visibleAnalysisSections(ANALYSIS_SECTIONS, prefs); if (!allowed.length) { kind = 'settings'; requestedTab = 'appearance'; } else if (!allowed.includes(requestedTab)) requestedTab = allowed[0]; }
   if (!drawer) restoreFocus = document.activeElement;
   drawer = kind; tab = requestedTab;
+  if (kind === 'analysis' && requestedTab === 'playback') { playbackAwaitCurrent = !snapshot; playbackRecord = snapshot || null; playback.pause(); playback.seek(0, 0); }
   if (kind === 'settings') settingsTab = settingsSection(requestedTab);
   settingsPanels.clear(); dirtySettingsForms.clear(); $('#drawer-content').replaceChildren(); $('#drawer-content').scrollTop = 0;
   drawerContentFingerprint = ''; drawerTabsFingerprint = '';
@@ -1831,7 +1832,6 @@ function openDrawer(kind, requestedTab = 'overview') {
   if (kind === 'analysis' && requestedTab === 'community') { historyCache?.retry(); if (!communityOpened) readCommunity(); }
   if (kind === 'analysis' && ['curves', 'rotation', 'healing', 'overview', 'effects', 'playback'].includes(requestedTab)) { historyCache?.retry(); readCurveRecord(); }
   if (kind === 'analysis' && requestedTab === 'runs') historyCache?.retry();
-  if (kind === 'analysis' && requestedTab === 'playback') { playbackAwaitCurrent = !snapshot; playbackRecord = snapshot || null; playback.pause(); playback.seek(0, 0); }
   if (kind === 'analysis' && requestedTab === 'records') readRecords();
   if (kind === 'analysis' && requestedTab === 'effects') readAssistTimeline();
   if (kind === 'analysis' && ['build', 'pets'].includes(requestedTab)) { if (requestedTab === 'pets') snapshot = null; readCharacterData(); }
