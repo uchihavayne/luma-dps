@@ -1,6 +1,6 @@
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
-import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame } from './hud.mjs';
+import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, rosterFit } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
@@ -31,7 +31,7 @@ import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
 import { worldTargetPresentation, targetVital, targetSummary, targetBoardChoices } from './bosses.mjs';
 import { combatMeasurement } from './measurement.mjs';
-import { targetDemoState } from './target-demo.mjs';
+import { targetDemoState, rosterDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
 import { normalizeCaptureDiagnostics, captureDiagnosticText, renderCaptureDiagnostics, PACKET_MONITOR_EXPORTS } from './capture-diagnostics.mjs';
@@ -66,6 +66,7 @@ if (spatialDemo) {
 }
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
+let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, rosterContext = '';
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
 let deferredRosterRefresh = false;
@@ -193,6 +194,11 @@ if (telemetryDemo && targetPetDemo) {
     recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
+const rosterDemoCount = demo ? Number(new URLSearchParams(location.search).get('rosterDemo')) : 0;
+if ([5, 6, 12].includes(rosterDemoCount)) {
+  state = normalizeState(rosterDemoState(state, rosterDemoCount));
+  prefs = normalizePreferences({ ...prefs, autoTargetRoster: false, rosterScope: 'observed' });
+}
 if (demo && new URLSearchParams(location.search).get('identityDemo') === 'unknown') {
   state = normalizeState({ ...state, local_player_id: null, local_player_name: '', local_identity_source: 'unresolved',
     personal_total_damage: null, personal_dps: null, personal_elapsed_ms: null, personal_targets: [],
@@ -404,6 +410,7 @@ function applyAppearance() {
   for (const name of HUD_PANELS) $('#meter').dataset[`hud${name[0].toUpperCase()}${name.slice(1)}`] = String(hudPanelVisible(prefs, name));
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
+  scheduleRosterFit();
 }
 
 function syncOverlayGeometry() {
@@ -840,8 +847,13 @@ function renderTargetBoardControls(measurement = {}) {
 }
 
 function renderPlayers(status, scoped) {
-  scoped = { ...scoped, players: scoped.players.filter(rosterEligible) };
+  const main = mainRoster(scoped.players.filter(rosterEligible), state, { scope: scoped.scope || prefs.rosterScope, ranked: scoped.ranked });
+  scoped = { ...scoped, players: main.players };
   const container = $('#players');
+  const context = `${state.encounter_started_ms ?? ''}:${prefs.rosterScope}:${Boolean(scoped.ranked)}:${selectedBoardTargetId ?? 'auto'}`;
+  if (context !== rosterContext) { $('.roster-list').scrollTop = 0; rosterContext = context; }
+  container.dataset.unclassified = String(main.unclassifiedCount);
+  container.title = main.unclassifiedCount ? (prefs.locale === 'tr' ? `${main.unclassifiedCount} oyuncu kimliği doğrulanmamış kaynak ana listeden ayrıldı. Alınan hasar Analiz’de korunur.` : `${main.unclassifiedCount} sources without player identity are kept in Analysis, outside the player roster.`) : '';
   const cooldownMembers = new Map(automaticTeamState(state).members.map(member => [member.actor_id, member]));
   if (!scoped.players.length) {
     deferredRosterRefresh = reconcileKeyedRows(container, [status], {
@@ -849,7 +861,7 @@ function renderPlayers(status, scoped) {
       create: () => { const row = document.createElement('div'); row.className = 'empty'; row.innerHTML = '<span class="empty-symbol" aria-hidden="true">◈</span><strong></strong><span class="empty-help"></span>'; return row; },
       update: row => { setText(row.querySelector('strong'), t(!scoped.known ? 'chooseCharacter' : prefs.rosterScope === 'personal' ? 'personalWaiting' : prefs.rosterScope === 'party' ? 'partyWaiting' : 'emptyTitle')); setText(row.querySelector('.empty-help'), !scoped.known ? t(prefs.rosterScope === 'party' ? 'partyUnknown' : 'characterUnknown') : status.message); },
     }) === false;
-    return;
+    scheduleRosterFit(); return;
   }
   const maxDps = Math.max(...scoped.players.map(player => player.dps), 1), minimumDps = Math.min(...scoped.players.map(player => player.dps));
   const occurrences = new Map();
@@ -872,6 +884,7 @@ function renderPlayers(status, scoped) {
       if (row.style.getPropertyValue('--class-color') !== color) row.style.setProperty('--class-color', color);
       if (row.style.getPropertyValue('--share') !== share) row.style.setProperty('--share', share);
       setAttribute(row, 'data-player', player.id);
+      setAttribute(row, 'aria-disabled', String(player.pending_actor === true));
       row.dataset.targetScoped = String(Boolean(scoped.ranked));
       const own = player.is_local || player.id === state.local_player_id;
       row.classList.toggle('is-own', own); row.querySelector('.own-tag').hidden = !own; setText(row.querySelector('.own-tag'), t('me'));
@@ -883,7 +896,7 @@ function renderPlayers(status, scoped) {
       icon.title = classLabel;
       row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true);
       row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : pendingName ? (prefs.locale === 'tr' ? 'Oyuncu adı kaydı bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name record; updates automatically when received.') : player.name;
-      setAttribute(row, 'aria-label', `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
+      setAttribute(row, 'aria-label', player.pending_actor ? `${visibleName}, ${classLabel}, ${prefs.locale === 'tr' ? 'Oyuncu bağlantısı bekleniyor; DPS henüz alınmadı.' : 'Waiting for actor binding; DPS not received yet.'}` : `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
       setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
@@ -891,11 +904,42 @@ function renderPlayers(status, scoped) {
       setText(cooldownNode, cooling ? `CD · ${Math.ceil((cooling.remaining_ms || cooling.recharge_remaining_ms) / 1000)} ${prefs.locale === 'tr' ? 'sn' : 's'}` : member?.cooldowns.some(value => value.ready_confirmed) ? `CD · ${t('readyConfirmed')}` : 'CD · …');
       cooldownNode.title = member?.cooldowns.map(value => `Skill #${value.skill_id} · ${value.remaining_ms === null ? '—' : `${Math.ceil(value.remaining_ms / 1000)} s`}`).join('\n') || '';
       setText(row.querySelector('.player-dps'), prefs.rowMetric === 'both' && prefs.layout !== 'cupertino' ? ` (${rate(player.dps)})` : rate(player.dps)); row.querySelector('.player-dps').title = `${t('rateCaption')}: ${fullNumber(player.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}`;
-      setText(row.querySelector('.player-damage'), num(player.damage)); row.querySelector('.player-damage').title = `${t('totalCaption')}: ${fullNumber(player.damage)}`;
+      setText(row.querySelector('.player-damage'), player.damage === null ? '—' : num(player.damage)); row.querySelector('.player-damage').title = `${t('totalCaption')}: ${player.damage === null ? '—' : fullNumber(player.damage)}`;
       const shareNode = row.querySelector('.player-share'); shareNode.hidden = !prefs.showShares;
       setText(shareNode, `${(playerShare(player, scoped.damage) * 100).toFixed(1)}%`);
     },
   }) === false;
+  scheduleRosterFit();
+}
+
+function scheduleRosterFit() {
+  if (rosterFitFrame) return;
+  rosterFitFrame = requestAnimationFrame(() => {
+    rosterFitFrame = 0;
+    const meter = $('#meter'), list = $('.roster-list'), players = $('#players');
+    const active = prefs.layout === 'cupertino' && prefs.displayModules.dps && !prefs.compactStrip && !isFullscreenDashboard(prefs) && !drawer;
+    const otherHeight = [...list.children].filter(element => element !== players).reduce((sum, element) => {
+      const rect = element.getBoundingClientRect(), css = getComputedStyle(element);
+      return sum + (rect.height ? rect.height + (parseFloat(css.marginTop) || 0) + (parseFloat(css.marginBottom) || 0) : 0);
+    }, 0);
+    const available = Math.max(0, list.clientHeight - otherHeight);
+    const fit = rosterFit({ count: active ? players.querySelectorAll('.player').length : 0, height: available, width: list.clientWidth,
+      scale: prefs.textScale, density: prefs.density, both: prefs.rowMetric === 'both', details: prefs.hudDetailRows });
+    const signature = JSON.stringify(fit);
+    if (signature !== rosterFitSignature) {
+      rosterFitSignature = signature; meter.dataset.fitRoster = String(fit.enabled); meter.dataset.fitDetails = String(fit.details === true); meter.dataset.fitSingle = String(fit.suppressDamage === true);
+      if (fit.enabled) for (const [key, value] of Object.entries({ height: fit.rowHeight, gap: fit.gap, font: fit.font, icon: fit.icon, rate: fit.rateWidth, damage: fit.damageWidth })) meter.style.setProperty(`--fit-${key}`, `${value}px`);
+    }
+    if (fit.enabled && fit.fits) list.scrollTop = 0;
+    if (drawer || prefs.fullscreenOverlay || prefs.compactStrip) { rosterMinimum = null; return; }
+    const minimum = fit.enabled ? Math.max(200, Math.min(800, Math.ceil(meter.getBoundingClientRect().height - available + fit.minimum + 1))) : 200;
+    if (demo && sampleFrame) meter.style.minHeight = `${minimum}px`;
+    if (native && minimum !== rosterMinimum) {
+      rosterMinimum = minimum;
+      invoke('set_roster_min_height', { height: minimum }).catch(() => { rosterMinimum = null; });
+    }
+    scheduleOverlayRegions();
+  });
 }
 
 function download(name, text, type = 'application/json') {
@@ -2100,6 +2144,7 @@ $('#combat-warning').addEventListener('click', () => { snapshot = null; openDraw
 $('#close-drawer').addEventListener('click', closeDrawer); $('#drawer-backdrop').addEventListener('click', closeDrawer);
 $('#players').addEventListener('click', event => {
   const player = event.target.closest('[data-player]'); if (!player) return;
+  if (player.getAttribute('aria-disabled') === 'true') return;
   selectedPlayer = player.dataset.player; skillsFromTargetBoard = player.dataset.targetScoped === 'true'; selectedBoardPlayerDetail = null;
   if (skillsFromTargetBoard) {
     const row = [...(renderedTargetBoard?.rows || []), renderedTargetBoard?.own].find(value => value?.id === selectedPlayer);
@@ -2490,9 +2535,10 @@ if (typeof ResizeObserver === 'function') {
     const roster = $('.roster-list');
     $('#meter').style.setProperty('--roster-gutter', `${Math.max(0, roster.offsetWidth - roster.clientWidth)}px`);
     renderPetTracking();
+    scheduleRosterFit();
     scheduleOverlayRegions();
   });
-  frameObserver.observe($('#meter')); frameObserver.observe($('.roster-list'));
+  frameObserver.observe($('#meter')); frameObserver.observe($('.roster-list')); frameObserver.observe($('#players'));
 }
 applyAppearance(); renderMeter();
 if (native) {

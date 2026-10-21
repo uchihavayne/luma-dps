@@ -3495,6 +3495,81 @@ fn resize_by(
         .map_err(|e| e.to_string())
 }
 
+fn roster_height_limit(requested: f64, available: f64) -> Result<f64, String> {
+    if !requested.is_finite()
+        || !(200.0..=800.0).contains(&requested)
+        || !available.is_finite()
+        || available < 200.0
+    {
+        return Err("Invalid roster minimum height".into());
+    }
+    Ok(requested.ceil().min(available.floor()))
+}
+
+#[cfg(test)]
+mod roster_height_tests {
+    use super::roster_height_limit;
+
+    #[test]
+    fn roster_height_keeps_readable_rows_inside_the_monitor() {
+        assert_eq!(roster_height_limit(200.0, 720.0).unwrap(), 200.0);
+        assert_eq!(roster_height_limit(308.2, 720.0).unwrap(), 309.0);
+        assert_eq!(roster_height_limit(800.0, 600.0).unwrap(), 600.0);
+        for height in [f64::NAN, f64::INFINITY, 0.0, 199.0, 801.0] {
+            assert!(roster_height_limit(height, 720.0).is_err());
+        }
+        assert!(roster_height_limit(300.0, f64::NAN).is_err());
+        assert!(roster_height_limit(300.0, 100.0).is_err());
+    }
+}
+
+#[tauri::command]
+fn set_roster_min_height(
+    window: WebviewWindow,
+    shared: State<Arc<Shared>>,
+    height: f64,
+) -> Result<f64, String> {
+    let preferences = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    if shared.panel_open.load(Ordering::Relaxed)
+        || fullscreen_overlay_enabled(&preferences)
+        || compact_strip(&preferences)
+    {
+        return Ok(0.0);
+    }
+    drop(preferences);
+    let factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?;
+    let available = monitor.as_ref().map_or(800.0, |monitor| {
+        monitor.work_area().size.height as f64 / factor - 8.0
+    });
+    let minimum = roster_height_limit(height, available)?;
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(320.0, minimum)))
+        .map_err(|error| error.to_string())?;
+    let size = window.inner_size().map_err(|error| error.to_string())?;
+    if size.height as f64 / factor + 0.5 < minimum {
+        window
+            .set_size(tauri::LogicalSize::new(size.width as f64 / factor, minimum))
+            .map_err(|error| error.to_string())?;
+        if let Some(monitor) = monitor {
+            let position = window.outer_position().map_err(|error| error.to_string())?;
+            let work = monitor.work_area();
+            let y = (position.y as f64)
+                .min(work.position.y as f64 + work.size.height as f64 - minimum * factor)
+                .max(work.position.y as f64);
+            window
+                .set_position(tauri::PhysicalPosition::new(position.x, y as i32))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(minimum)
+}
+
 #[tauri::command]
 fn close_window(window: WebviewWindow) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())
@@ -3889,6 +3964,7 @@ fn main() {
             start_resize,
             start_drag,
             resize_by,
+            set_roster_min_height,
             close_window,
             set_panel_open,
             open_url,

@@ -16,3 +16,17 @@ export function targetDemoState(base, now = Date.now()) {
     players: contributors.map(player => player.is_local ? { ...player, damage: player.damage + 200_000, dps: (player.damage + 200_000) / 60 } : player),
     total_damage: damage + 200_000, dps: (damage + 200_000) / 60 };
 }
+
+export function rosterDemoState(base, count = 5, now = Date.now()) {
+  const source = targetDemoState(base, now);
+  const players = source.players.slice(0, count).map((row, index) => ({ ...row, is_local: index === 0, in_party: true }));
+  const unbound = Array.from({ length: 32 }, (_, index) => ({ id: 50_000 + index, name: `#${50_000 + index}`, class_name: 'Unknown', damage: 12_000, dps: 200, skills: [], identity_confirmed: false }));
+  const partyDamage = players.reduce((sum, player) => sum + player.damage, 0);
+  const total = partyDamage + unbound.reduce((sum, row) => sum + row.damage, 0), own = players[0];
+  const target = { ...source.targets[0], damage: total, own_participant: own, own_rank: 1, participants: players.slice(0, 10), participant_count: count,
+    party_total_damage: partyDamage, party_dps: partyDamage / 60 };
+  return { ...source, encounter_active: true, encounter_started_ms: now - 60_000, players: [...players, ...unbound], targets: [target],
+    local_player_id: own.id, local_player_name: own.name, personal_total_damage: own.damage, personal_dps: own.dps, personal_elapsed_ms: 60_000,
+    personal_targets: [{ ...target, damage: own.damage }], party_member_ids: players.map(row => row.id), party_total_damage: partyDamage, party_dps: partyDamage / 60,
+    total_damage: total, dps: total / 60, party_identity_roster: { source: 'server', members: players.map(row => ({ actor_id: row.id, name: row.name, class_name: row.class_name, identity_confirmed: true })) } };
+}

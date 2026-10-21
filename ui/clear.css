@@ -277,3 +277,29 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 #meter[data-layout=cupertino].compact-strip:has(.tools-menu:not([hidden])) { height: 100%; }
 #meter[data-layout=cupertino].compact-strip .tools-menu { top: 44px; }
 @media (prefers-reduced-motion: reduce) { #meter[data-layout=cupertino] .player-bar { transition: none; } }
+
+/* Fit the received player roster before adding a scrollbar. Text has a readable
+   floor; a larger roster sets a matching minimum native window height. */
+#meter[data-layout=cupertino][data-fit-roster=true] .roster-list { scrollbar-gutter: auto; }
+#meter[data-layout=cupertino][data-fit-roster=true] #players { padding: 0; }
+#meter[data-layout=cupertino][data-fit-roster=true] #players .player { grid-template-columns: 12px minmax(0, 1fr) calc(var(--fit-rate) + var(--fit-damage) + 6px); min-height: var(--fit-height); height: var(--fit-height); padding: 0 4px; margin: 0 0 var(--fit-gap); gap: 4px; }
+#meter[data-layout=cupertino][data-fit-roster=true] #players .player:last-child { margin-bottom: 0; }
+#meter[data-layout=cupertino][data-fit-roster=true] .player-name-line { line-height: 1.3; }
+#meter[data-layout=cupertino][data-fit-roster=true] .player-name,
+#meter[data-layout=cupertino][data-fit-roster=true] .player-numbers > .player-dps,
+#meter[data-layout=cupertino][data-fit-roster=true] .player-numbers > .player-damage { font-size: var(--fit-font); line-height: 1.3; }
+#meter[data-layout=cupertino][data-fit-roster=true] .player-class-icon,
+#meter[data-layout=cupertino][data-fit-roster=true] .player-class-icon > svg { width: var(--fit-icon); height: var(--fit-icon); flex-basis: var(--fit-icon); }
+#meter[data-layout=cupertino][data-fit-roster=true] .player-numbers,
+#meter[data-layout=cupertino][data-fit-roster=true] .clear-column-headings { display: grid; grid-template-columns: var(--fit-rate) var(--fit-damage); gap: 6px; }
+#meter[data-layout=cupertino][data-fit-roster=true]:not([data-row-metric=both]) #players .player,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-single=true] #players .player { grid-template-columns: 12px minmax(0, 1fr) var(--fit-rate); }
+#meter[data-layout=cupertino][data-fit-roster=true]:not([data-row-metric=both]) .player-numbers,
+#meter[data-layout=cupertino][data-fit-roster=true]:not([data-row-metric=both]) .clear-column-headings,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-single=true] .player-numbers,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-single=true] .clear-column-headings { display: flex; justify-content: flex-end; }
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-single=true] .player-damage,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-single=true] #column-damage,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-class,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-share,
+#meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-cooldown { display: none; }
