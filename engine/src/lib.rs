@@ -5,6 +5,7 @@ pub mod field_boss;
 pub mod framing;
 pub mod latency;
 pub mod net;
+mod npc_catalog;
 pub mod packets;
 pub mod records;
 pub mod resources;
@@ -1252,6 +1253,14 @@ impl MeterEngine {
                     entry.owner = self.pending_owners.remove(&id).or(entry.owner)
                 }
                 entry.removed = false;
+                // NPC spawn text can name its current target, rather than the
+                // monster itself. Resolve the exact game model first.
+                let name = entry
+                    .npc
+                    .then(|| npc_catalog::name(model))
+                    .flatten()
+                    .map(str::to_owned)
+                    .or(name);
                 if let Some(name) = name {
                     entry.name = Some(name)
                 }
@@ -1512,7 +1521,13 @@ impl MeterEngine {
                     .retain(|(profile, _)| profile.id != id);
                 // Keep attribution until the encounter ends; an entity leaving
                 // the scene does not change damage it already dealt.
-                self.identities.entry(id).or_default().removed = true;
+                let identity = self.identities.entry(id).or_default();
+                identity.removed = true;
+                if death && identity.npc && !identity.player && !identity.pet {
+                    identity.hp = Some(0);
+                    identity.current_hp_observed_at_ms = Some(now);
+                    identity.health_observed_at_ms = Some(now);
+                }
                 self.assistance.remove_actor(id, now);
                 self.spatial.remove(id, now);
                 self.cooldowns.remove_actor(id);
@@ -1523,11 +1538,12 @@ impl MeterEngine {
                 // A death/despawn keeps existing attribution. A later spawn
                 // reusing this id, or a connection change, invalidates it.
                 if death && self.alive_targets.remove(&id) {
-                    let boss_ended = self.bosses.contains(&id)
+                    let bosses = self.report_bosses();
+                    let boss_ended = bosses.contains(&id)
                         && !self
                             .alive_targets
                             .iter()
-                            .any(|target| self.bosses.contains(target));
+                            .any(|target| bosses.contains(target));
                     if self.alive_targets.is_empty() || boss_ended {
                         self.finish(now)
                     }
@@ -2042,11 +2058,21 @@ impl MeterEngine {
         }
         self.dirty();
     }
-    fn report_bosses(&self) -> &[u64] {
-        self.completed
+    fn report_bosses(&self) -> Vec<u64> {
+        let (manual, identities) = self
+            .completed
             .as_ref()
-            .map(|completed| completed.bosses.as_slice())
-            .unwrap_or(&self.bosses)
+            .map(|completed| (&completed.bosses, &completed.identities))
+            .unwrap_or((&self.bosses, &self.identities));
+        let mut bosses = manual.clone();
+        bosses.extend(
+            identities
+                .iter()
+                .filter_map(|(id, identity)| catalog_boss(identity).then_some(*id)),
+        );
+        bosses.sort_unstable();
+        bosses.dedup();
+        bosses
     }
     pub fn reset(&mut self) {
         self.recent_personal_hit = None;
@@ -3521,9 +3547,10 @@ impl MeterEngine {
             .health_history
             .retain(|row| (record.started_ms..=record.ended_ms).contains(&row.observed_at_ms));
         if self.target_mode == "boss" {
+            let bosses = self.report_bosses();
             record
                 .damage_samples
-                .retain(|sample| self.report_bosses().contains(&sample.target))
+                .retain(|sample| bosses.contains(&sample.target))
         }
         record
     }
@@ -3683,6 +3710,14 @@ fn measured_record(record: &Encounter) -> bool {
                 || player.healing.is_some_and(|amount| amount > 0)
         })
 }
+fn catalog_boss(identity: &Identity) -> bool {
+    identity.npc
+        && !identity.player
+        && !identity.pet
+        && identity.owner.is_none()
+        && identity.npc_model_id.is_some_and(npc_catalog::is_boss)
+}
+
 fn verified_npc_source(identities: &HashMap<u64, Identity>, source: u64) -> bool {
     identities
         .get(&source)

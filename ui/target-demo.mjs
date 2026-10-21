@@ -1,7 +1,7 @@
 // Fixed UI samples; the desktop never enables browser demo parameters.
 export function targetDemoState(base, now = Date.now()) {
   const names = ['Atlas', 'Nova', 'Echo', 'Aster', 'Liora', 'Nox', 'Sol', 'Rin', 'Iris', 'Orion', 'Lumen', 'Mira'];
-  const classes = ['Gladiator', 'Ranger', 'Sorcerer', 'Assassin', 'Cleric', 'Spiritmaster', 'Templar', 'Chanter'];
+  const classes = ['Gladiator', 'Ranger', 'Sorcerer', 'Assassin', 'Cleric', 'Spiritmaster', 'Templar', 'Chanter', 'Brawler'];
   const contributors = names.map((name, index) => ({ id: index === 11 ? 7 : 101 + index, name, class_name: index === 11 ? 'Ranger' : classes[index % classes.length],
     damage: (12 - index) * 50_000, dps: (12 - index) * 50_000 / 60, identity_confirmed: true, is_local: index === 11, in_party: index === 11 || index === 4, skills: [] }));
   const damage = contributors.reduce((sum, player) => sum + player.damage, 0), own = contributors[11];

@@ -1,4 +1,9 @@
-Luma DPS application source and artwork
+Luma DPS original application source and artwork
+
+Imported game class images and NPC name facts are described in
+docs/reference-data.md and ui/assets/classes/README.md. AION 2 game artwork,
+names and trademarks belong to NCSOFT and are excluded from the original
+artwork claim. Applicable upstream notices are in dependency-notices/.
 
 All rights reserved. No general redistribution or modification license is
 granted for the application-specific files in this directory. Distribution

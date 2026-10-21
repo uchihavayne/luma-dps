@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classIcon, CLASS_ICONS } from '../class-icons.mjs';
+import { classIcon, classIconPath, CLASS_ICONS } from '../class-icons.mjs';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { hudPanelChange, hudPanelVisible, previewFrame } from '../hud.mjs';
 import { normalizePreferences, exportTheme, importTheme, visibleAnalysisSections } from '../model.mjs';
 import { ANALYSIS_SECTIONS } from '../navigation.mjs';
@@ -50,15 +52,38 @@ test('appearance import cannot alter tool visibility, capture or collection pref
   assert.deepEqual(hudPanelChange(prefs, '<script>', true), {});
 });
 
-test('every playable class has a distinct local SVG, including Chanter, Ranger and Brawler', () => {
+test('every playable class loads its actual bundled game image with documented unchanged source bytes', () => {
   assert.equal(CLASS_ICONS.length, 9);
   assert.equal(new Set(CLASS_ICONS.map(classIcon)).size, CLASS_ICONS.length);
   assert.equal(classIcon(' SPIRIT MASTER '), classIcon('Spiritmaster'));
+  assert.equal(classIconPath('호법성'), 'assets/classes/chanter.png');
+  assert.equal(classIconPath('궁성'), 'assets/classes/ranger.png');
+  assert.equal(classIconPath('Spiritmaster'), 'assets/classes/elementalist.png');
+  assert.equal(classIconPath('Brawler'), 'assets/classes/fighter.png');
   assert.notEqual(classIcon('Chanter'), classIcon('Ranger'));
-  for (const name of [...CLASS_ICONS, '"><img src=x onerror=alert(1)>']) {
-    const svg = classIcon(name);
-    assert.match(svg, /^<svg viewBox="0 0 24 24"/);
-    assert.doesNotMatch(svg, /<script|<img|href|style=|onerror|https?:/i);
+  const provenance = readFileSync(new URL('../assets/classes/README.md', import.meta.url), 'utf8');
+  for (const name of CLASS_ICONS) {
+    const path = classIconPath(name), bytes = readFileSync(new URL(`../${path}`, import.meta.url));
+    assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.ok(provenance.includes(createHash('sha256').update(bytes).digest('hex')));
+    assert.match(classIcon(name), /^<img src="assets\/classes\/[a-z]+\.png"/);
+    assert.doesNotMatch(classIcon(name), /onerror|style=|https?:/i);
+  }
+  for (const name of ['constructor', '__proto__', 'toString', 'Unknown', '"><img src=x onerror=alert(1)>']) {
+    assert.equal(classIconPath(name), null);
+    assert.match(classIcon(name), /^<svg viewBox="0 0 24 24"/);
+    assert.doesNotMatch(classIcon(name), /<script|<img|href|style=|onerror|https?:/i);
+  }
+});
+
+test('target name and health can be hidden independently and survive saved preferences', () => {
+  const initial = normalizePreferences({});
+  assert.equal(initial.showTargetName, true);
+  assert.equal(initial.showTargetHealth, true);
+  for (const name of ['showTargetName', 'showTargetHealth']) {
+    const saved = normalizePreferences(JSON.parse(JSON.stringify({ ...initial, [name]: false })));
+    assert.equal(saved[name], false);
+    assert.equal(saved[name === 'showTargetName' ? 'showTargetHealth' : 'showTargetName'], true);
   }
 });
 

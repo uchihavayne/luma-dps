@@ -14,7 +14,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "release"
 ROOT_FILES = ("README.md", "LICENSE", ".gitignore", ".gitattributes", "CHANGELOG.md", "RELEASING.md", "SECURITY.md", "tools/package.py", "tools/sign_update.py", "tools/audit.py")
-CONFIG_FILES = ("engine/Cargo.toml", "engine/Cargo.lock", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs", "src-tauri/windows-app-manifest.xml", "src-tauri/tauri.conf.json", "src-tauri/NATIVE_CAPTURE.md", "src-tauri/src/cube_reference.json", "dependency-notices/mapping.json")
+CONFIG_FILES = ("engine/Cargo.toml", "engine/Cargo.lock", "engine/src/npc_names.json", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs", "src-tauri/windows-app-manifest.xml", "src-tauri/tauri.conf.json", "src-tauri/NATIVE_CAPTURE.md", "src-tauri/src/cube_reference.json", "dependency-notices/mapping.json")
 COMMUNITY_SHARED_FILES = (
     "app/layout.tsx", "app/globals.css", "app/page.tsx", "app/ui.tsx",
     "app/r/[id]/page.tsx", "app/r/[id]/report.tsx", "app/v1/[...path]/route.ts",
@@ -30,6 +30,7 @@ COMMUNITY_PORTABLE_FILES = (
 COMMUNITY_FILES = tuple(f"community/{name}" for name in COMMUNITY_SHARED_FILES + COMMUNITY_PORTABLE_FILES + ("SOURCE_FILES.json",))
 PUBLIC_TREES = {
     ".github/workflows": {".yml", ".yaml"}, "engine/src": {".rs"}, "engine/tests": {".rs"},
+    "ui/assets/classes": {".png"},
     "ui": {".mjs", ".css", ".html", ".md"}, "docs": {".md"},
     "src-tauri/src": {".rs", ".js", ".css", ".html"}, "src-tauri/icons": {".png", ".ico"},
     "src-tauri/capabilities": {".json"}, "tools/tests": {".py"},

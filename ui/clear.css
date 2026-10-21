@@ -7,6 +7,8 @@ body.preview-frame:not(.fullscreen-overlay) { display: grid; place-items: center
 body.preview-frame:not(.fullscreen-overlay) > #meter { width: var(--preview-width); height: var(--preview-height); max-width: 100vw; max-height: 100vh; }
 body.preview-frame:not(.fullscreen-overlay) > #meter.compact-strip { height: 44px; }
 .player-class-icon > svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linejoin: round; stroke-linecap: round; }
+.player-class-icon > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.reference-notice { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font); color: var(--muted); }
 
 .tools-menu { position: absolute; z-index: 5; inset: 42px 8px 8px auto; width: min(354px, calc(100% - 16px)); min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); box-shadow: 0 12px 40px #0007; }
 .tools-menu-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); gap: 8px; flex-shrink: 0; }
@@ -303,3 +305,11 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 #meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-class,
 #meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-share,
 #meter[data-layout=cupertino][data-fit-roster=true][data-fit-details=false] .player-cooldown { display: none; }
+
+/* The target uses one name line and one readable HP line, including minibosses. */
+#meter[data-layout=cupertino] .target-vitals { position: relative; height: 16px; min-height: 16px; margin: 0; display: block; line-height: 16px; }
+#meter[data-layout=cupertino] .target-vitals > #target-hp-track { width: 100%; height: 16px; border-radius: 4px; }
+#meter[data-layout=cupertino] .target-vitals > #target-hp,
+#meter[data-layout=cupertino] .target-vitals > .target-hp-percent { display: block; position: absolute; top: 0; height: 16px; width: auto; max-width: calc(100% - 47px); font-size: 11px; line-height: 16px; color: var(--text); pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#meter[data-layout=cupertino] .target-vitals > #target-hp { left: 5px; }
+#meter[data-layout=cupertino] .target-vitals > .target-hp-percent { inset: 0 5px 0 auto; max-width: 44px; text-align: right; }

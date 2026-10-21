@@ -46,7 +46,11 @@ fn unnamed_spawn_template_is_preserved_through_wire_decode_hit_death_and_json() 
     // IDs are public NPC table identities: Black Claw Manduri Combatant's
     // 2400617 map source and Krall Armed Soldier's 2100075 source. They are
     // independent from each connection's short-lived scene handle.
-    for (scene, template) in [(77u32, 2_400_617u32), (78, 2_100_075)] {
+    for (scene, template, expected_name) in [
+        (77u32, 2_400_617u32, Some("Black Claw Manduri Combatant")),
+        (78, 2_100_075, Some("Krall Armed Soldier")),
+        (79, 9_999_998, None),
+    ] {
         let mut frame = vec![0x41, 0x36, scene as u8, 0x0c, 0, 0];
         frame.extend(template.to_le_bytes());
         let event = luma_engine::packets::decode(&frame).unwrap().unwrap();
@@ -69,7 +73,7 @@ fn unnamed_spawn_template_is_preserved_through_wire_decode_hit_death_and_json() 
         let state = engine.live_state(1_100);
         assert!(state.live_target.is_none());
         let recent = state.recent_personal_target.unwrap();
-        assert_eq!(recent.target_name, None);
+        assert_eq!(recent.target_name.as_deref(), expected_name);
         assert_eq!(recent.target_npc_id, Some(template));
         assert_eq!(recent.target_id, u64::from(scene));
         assert_eq!(recent.hit_at_ms, 1_000);

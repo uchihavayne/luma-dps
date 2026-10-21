@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.25.0 — 2026-10-21
+
+- Replaced representative class drawings with nine bundled game class images. Chanter, Ranger, Spiritmaster and Brawler have explicit mappings, with safe aliases and a neutral unknown-class fallback.
+- Added 12,587 exact NPC-id/name mappings and 559 boss model variants from a pinned, attributed reference. Unnamed minibosses and mobs can resolve from their received spawn model; known bosses participate in the Boss filter without manual marking.
+- Made target name and target HP separately optional in the tools menu and appearance settings. The small meter now shows readable current HP and percentage when a matching maximum was received.
+- A confirmed NPC death clears its displayed HP. The header keeps the recently killed personal target instead of switching to the previous largest target. Reused scene handles retain neither a previous model's name, automatic boss classification nor old HP.
+- Preserved the automatically fitted player roster, damage scopes, pet tracking and other optional tools. Regression coverage includes actual asset bytes, independent display settings, unnamed spawns, NPC-target text, target switching, boss filtering and handle reuse.
+- Desktop 0.25.0; encounter engine 0.11.0. These automated and browser checks do not replace live EU encounter validation.
+
 ## 0.24.2 · 21 October 2026
 
 - Fixed anonymous periodic sources crowding out named players in the main roster. Damage alone no longer identifies a HUD player: received player/class identity, local identity or confirmed party membership is required. Unclassified sources and their amounts remain in the encounter and analysis data; this does not guess their owners or change personal damage.

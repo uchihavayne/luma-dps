@@ -1,5 +1,6 @@
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
+import { GAME_REFERENCE_NOTICE } from './reference-notices.mjs';
 import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, rosterFit } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
@@ -29,7 +30,7 @@ import { renderRunHistory } from './run-history.mjs';
 import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
-import { worldTargetPresentation, targetVital, targetSummary, targetBoardChoices } from './bosses.mjs';
+import { worldTargetPresentation, targetVital, targetSummary, targetBoardChoices, targetHeaderTarget } from './bosses.mjs';
 import { combatMeasurement } from './measurement.mjs';
 import { targetDemoState, rosterDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
@@ -574,6 +575,8 @@ function toolsMenuContent() {
       <label class="field"><span>${t('sort')}</span><select data-tools-field="sort"><option value="dps">DPS ↓</option><option value="damage">${t('damage')} ↓</option><option value="name">A–Z</option></select></label>
       <label class="field"><span>${pair('Hedef / İlk 10', 'Target / Top 10')}</span><select data-tools-field="target"></select></label>
       <label class="field"><span>${t('summaryScope')}</span><select data-tools-field="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}">${t(value)}</option>`).join('')}</select></label>
+      <label class="check-field"><input type="checkbox" data-tools-field="showTargetName">${pair('Hedef adını göster', 'Show target name')}</label>
+      <label class="check-field"><input type="checkbox" data-tools-field="showTargetHealth">${pair('Hedef canını göster', 'Show target health')}</label>
       <label class="check-field"><input type="checkbox" data-tools-field="hudDetailRows">${pair('Satır ayrıntıları · sınıf, yüzde ve cooldown', 'Row details · class, share and cooldown')}</label>
     </details>
     <div class="tools-window-actions">${item('settings', t('settings'))}${item('training', t('trainingTitle'))}${item('fullscreen', pair('Tam ekran', 'Fullscreen'))}${item('compact', pair('Kompakt şerit', 'Compact strip'))}${item('lock', pair('Kilitle / kilidi aç', 'Lock / unlock'))}${item('diagnostics', pair('Durum ve tanı', 'Status and diagnostics'))}</div>
@@ -643,12 +646,12 @@ function renderLatency() {
 
 function renderTargetVitals(target, vital) {
   const tr = prefs.locale === 'tr', box = $('#target-vitals'), track = $('#target-hp-track');
-  const visible = Boolean(target && (target.is_boss || vital.current !== null || target.participant_count >= 2));
+  const visible = prefs.showTargetHealth && Boolean(target);
   box.hidden = !visible; $('#meter').classList.toggle('has-target-vitals', visible);
   if (!visible) return;
   box.dataset.status = vital.status; box.dataset.maximumKnown = String(vital.percent !== null);
   const value = vital.current === null ? (tr ? 'Can bilgisi bekleniyor' : 'Waiting for HP') : `${num(vital.current)}${vital.max > 0 ? ` / ${num(vital.max)}` : ''}`;
-  const suffix = vital.status === 'stale' ? (tr ? ' · son alınan' : ' · last received') : vital.status === 'unknown' && vital.current !== null ? (tr ? ' · güncelliği bilinmiyor' : ' · freshness unknown') : vital.status === 'dead' ? (tr ? ' · yenildi' : ' · defeated') : vital.percent !== null ? ` · ${vital.percent.toFixed(1)}%` : '';
+  const suffix = vital.status === 'stale' ? (tr ? ' · son alınan' : ' · last received') : vital.status === 'unknown' && vital.current !== null ? (tr ? ' · güncelliği bilinmiyor' : ' · freshness unknown') : vital.status === 'dead' ? (tr ? ' · yenildi' : ' · defeated') : '';
   setText($('#target-hp'), `${value}${suffix}`);
   setText($('#target-hp-percent'), vital.percent !== null ? `${Number(vital.percent.toFixed(1))}%` : '—');
   box.title = `${displayTargetName(target, prefs.locale)} · ${vital.current === null ? value : fullNumber(vital.current)}${vital.max > 0 ? ` / ${fullNumber(vital.max)}` : ` · ${t('maxUnknown')}`}${vital.observedAtMs ? ` · ${dateText(vital.observedAtMs)}` : ''}`;
@@ -734,8 +737,9 @@ function renderMeter() {
     node.title = `${targetScoped ? `${displayTargetName(targetView.target, prefs.locale)} · ` : ''}${t(`${scope}Dps`)}: ${summaryKnown ? rate(summary.dps) : measurementMessage(measurement, targetView) || t(scope === 'party' ? 'partyUnknown' : 'characterUnknown')} · ${t('totalCaption')}: ${summaryKnown ? num(summary.damage) : '—'}`;
   }
   const targets = prefs.mode === 'boss' ? scoped.targets.filter(target => target.is_boss) : scoped.targets;
-  const topTarget = targetView.target || [...targets].sort((a, b) => b.damage - a.damage)[0];
+  const topTarget = targetHeaderTarget(state, targetView.target, targets);
   $('#target-name').textContent = topTarget ? displayTargetName(topTarget, prefs.locale) : '—'; $('#target-name').title = topTarget ? displayTargetName(topTarget, prefs.locale) : '';
+  $('#target-name').hidden = !prefs.showTargetName;
   renderTargetVitals(topTarget, targetView.target ? targetView.vital : targetVital(topTarget, Date.now()));
   $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known && scoped.dps !== null ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : measurementMessage(measurement, targetView) || t('chooseCharacter');
   $('#combat-time').title = prefs.locale === 'tr' ? `${targetScoped ? 'Seçili hedefin ortak süresi' : 'Seçili kapsamın savaş süresi'} · ${fullNumber(scoped.elapsed / 1000)} sn` : `${targetScoped ? 'Selected target’s common duration' : 'Selected scope’s combat duration'} · ${fullNumber(scoped.elapsed / 1000)} s`;
@@ -984,12 +988,13 @@ function appearanceSettingsContent() {
     <div class="field-grid"><label class="field"><span>${t('summaryScope')}</span><select name="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}" ${prefs.damageScope === value ? 'selected' : ''}>${t(value)}</option>`).join('')}</select></label><label class="field"><span>${t('rowColorMode')}</span><select name="rowColorMode">${['performance', 'class', 'accent'].map(value => `<option value="${value}" ${prefs.rowColorMode === value ? 'selected' : ''}>${t({performance:'colorPerformance', class:'colorClass', accent:'colorAccent'}[value])}</option>`).join('')}</select></label></div>
     <h3 class="section-title">${t('layout')}</h3><div class="layout-grid">${Object.entries(LAYOUTS).map(([id, layout]) => `<button class="layout-card" data-layout="${id}" aria-pressed="${prefs.layout === id}"><span class="layout-preview preview-${id}" aria-hidden="true"><i></i><b></b><em></em><em></em><em></em></span><strong>${layout.name}</strong><span>${esc(layout.description[prefs.locale])}</span></button>`).join('')}</div><p class="help">${t('layoutHelp')}</p>
     <label class="field"><span>${t('summaryMetric')}</span><select name="summaryMetric">${['dps', 'damage', 'both'].map(value => `<option value="${value}" ${prefs.summaryMetric === value ? 'selected' : ''}>${t({ dps: 'summaryDps', damage: 'summaryDamage', both: 'summaryBoth' }[value])}</option>`).join('')}</select></label><div class="field-grid"><label class="field"><span>${t('density')}</span><select name="density"><option value="comfortable" ${prefs.density === 'comfortable' ? 'selected' : ''}>${t('comfortable')}</option><option value="compact" ${prefs.density === 'compact' ? 'selected' : ''}>${t('compact')}</option></select></label><label class="field"><span>${t('rowMetric')}</span><select name="rowMetric">${['both', 'dps', 'damage'].map(value => `<option value="${value}" ${prefs.rowMetric === value ? 'selected' : ''}>${t({ both: 'rowBoth', dps: 'rowDps', damage: 'rowDamage' }[value])}</option>`).join('')}</select></label></div><div class="button-row"><label class="check-field"><input name="showClass" type="checkbox" ${prefs.showClass ? 'checked' : ''}>${t('showClass')}</label><label class="check-field"><input name="showShares" type="checkbox" ${prefs.showShares ? 'checked' : ''}>${t('showShares')}</label><label class="check-field"><input name="showTeamCooldowns" type="checkbox" ${prefs.showTeamCooldowns ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Satırda cooldown göster' : 'Show cooldown in rows'}</label></div>
+    <div class="button-row"><label class="check-field"><input name="showTargetName" type="checkbox" ${prefs.showTargetName ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Hedef adını göster' : 'Show target name'}</label><label class="check-field"><input name="showTargetHealth" type="checkbox" ${prefs.showTargetHealth ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Hedef canını göster' : 'Show target health'}</label></div>
     <h3 class="section-title">${t('theme')}</h3><div class="theme-grid" role="group" aria-label="${t('theme')}">${Object.entries(THEMES).map(([id, theme]) => `<button class="theme-swatch" data-theme="${id}" style="--swatch-bg:${theme.bg};--swatch-text:${theme.text};--swatch-accent:${theme.accent}" aria-pressed="${prefs.theme === id}"><i aria-hidden="true"></i>${theme.name}</button>`).join('')}</div><h3 class="section-title">${t('typography')}</h3>
     <div class="field-grid"><label class="field"><span>${t('font')}</span><select name="font">${fontOptions(prefs.font)}</select></label><label class="field"><span>${t('targetFont')}</span><select name="targetFont">${fontOptions(prefs.targetFont)}</select></label></div>
     <div class="field-grid">${field('targetFontSize', 'targetFontSize', 'number', prefs.targetFontSize, 'min="8" max="28" step="1"')}${field('numberPrecision', 'numberPrecision', 'number', prefs.numberPrecision, 'min="0" max="3" step="1"')}${field('textScale', 'size', 'range', prefs.textScale, 'min="0.85" max="2" step="0.05"')}${field('opacity', 'opacity', 'range', prefs.opacity, 'min="0" max="1" step="0.05"')}</div>
     <details class="appearance-details"><summary>${t('appearanceExtras')}</summary><h3 class="section-title">${t('customColors')}</h3><div class="color-grid">${['bg', 'panel', 'text', 'accent'].map(key => field(`color-${key}`, key === 'bg' ? 'background' : key, 'color', prefs.customColors[key])).join('')}</div>
     <label class="field"><span>${t('background')}</span><input name="backgroundFile" type="file" accept="image/png,image/jpeg,image/webp"></label><p class="help">${t('rasterHelp')}</p><div class="button-row">${button('remove-background', 'removeBackground', '', true)}</div>
-    <div class="button-row">${button('export-theme', 'exportTheme')}${button('import-theme', 'importTheme', '', true)}</div><input id="theme-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1"><p class="help">${t('themeHelp')}</p></details>`;
+    <div class="button-row">${button('export-theme', 'exportTheme')}${button('import-theme', 'importTheme', '', true)}</div><input id="theme-file" class="sr-only" type="file" accept=".json,application/json" tabindex="-1"><p class="help">${t('themeHelp')}</p><details><summary>${prefs.locale === 'tr' ? 'Görsel ve veri bildirimleri' : 'Artwork and data notices'}</summary><pre class="reference-notice">${esc(GAME_REFERENCE_NOTICE)}</pre></details></details>`;
 }
 
 function moduleSettingsContent() {
@@ -2079,7 +2084,7 @@ $('#tools-menu').addEventListener('change', event => {
   else if (field === 'mode') chooseTargetMode(input.value);
   else if (field === 'target') { $('#target-board-select').value = input.value; $('#target-board-select').dispatchEvent(new Event('change')); }
   else if (['sort', 'damageScope'].includes(field)) savePreferences({ [field]: input.value });
-  else if (field === 'hudDetailRows') savePreferences({ hudDetailRows: input.checked });
+  else if (['hudDetailRows', 'showTargetName', 'showTargetHealth'].includes(field)) savePreferences({ [field]: input.checked });
 });
 document.addEventListener('pointerdown', event => {
   if (toolsOpen && !event.target.closest('#tools-menu,#tools-button')) closeTools({ focus: false });
@@ -2235,7 +2240,7 @@ $('#drawer-content').addEventListener('change', async event => {
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
   if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode', 'recordNotifications'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
-  if (['showClass', 'showShares', 'showTeamCooldowns', 'autoTargetRoster'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
+  if (['showTargetName', 'showTargetHealth', 'showClass', 'showShares', 'showTeamCooldowns', 'autoTargetRoster'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
   if (name === 'calendarHorizonDays') { calendarHorizonDays = Number(element.value); return; }

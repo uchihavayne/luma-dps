@@ -75,6 +75,21 @@ export function targetVital(target = {}, now = Date.now(), freshnessMs = 5000) {
     ageMs, maximumKnown, observedAtMs: at };
 }
 
+export function targetHeaderTarget(state = {}, focused = null, targets = [], now = Date.now()) {
+  if (focused) return focused;
+  const recent = state.recent_personal_target;
+  // A killed target no longer supplies live focus. Its received own hit can
+  // still identify the header, without changing encounter scope or DPS totals.
+  if (state.capture?.status === 'capturing' && recent?.source === 'server-self-hit'
+    && actor(recent.actor_id) === localIdentity(state) && actor(recent.actor_id) && actor(recent.target_id)
+    && fresh(recent.hit_at_ms, now, 10_000)) {
+    const received = targets.find(target => actor(target.id) === actor(recent.target_id)
+      && (recent.target_npc_id === null || recent.target_npc_id === undefined || target.npc_id === recent.target_npc_id));
+    if (received) return received;
+  }
+  return [...targets].sort((a, b) => (number(b.damage) ?? 0) - (number(a.damage) ?? 0))[0] || null;
+}
+
 function contribution(row, total) {
   const id = actor(row?.id), damage = number(row?.damage), dps = number(row?.dps);
   if (!id || damage === null || damage <= 0 || dps === null) return null;
