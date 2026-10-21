@@ -33,6 +33,7 @@ test('party names resolve only their actors; a missing damage row is unknown and
   assert.equal(result.players[0].damage, 100);
   assert.equal(result.players[1].dps, null);
   assert.equal(result.players[1].damage, null);
+  assert.equal(result.players[1].pending_combat, true);
   const zero = mainRoster([{ id: '2', name: 'Healer', damage: 0, dps: 0, identity_confirmed: true }], state);
   assert.equal(zero.players.find(row => row.id === '2').dps, 0);
   assert.equal(result.players[2].dps, null);

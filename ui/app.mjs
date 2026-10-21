@@ -884,7 +884,7 @@ function renderPlayers(status, scoped) {
       if (row.style.getPropertyValue('--class-color') !== color) row.style.setProperty('--class-color', color);
       if (row.style.getPropertyValue('--share') !== share) row.style.setProperty('--share', share);
       setAttribute(row, 'data-player', player.id);
-      setAttribute(row, 'aria-disabled', String(player.pending_actor === true));
+      setAttribute(row, 'aria-disabled', String(player.pending_actor === true || player.pending_combat === true));
       row.dataset.targetScoped = String(Boolean(scoped.ranked));
       const own = player.is_local || player.id === state.local_player_id;
       row.classList.toggle('is-own', own); row.querySelector('.own-tag').hidden = !own; setText(row.querySelector('.own-tag'), t('me'));
@@ -896,7 +896,7 @@ function renderPlayers(status, scoped) {
       icon.title = classLabel;
       row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true);
       row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : pendingName ? (prefs.locale === 'tr' ? 'Oyuncu adı kaydı bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name record; updates automatically when received.') : player.name;
-      setAttribute(row, 'aria-label', player.pending_actor ? `${visibleName}, ${classLabel}, ${prefs.locale === 'tr' ? 'Oyuncu bağlantısı bekleniyor; DPS henüz alınmadı.' : 'Waiting for actor binding; DPS not received yet.'}` : `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
+      setAttribute(row, 'aria-label', player.pending_combat ? `${visibleName}, ${classLabel}, ${prefs.locale === 'tr' ? 'Savaş verisi bekleniyor; DPS henüz alınmadı.' : 'Waiting for combat data; DPS not received yet.'}` : `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
       setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);

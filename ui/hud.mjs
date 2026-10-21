@@ -58,7 +58,7 @@ export function mainRoster(players = [], state = {}, { scope = 'observed', ranke
       seen.add(id);
       retained.push({ id, name: member.name, class_name: member.class_name || 'Unknown',
         identity_confirmed: bound, identity_pending: false, in_party: true, is_local: id === actorKey(state.local_player_id),
-        damage: null, dps: null, skills: [], pending_actor: !bound });
+        damage: null, dps: null, skills: [], pending_actor: !bound, pending_combat: true });
     });
   }
   return { players: retained, unclassifiedCount: hidden.length, unclassifiedDamage: hidden.reduce((sum, row) => sum + (row.damage || 0), 0) };
