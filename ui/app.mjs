@@ -1,4 +1,6 @@
 import { spatialFrame, renderRadar } from './spatial.mjs';
+import { classIcon } from './class-icons.mjs';
+import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
@@ -39,6 +41,11 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const native = Boolean(window.__TAURI__?.core?.invoke);
 const demo = !native && new URLSearchParams(location.search).get('demo') === '1';
+const sampleFrame = demo ? previewFrame(new URLSearchParams(location.search).get('frame')) : null;
+if (sampleFrame) {
+  document.body.classList.add('preview-frame');
+  for (const [key, value] of Object.entries(sampleFrame)) document.documentElement.style.setProperty(`--preview-${key}`, `${value}px`);
+}
 const spatialDemo = demo && new URLSearchParams(location.search).get('spatialDemo') === '1';
 const targetDemo = demo && new URLSearchParams(location.search).get('targetDemo') === '1';
 const targetPetDemoMode = demo ? new URLSearchParams(location.search).get('targetPetDemo') : '';
@@ -58,6 +65,7 @@ if (spatialDemo) {
     track: [point(own, 1000, 2000, now - 10000), point(999, 3500, 4000, now - 10000), point(own, 1800, 2200, now - 9000), point(own, 2500, 2300, now - 8000)] } });
 }
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
+let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
 let deferredRosterRefresh = false;
@@ -380,12 +388,15 @@ function applyAppearance() {
   $('#meter').dataset.density = prefs.density;
   $('#meter').dataset.rowMetric = prefs.rowMetric;
   $('#meter').dataset.summaryMetric = prefs.summaryMetric;
-  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && prefs.displayModules.dps && !drawer && !isFullscreenDashboard(prefs));
+  $('#meter').classList.toggle('compact-strip', prefs.compactStrip && prefs.displayModules.dps && !drawer && !toolsOpen && !isFullscreenDashboard(prefs));
   $('#compact-button').disabled = isFullscreenDashboard(prefs) || !prefs.displayModules.dps;
   $('#meter').classList.toggle('pet-only', petOnlyDisplay(prefs));
   $('#meter').classList.toggle('no-dps', !prefs.displayModules.dps);
   for (const name of DISPLAY_MODULES) $('#meter').dataset[`module${name[0].toUpperCase()}${name.slice(1)}`] = String(prefs.displayModules[name]);
   $('#meter').dataset.showClass = String(prefs.showClass);
+  $('#meter').dataset.detailRows = String(prefs.hudDetailRows);
+  $('#meter').dataset.largeType = String(prefs.textScale > 1.25);
+  for (const name of HUD_PANELS) $('#meter').dataset[`hud${name[0].toUpperCase()}${name.slice(1)}`] = String(hudPanelVisible(prefs, name));
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
 }
@@ -399,7 +410,7 @@ function syncOverlayGeometry() {
   document.body.classList.toggle('fullscreen-dashboard', dashboard);
   document.body.classList.toggle('fullscreen-hud', prefs.fullscreenOverlay && !dashboard);
   if (prefs.fullscreenOverlay) {
-    const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) });
+    const rect = overlayRect(prefs, { width: innerWidth, height: innerHeight }, { panelOpen: Boolean(drawer) || toolsExpanded });
     for (const [key, value] of Object.entries(rect)) document.documentElement.style.setProperty(`--hud-${key}`, `${value}px`);
   }
   scheduleOverlayRegions();
@@ -501,12 +512,16 @@ function savePreferences(patch = {}) {
 }
 
 function localizeControls() {
+  $('#tools-button').title = prefs.locale === 'tr' ? 'Araçlar ve görünüm' : 'Tools and appearance';
+  setAttribute($('#tools-button'), 'aria-label', $('#tools-button').title);
+  setText($('#column-rate'), 'DPS'); setText($('#column-damage'), prefs.locale === 'tr' ? 'Toplam' : 'Damage');
   $('#modules-button').title = prefs.locale === 'tr' ? 'Görünür modülleri seç · Tüm görünüme dön' : 'Choose visible modules · Restore full view';
   $('#modules-button').setAttribute('aria-label', $('#modules-button').title);
   $('#modules-button').setAttribute('aria-pressed', String(!Object.values(prefs.displayModules).every(Boolean)));
   $('#fullscreen-button').title = prefs.locale === 'tr' ? (prefs.fullscreenOverlay ? 'Pencere görünümüne dön' : 'Tam ekran paneli') : (prefs.fullscreenOverlay ? 'Return to window' : 'Fullscreen dashboard'); $('#fullscreen-button').setAttribute('aria-label', $('#fullscreen-button').title); $('#fullscreen-button').setAttribute('aria-pressed', String(prefs.fullscreenOverlay));
   $('#compact-button').title = prefs.locale === 'tr' ? 'Kompakt görünümü değiştir' : 'Toggle compact view'; $('#compact-button').setAttribute('aria-label', $('#compact-button').title); $('#compact-button').setAttribute('aria-pressed', String(prefs.compactStrip));
   $('#target-label').textContent = t('target'); $('#dps-label').textContent = t(`${prefs.damageScope}Dps`); $('#damage-label').textContent = t(`${prefs.damageScope}Damage`); $('#player-label').textContent = t('player'); $('#heading-total').textContent = prefs.rowMetric === 'both' ? `${t('totalCaption')} · DPS` : prefs.rowMetric === 'dps' ? t('rateCaption') : t('totalCaption');
+  if (prefs.layout === 'cupertino' && prefs.damageScope === 'personal') { setText($('#dps-label'), prefs.locale === 'tr' ? 'SENİN DPS’İN' : 'YOUR DPS'); setText($('#damage-label'), prefs.locale === 'tr' ? 'TOPLAM HASARIN' : 'YOUR DAMAGE'); }
   $('#scope-label').textContent = t('rosterScope'); $('#damage-scope').value = prefs.rosterScope;
   for (const option of $('#damage-scope').options) option.textContent = option.value === 'target' ? (prefs.locale === 'tr' ? 'Hedef · 10' : 'Target · 10') : t({personal:'rosterPersonal', party:'rosterParty', observed:'rosterObserved'}[option.value]);
   const own = ownPlayer(state);
@@ -533,6 +548,71 @@ function localizeControls() {
   $('#resize-button').setAttribute('aria-description', t('resizeHelp'));
 }
 
+function toolsMenuContent() {
+  const tr = prefs.locale === 'tr', pair = (trText, enText) => tr ? trText : enText;
+  const item = (action, label) => `<button type="button" data-tools-action="${action}">${label}<span aria-hidden="true">↗</span></button>`;
+  return `<div class="tools-menu-heading"><strong>${pair('Araçlar ve görünüm', 'Tools and appearance')}</strong><button type="button" class="icon-button" data-tools-action="close" aria-label="${t('close')}">×</button></div>
+    <div class="tools-menu-scroll">
+    <div class="tools-links">${item('pets', pair('Pet rehberi', 'Pet guide'))}${item('radar-details', 'Radar')}${item('playback', 'Replay')}${item('team', pair('Takım cooldown’ları', 'Team cooldowns'))}${item('calendar', pair('Etkinlikler', 'Events'))}${item('cube', pair('Küp sesi', 'Cube audio'))}${item('character', pair('Karakterim', 'My character'))}${item('history', pair('Geçmiş', 'History'))}${item('records', pair('Rekorlar', 'Personal bests'))}${item('community', pair('Sıralama ve paylaşım', 'Rankings and sharing'))}</div>
+    <h3>${pair('Ana ekranda göster', 'Show in the meter')}</h3>
+    <div class="tools-toggles">${[['dps', pair('DPS listesi', 'DPS roster')], ['pets', pair('Pet takibi', 'Pet tracker')], ['radar', 'Radar'], ['events', pair('Etkinlik saati', 'Event timer')], ['team', pair('Takım kısayolu', 'Team shortcut')], ['odyle', 'Odyle']].map(([name, label]) => `<label><span>${label}</span><input type="checkbox" data-hud-panel="${name}"></label>`).join('')}</div>
+    <details class="tools-filters"><summary>${pair('Liste ve görünüm seçenekleri', 'Roster and display options')}</summary>
+      <label class="field"><span>${pair('Hedefler', 'Targets')}</span><select data-tools-field="mode"><option value="all">${t('all')}</option><option value="boss">${t('boss')}</option><option value="both">${t('both')}</option></select></label>
+      <label class="field"><span>${t('sort')}</span><select data-tools-field="sort"><option value="dps">DPS ↓</option><option value="damage">${t('damage')} ↓</option><option value="name">A–Z</option></select></label>
+      <label class="field"><span>${pair('Hedef / İlk 10', 'Target / Top 10')}</span><select data-tools-field="target"></select></label>
+      <label class="field"><span>${t('summaryScope')}</span><select data-tools-field="damageScope">${['personal', 'party', 'observed'].map(value => `<option value="${value}">${t(value)}</option>`).join('')}</select></label>
+      <label class="check-field"><input type="checkbox" data-tools-field="hudDetailRows">${pair('Satır ayrıntıları · sınıf, yüzde ve cooldown', 'Row details · class, share and cooldown')}</label>
+    </details>
+    <div class="tools-window-actions">${item('settings', t('settings'))}${item('training', t('trainingTitle'))}${item('fullscreen', pair('Tam ekran', 'Fullscreen'))}${item('compact', pair('Kompakt şerit', 'Compact strip'))}${item('lock', pair('Kilitle / kilidi aç', 'Lock / unlock'))}${item('diagnostics', pair('Durum ve tanı', 'Status and diagnostics'))}</div>
+    </div>`;
+}
+
+function renderToolsMenu() {
+  if (!toolsOpen) return;
+  const host = $('#tools-menu');
+  if (toolsLocale !== prefs.locale || !host.childElementCount) { host.innerHTML = toolsMenuContent(); toolsLocale = prefs.locale; }
+  setAttribute(host, 'aria-label', $('#tools-button').title);
+  for (const input of host.querySelectorAll('[data-hud-panel]')) {
+    const name = input.dataset.hudPanel;
+    input.checked = name === 'dps' ? prefs.displayModules.dps : name === 'radar' ? prefs.radarOpen : hudPanelVisible(prefs, name) && (name !== 'pets' || prefs.showPetTracker);
+  }
+  for (const input of host.querySelectorAll('[data-tools-field]')) {
+    const name = input.dataset.toolsField;
+    if (name === 'target') { const select = $('#target-board-select'); if (input._options !== select.innerHTML && document.activeElement !== input) { input.innerHTML = select.innerHTML; input._options = select.innerHTML; } if (document.activeElement !== input) input.value = select.value; }
+    else if (input.type === 'checkbox') input.checked = prefs[name] === true;
+    else if (document.activeElement !== input) input.value = prefs[name];
+    if (name === 'sort') input.disabled = $('#sort').disabled;
+  }
+  scheduleOverlayRegions();
+}
+
+function closeTools({ focus = true } = {}) {
+  if (!toolsOpen) return;
+  toolsOpen = false; $('#tools-menu').hidden = true; setAttribute($('#tools-button'), 'aria-expanded', 'false');
+  if (focus) $('#tools-button').focus({ preventScroll: true });
+  let transition;
+  if (toolsExpanded) { toolsExpanded = false; applyAppearance(); transition = syncNativePanel(false); }
+  scheduleOverlayRegions();
+  return transition;
+}
+
+function openTools() {
+  if (toolsOpen) { closeTools(); return; }
+  toolsOpen = true; $('#tools-menu').hidden = false; setAttribute($('#tools-button'), 'aria-expanded', 'true');
+  if (prefs.compactStrip && prefs.displayModules.dps) { toolsExpanded = true; applyAppearance(); syncNativePanel(true); }
+  renderToolsMenu(); $('#tools-menu [data-tools-action]')?.focus({ preventScroll: true });
+}
+
+function openToolPanel(section) {
+  const module = { pets: 'pets', radar: 'pets', team: 'team', calendar: 'events', cube: 'cube', playback: 'dps', history: 'dps', records: 'dps', community: 'dps' }[section];
+  if (module && !prefs.displayModules[module]) savePreferences({ displayModules: { ...prefs.displayModules, [module]: true } });
+  snapshot = null;
+  if (section === 'pets') openPetGuide();
+  else if (section === 'character') openDrawer('character');
+  else if (section === 'calendar' || section === 'cube') openDrawer('settings', section === 'cube' ? 'hiddenCube' : 'calendar');
+  else openDrawer('analysis', section);
+}
+
 function renderLatency() {
   const chip = $('#latency-chip');
   if (!chip) return;
@@ -554,6 +634,7 @@ function renderTargetVitals(target, vital) {
   const value = vital.current === null ? (tr ? 'Can bilgisi bekleniyor' : 'Waiting for HP') : `${num(vital.current)}${vital.max > 0 ? ` / ${num(vital.max)}` : ''}`;
   const suffix = vital.status === 'stale' ? (tr ? ' · son alınan' : ' · last received') : vital.status === 'unknown' && vital.current !== null ? (tr ? ' · güncelliği bilinmiyor' : ' · freshness unknown') : vital.status === 'dead' ? (tr ? ' · yenildi' : ' · defeated') : vital.percent !== null ? ` · ${vital.percent.toFixed(1)}%` : '';
   setText($('#target-hp'), `${value}${suffix}`);
+  setText($('#target-hp-percent'), vital.percent !== null ? `${Number(vital.percent.toFixed(1))}%` : '—');
   box.title = `${displayTargetName(target, prefs.locale)} · ${vital.current === null ? value : fullNumber(vital.current)}${vital.max > 0 ? ` / ${fullNumber(vital.max)}` : ` · ${t('maxUnknown')}`}${vital.observedAtMs ? ` · ${dateText(vital.observedAtMs)}` : ''}`;
   track.hidden = false; track.setAttribute('aria-label', tr ? 'Hedef canı' : 'Target HP');
   track.setAttribute('aria-valuetext', $('#target-hp').textContent);
@@ -643,7 +724,7 @@ function renderMeter() {
   $('#combat-time').textContent = clockTime(scoped.elapsed); $('#dps-value').textContent = scoped.known ? rate(scoped.dps) : '—'; $('#dps-value').title = scoped.known && scoped.dps !== null ? `${fullNumber(scoped.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}` : measurementMessage(measurement, targetView) || t('chooseCharacter');
   $('#combat-time').title = prefs.locale === 'tr' ? `${targetScoped ? 'Seçili hedefin ortak süresi' : 'Seçili kapsamın savaş süresi'} · ${fullNumber(scoped.elapsed / 1000)} sn` : `${targetScoped ? 'Selected target’s common duration' : 'Selected scope’s combat duration'} · ${fullNumber(scoped.elapsed / 1000)} s`;
   $('#damage-value').textContent = scoped.known ? num(scoped.damage) : '—'; $('#damage-value').title = scoped.known ? fullNumber(scoped.damage) : measurementMessage(measurement, targetView) || t('chooseCharacter');
-  if (targetScoped) { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
+  if (targetScoped && prefs.layout !== 'cupertino') { setText($('#dps-label'), `${t(`${prefs.damageScope}Dps`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); setText($('#damage-label'), `${t(`${prefs.damageScope}Damage`)} · ${prefs.locale === 'tr' ? 'HEDEF' : 'TARGET'}`); }
   for (const selector of ['#dps-value', '#damage-value']) $(selector).parentElement.style.setProperty('--metric-length', Math.max(4, $(selector).textContent.length));
   $('#mode-caption').textContent = targetScoped ? (prefs.locale === 'tr' ? 'Seçili hedef' : 'Selected target') : t(prefs.mode === 'both' ? 'bothCaption' : prefs.mode === 'boss' ? 'bossCaption' : 'allCaption');
   $('#boss-summary').hidden = targetScoped || prefs.mode !== 'both'; $('#boss-summary').textContent = `${t('bossTotal')} ${num(scoped.targets.filter(target => target.is_boss).reduce((sum, target) => sum + target.damage, 0))}`;
@@ -664,6 +745,11 @@ function renderMeter() {
     notice.hidden = false; notice.classList.add('warning');
     setText(notice, measurementMessage(measurement, targetView));
   }
+  const rosterCaption = targetScoped ? (prefs.locale === 'tr' ? 'Hedef' : 'Target') : prefs.rosterScope === 'personal' ? (prefs.locale === 'tr' ? 'Sen' : 'You') : prefs.rosterScope === 'party' && !scopes.fallback ? (prefs.locale === 'tr' ? 'Takım' : 'Party') : (prefs.locale === 'tr' ? 'Yakın' : 'Nearby');
+  setText($('#clear-roster-summary'), `${rosterCaption} ${roster.known ? rate(roster.dps) : '—'}`);
+  $('#clear-roster-summary').title = targetScoped ? $('#target-roster-strip').title : $('#damage-scope').title;
+  $('#meter').dataset.targetScoped = String(targetScoped);
+  renderToolsMenu();
   renderPlayers(status, roster);
   const actualList = $('#actual-cooldowns'), nextCooldownFingerprint = JSON.stringify([prefs.locale, state.cooldowns.map(row => [row.actor_id, row.skill_id, row.raw_remaining_units, row.observed_at_ms, row.readiness, row.estimated_rate_units_per_ms, row.charges, row.charges_observed_at_ms])]);
   if (actualList && nextCooldownFingerprint !== cooldownFingerprint) actualList.innerHTML = actualCooldownCards();
@@ -773,18 +859,19 @@ function renderPlayers(status, scoped) {
       const classLabel = /^unknown$/i.test(player.class_name) || player.class_name === '—' ? (prefs.locale === 'tr' ? 'Sınıf bekleniyor' : 'Class pending') : player.class_name;
       const pendingName = player.identity_pending === true || player.identity_confirmed !== true && /^#\d+$/u.test(player.name);
       const visibleName = prefs.hidePlayerNames && !own ? `${classLabel} · ${index + 1}` : displayPlayerName(player, prefs.locale);
-      const symbol = ({ gladiator: 'G', templar: 'T', assassin: 'A', ranger: 'R', sorcerer: 'S', spiritmaster: 'SM', cleric: 'C', chanter: 'CH' })[player.class_name.toLowerCase()] || '•';
-      setText(row.querySelector('.player-class-icon'), symbol); row.querySelector('.player-class-icon').title = classLabel;
+      const icon = row.querySelector('.player-class-icon'), symbol = classIcon(player.class_name);
+      if (icon._symbol !== symbol) { icon.innerHTML = symbol; icon._symbol = symbol; }
+      icon.title = classLabel;
       row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true);
       row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : pendingName ? (prefs.locale === 'tr' ? 'Oyuncu adı kaydı bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name record; updates automatically when received.') : player.name;
-      setAttribute(row, 'aria-label', `${visibleName}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
+      setAttribute(row, 'aria-label', `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
       setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
       const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.displayModules.team || !prefs.showTeamCooldowns || !member?.cooldowns.length;
       setText(cooldownNode, cooling ? `CD · ${Math.ceil((cooling.remaining_ms || cooling.recharge_remaining_ms) / 1000)} ${prefs.locale === 'tr' ? 'sn' : 's'}` : member?.cooldowns.some(value => value.ready_confirmed) ? `CD · ${t('readyConfirmed')}` : 'CD · …');
       cooldownNode.title = member?.cooldowns.map(value => `Skill #${value.skill_id} · ${value.remaining_ms === null ? '—' : `${Math.ceil(value.remaining_ms / 1000)} s`}`).join('\n') || '';
-      setText(row.querySelector('.player-dps'), prefs.rowMetric === 'both' ? ` (${rate(player.dps)})` : rate(player.dps)); row.querySelector('.player-dps').title = `${t('rateCaption')}: ${fullNumber(player.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}`;
+      setText(row.querySelector('.player-dps'), prefs.rowMetric === 'both' && prefs.layout !== 'cupertino' ? ` (${rate(player.dps)})` : rate(player.dps)); row.querySelector('.player-dps').title = `${t('rateCaption')}: ${fullNumber(player.dps)}/${prefs.locale === 'tr' ? 'sn' : 's'}`;
       setText(row.querySelector('.player-damage'), num(player.damage)); row.querySelector('.player-damage').title = `${t('totalCaption')}: ${fullNumber(player.damage)}`;
       const shareNode = row.querySelector('.player-share'); shareNode.hidden = !prefs.showShares;
       setText(shareNode, `${(playerShare(player, scoped.damage) * 100).toFixed(1)}%`);
@@ -1360,7 +1447,7 @@ function renderTargetPetPin() {
   if (host.querySelector('button:active')) return;
   const status = petTargetStatus(state, petPinObservation, value.matches), labels = targetPetStatusLabels(status);
   host.dataset.status = status;
-  host.hidden = !prefs.displayModules.pets || status === 'waiting-personal-hit' || status === 'self-identity-pending' && state.capture?.status !== 'capturing';
+  host.hidden = !hudPanelVisible(prefs, 'pets') || status === 'waiting-personal-hit' || status === 'self-identity-pending' && state.capture?.status !== 'capturing';
   if (host.hidden) return;
   const full = prefs.petPins.length >= PET_PIN_LIMIT, limit = petLabels(prefs.locale).limit;
   const receivedName = value.target?.name && !/^(?:#\d+|Target\s+#?\d+)$/iu.test(value.target.name) ? value.target.name : '';
@@ -1408,9 +1495,10 @@ function renderPetTracking() {
   if ($('#pet-tracker').querySelector('button:active')) return;
   const plan = currentPetPlan(), rows = trackedPets(plan, prefs.petPins, { automatic: prefs.petAutoTrack });
   const host = $('#pet-tracker');
-  host.hidden = !prefs.displayModules.pets || !prefs.showPetTracker || !rows.length;
+  const emptyPanelRequested = prefs.layout === 'cupertino' || !prefs.displayModules.dps;
+  host.hidden = !hudPanelVisible(prefs, 'pets') || !prefs.showPetTracker || !rows.length && !emptyPanelRequested;
   if (!host.hidden) {
-    const html = renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: prefs.displayModules.dps && $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) });
+    const html = rows.length ? renderPetTracker(rows, { locale: prefs.locale, collapsed: prefs.petTrackerCollapsed, compact: prefs.displayModules.dps && $('#meter').classList.contains('short-frame') && !isFullscreenDashboard(prefs) }) : `<div class="pet-panel-empty"><strong>${prefs.locale === 'tr' ? 'Pet takibi' : 'Pet tracker'}</strong><span>${prefs.locale === 'tr' ? 'Takip etmek istediğin petleri rehberden sabitle.' : 'Pin the pets you want to track from the guide.'}</span><button type="button" class="text-button" data-pet-action="guide">${t('pets')} ↗</button></div>`;
     if (host._content !== html) { const scroll = host.querySelector('.pet-tracker-rows')?.scrollTop || 0; host.innerHTML = html; host._content = html; const list = host.querySelector('.pet-tracker-rows'); if (list) list.scrollTop = scroll; }
   }
   const chip = $('#pet-chip'); chip.hidden = !prefs.displayModules.pets;
@@ -1422,7 +1510,7 @@ function renderPetTracking() {
 
 function renderModuleHome(plan, tracked) {
   const host = $('#module-home'), tr = prefs.locale === 'tr', modules = prefs.displayModules;
-  host.hidden = modules.dps;
+  host.hidden = modules.dps || prefs.radarOpen && !hudPanelVisible(prefs, 'pets');
   if (host.hidden) return;
   const title = modules.pets ? tr ? 'Pet takibi' : 'Pet tracking' : tr ? 'Araçların' : 'Your tools';
   const description = modules.pets ? tracked.length ? `${tracked.length} ${tr ? 'pet takipte' : 'pets tracked'} · ${plan.observedCount} ${tr ? 'pet verisi alındı' : 'received pets'}` : tr ? 'Rehberden pet sabitle. Alınan ruh ve seviye ilerlemesi burada görünür.' : 'Pin pets from the guide. Received souls and level progress appear here.' : tr ? 'Seçtiğin modüller burada görünür. Başlıktaki modüller düğmesinden değiştirebilirsin.' : 'Your selected modules appear here. Change them with the modules button in the header.';
@@ -1440,7 +1528,7 @@ function togglePetPin(id) {
   const plan = currentPetPlan(), change = petPinTransition(prefs, id, plan);
   if (change.status === 'invalid') { toast(prefs.locale === 'tr' ? 'Bu pet sabitlenemedi; rehberi yenileyip tekrar seç.' : 'This pet could not be pinned; refresh the guide and select it again.', true); return; }
   const restorePin = document.activeElement?.dataset.action === 'pet-pin';
-  if (change.patch) savePreferences(change.patch);
+  if (change.patch) savePreferences({ ...change.patch, ...(change.status === 'added' ? hudPanelChange(prefs, 'pets', true) : {}) });
   if (change.status === 'limit') toast(petLabels(prefs.locale).limit);
   else if (change.status === 'added') {
     const name = plan.rows.find(row => row.id === id)?.name || t('pets');
@@ -1653,12 +1741,13 @@ function odyleContent() {
 function renderLiveTools() {
   const value = automaticOdyle(), team = automaticTeamState(state), strip = $('#live-tools');
   strip.hidden = false;
-  $('#odyle-chip').hidden = !prefs.displayModules.odyle || !value.available;
-  setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : '—'}`);
+  $('#odyle-chip').hidden = !prefs.displayModules.odyle || !value.available && !(prefs.layout === 'cupertino' && hudPanelVisible(prefs, 'odyle'));
+  setText($('#odyle-chip'), `Odyle ${value.available ? fullNumber(value.total) : prefs.locale === 'tr' ? '· veri bekleniyor' : '· waiting for data'}`);
   $('#odyle-chip').title = `${t('odyleRegular')}: ${value.base ?? '—'} / ${value.base_capacity ?? '—'} · ${t('odyleBonus')}: ${value.bonus ?? '—'}`;
-  $('#team-chip').hidden = !prefs.displayModules.team || !team.total_members && !roomIntent;
+  $('#team-chip').hidden = !prefs.displayModules.team || !team.total_members && !roomIntent && !(prefs.layout === 'cupertino' && hudPanelVisible(prefs, 'team'));
   setText($('#team-chip'), roomIntent ? `${prefs.locale === 'tr' ? 'Paylaşım açık' : 'Sharing active'}${team.total_cooldowns ? ` · ${team.total_cooldowns} CD` : ''}` : team.total_cooldowns ? `${t('team')} · ${team.total_cooldowns} CD` : `${t('team')} · ${team.total_members}`);
   $('#team-chip').title = `${prefs.locale === 'tr' ? 'Oyundan otomatik takım cooldown takibi' : 'Automatic team cooldowns from game data'}${roomIntent ? prefs.locale === 'tr' ? ' · Cihazlar arası paylaşım açık' : ' · Cross-device sharing active' : ''}`;
+  if (!team.total_members && !roomIntent) setText($('#team-chip'), prefs.locale === 'tr' ? 'Takım · veri bekleniyor' : 'Team · waiting for data');
   const liveOdyle = $('#automatic-odyle');
   const fingerprint = JSON.stringify([prefs.locale, value.available, value.actor_id, value.base, value.bonus, value.base_capacity, value.observed_at_ms]);
   if (liveOdyle && liveOdyle.dataset.fingerprint !== fingerprint) { liveOdyle.innerHTML = odyleContent(); liveOdyle.dataset.fingerprint = fingerprint; }
@@ -1815,6 +1904,7 @@ function selectDrawerTab(name) {
 }
 
 function openDrawer(kind, requestedTab = 'overview') {
+  if (toolsOpen) { closeTools(); }
   if (kind === 'analysis') { const allowed = visibleAnalysisSections(ANALYSIS_SECTIONS, prefs); if (!allowed.length) { kind = 'settings'; requestedTab = 'appearance'; } else if (!allowed.includes(requestedTab)) requestedTab = allowed[0]; }
   if (!drawer) restoreFocus = document.activeElement;
   drawer = kind; tab = requestedTab;
@@ -1906,6 +1996,31 @@ function tickTimers() {
 }
 
 $('#fullscreen-button').addEventListener('click', () => toggleFullscreenOverlay());
+$('#tools-button').addEventListener('click', openTools);
+$('#tools-menu').addEventListener('click', async event => {
+  const control = delegatedControl(event, event.currentTarget, '[data-tools-action]');
+  if (!control) return;
+  const actionName = control.dataset.toolsAction;
+  await closeTools();
+  const existing = { settings: 'settings-button', training: 'training-button', fullscreen: 'fullscreen-button', compact: 'compact-button', lock: 'lock-button', diagnostics: 'modules-button' }[actionName];
+  if (actionName === 'close') return;
+  if (actionName === 'diagnostics') { openDrawer('settings', 'controls'); readCaptureDiagnostics(); return; }
+  if (existing) { $(`#${existing}`).click(); return; }
+  openToolPanel(actionName === 'radar-details' ? 'radar' : actionName);
+});
+$('#tools-menu').addEventListener('change', event => {
+  const input = event.target, panel = input.dataset.hudPanel, field = input.dataset.toolsField;
+  if (panel === 'dps') savePreferences({ displayModules: { ...prefs.displayModules, dps: input.checked } });
+  else if (panel === 'radar') savePreferences({ radarOpen: input.checked, ...(input.checked && !prefs.displayModules.dps && !prefs.displayModules.pets ? { displayModules: { ...prefs.displayModules, pets: true } } : {}) });
+  else if (HUD_PANELS.includes(panel)) savePreferences({ ...(prefs.layout !== 'cupertino' ? { displayModules: { ...prefs.displayModules, [panel]: input.checked } } : hudPanelChange(prefs, panel, input.checked)), ...(panel === 'pets' && !prefs.displayModules.dps && !input.checked ? { displayModules: { ...prefs.displayModules, pets: false } } : {}), ...(panel === 'pets' && input.checked ? { showPetTracker: true } : {}) });
+  else if (field === 'mode') chooseTargetMode(input.value);
+  else if (field === 'target') { $('#target-board-select').value = input.value; $('#target-board-select').dispatchEvent(new Event('change')); }
+  else if (['sort', 'damageScope'].includes(field)) savePreferences({ [field]: input.value });
+  else if (field === 'hudDetailRows') savePreferences({ hudDetailRows: input.checked });
+});
+document.addEventListener('pointerdown', event => {
+  if (toolsOpen && !event.target.closest('#tools-menu,#tools-button')) closeTools({ focus: false });
+}, { capture: true });
 $('#compact-button').addEventListener('click', () => savePreferences({ compactStrip: !prefs.compactStrip }));
 $('#settings-button').addEventListener('click', () => openDrawer('settings'));
 $('#odyle-chip').addEventListener('click', () => openDrawer('analysis', 'build'));
@@ -1997,6 +2112,10 @@ $('#resize-button').addEventListener('keydown', event => {
 });
 document.addEventListener('pointerdown', enableAudio, { passive: true });
 document.addEventListener('keydown', event => {
+  if (toolsOpen && !drawer) {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeTools(); return; }
+    if (event.key === 'Tab') { const target = focusBoundary(modalControls($('#tools-menu')), document.activeElement, event.shiftKey); if (target) { event.preventDefault(); target.focus(); } }
+  }
   if (event.key === 'F11' && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault(); toggleFullscreenOverlay(); return; }
   if (!drawer && event.key === 'Escape' && prefs.fullscreenOverlay) { event.preventDefault(); toggleFullscreenOverlay(false); return; }
   if (!drawer) return;
@@ -2342,11 +2461,16 @@ $('#notice').addEventListener('click', openCaptureDiagnostics);
 $('#notice').addEventListener('keydown', openCaptureDiagnostics);
 window.addEventListener('resize', syncOverlayGeometry);
 window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
-if (typeof ResizeObserver === 'function') new ResizeObserver(() => {
-  $('#meter').classList.toggle('short-frame', $('#meter').getBoundingClientRect().height <= 280);
-  renderPetTracking();
-  scheduleOverlayRegions();
-}).observe($('#meter'));
+if (typeof ResizeObserver === 'function') {
+  const frameObserver = new ResizeObserver(() => {
+    $('#meter').classList.toggle('short-frame', $('#meter').getBoundingClientRect().height <= 280);
+    const roster = $('.roster-list');
+    $('#meter').style.setProperty('--roster-gutter', `${Math.max(0, roster.offsetWidth - roster.clientWidth)}px`);
+    renderPetTracking();
+    scheduleOverlayRegions();
+  });
+  frameObserver.observe($('#meter')); frameObserver.observe($('.roster-list'));
+}
 applyAppearance(); renderMeter();
 if (native) {
   invoke('get_app_info').then(info => { if (typeof info?.version === 'string') appVersion = info.version.slice(0, 40); if (drawer === 'settings' && !$('#drawer-content').contains(document.activeElement)) refreshDrawer(); }).catch(() => {});

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.24.0 · 21 October 2026
+
+- Reworked Luma Clear around a quiet header, target HP, personal/selected summary and aligned DPS/total-damage columns. Additional tools and display options are available from one overflow menu; the existing analysis, sharing and settings pages remain available.
+- Added distinct local outline symbols for all nine classes, including Chanter, Ranger and Brawler. The displayed class comes from the received class metadata; an unresolved class uses a neutral symbol.
+- Added independent pet/event/team/Odyle panel choices without stopping capture, collection updates or Cube audio. Pet pinning opens its tracker; hiding and reopening retains the pins and counters. DPS can be hidden for pet tracking.
+- Kept legible roster text at small sizes by stacking numeric columns in narrow windows and with large text. Added compact-height, light-theme and fullscreen layouts, a scrollable keyboard-accessible tools menu, and larger drawer/pet typography.
+- Automated HUD/asset/regression checks and synthetic browser checks cover the new interface. These appearance changes do not establish new live DPS, pet-gain or radar accuracy guarantees.
+
 ## 0.23.0 · 21 October 2026
 
 - Added an integrated coordinate radar with 20–200 metre ranges, party/creature/pet filters and pet pin actions. Only received positions are shown; cast aim points remain separate from actor positions.

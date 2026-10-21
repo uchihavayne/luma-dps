@@ -7,6 +7,20 @@ newer events received while the request was pending.
 
 The desktop interface uses vanilla HTML, CSS and ES modules with no npm runtime dependency. The native build embeds this directory. Turkish and English translations share the same layout and measurement rules.
 
+Luma Clear keeps only the target/HP, summary, roster selector, aligned DPS/damage
+columns and a short footer visible by default. The header's overflow menu opens
+the existing tools, settings and analysis. Its independent `hudPanels` choices
+show pet tracking, event timers, team shortcuts or Odyle when requested. Hiding
+a panel retains its pins and does not stop capture or collection/audio updates.
+Pinning a pet opens its tracker. `hudDetailRows` restores optional class labels,
+shares and cooldown text; original class symbols remain visible in simple rows.
+The nine local SVG symbols are rendered from received class metadata only.
+
+Browser-only synthetic layout previews accept `?demo=1&frame=320x200` through
+`frame=1600x1600`. These dimensions are ignored in native sessions. Narrow or
+large-text rows stack their numeric columns; the roster and tools menu scroll
+within their own available area. Fullscreen uses the monitor area directly.
+
 ## Preview and tests
 
 From the source root, run `node ui/serve.mjs`, then open `http://127.0.0.1:7335/`. The normal preview starts empty and disconnected; `/?demo=1` enables deterministic samples with a visible DEMO label. Samples never enter a native desktop session. `LUMA_PREVIEW_PORT` can select another local port.

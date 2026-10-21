@@ -6,9 +6,10 @@ import { characterSnapshot, petCollectionOwner } from './character.mjs';
 export { petCollectionOwner } from './character.mjs';
 import { normalizeLatencyHistory } from './latency-history.mjs';
 import { focusedTarget } from './bosses.mjs';
+import { normalizeHudPanels } from './hud.mjs';
 
 export const THEMES = Object.freeze({
-  graphite: { name: 'Graphite', bg: '#16181d', panel: '#262930', text: '#f5f5f7', accent: '#a8c7fa' },
+  graphite: { name: 'Graphite', bg: '#16181d', panel: '#262930', text: '#f5f5f7', accent: '#a7ebd5' },
   pearl: { name: 'Pearl', bg: '#f5f5f7', panel: '#ffffff', text: '#1d1d1f', accent: '#0066cc' },
   aurora: { name: 'Aurora', bg: '#101a27', panel: '#192938', text: '#edf8f7', accent: '#7ce9cb' },
   midnight: { name: 'Midnight', bg: '#10121b', panel: '#202433', text: '#edf0fa', accent: '#b2baff' },
@@ -32,7 +33,7 @@ export const FONTS = Object.freeze({
   mono: '"Cascadia Code", Consolas, monospace',
 });
 export const LAYOUTS = Object.freeze({
-  cupertino: { name: 'Luma Clear', description: { tr: 'Sıkı çubuklar, temiz cam yüzeyler', en: 'Compact bars, clean glass surfaces' } },
+  cupertino: { name: 'Luma Clear', description: { tr: 'Sade ölçüm, hizalı sayılar, isteğe bağlı araçlar', en: 'Clear figures, aligned columns, optional tools' } },
   studio: { name: 'Studio', description: { tr: 'Dengeli kartlar, net sayılar', en: 'Balanced cards, clear numbers' } },
   minimal: { name: 'Line', description: { tr: 'İnce çizgiler, sade liste', en: 'Fine lines, simple roster' } },
   focus: { name: 'Focus', description: { tr: 'Kişisel ölçüm ön planda', en: 'Personal measurement in focus' } },
@@ -78,6 +79,7 @@ export const DEFAULTS = Object.freeze({
   numberPrecision: 2,
   summaryMetric: 'both', autoTargetRoster: true, recordNotifications: 'party',
   displayModules: Object.freeze(displayModulePreset('all')),
+  hudPanels: Object.freeze([]), hudDetailRows: false,
   radarOpen: false, radarRange: 100, petPins: [], petGoal: 'max', petAutoTrack: true, showPetTracker: true, petTrackerCollapsed: false,
   onlyAboveGame: false, clickThroughWhenLocked: false, fadeWhenIdle: false, hidePlayerNames: false, compactStrip: false, autoCheckUpdates: true, hotkeys: [],
   fullscreenOverlay: false, fullscreenLayout: 'dashboard', overlayX: 24, overlayY: 24, overlayWidth: 420, overlayHeight: 340,
@@ -127,6 +129,7 @@ export function normalizePreferences(input = {}) {
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'), autoTargetRoster: p.autoTargetRoster !== false, recordNotifications: oneOf(p.recordNotifications, ['party', 'self', 'off'], 'party'),
     displayModules: normalizeDisplayModules(p.displayModules),
+    hudPanels: normalizeHudPanels(p.hudPanels ?? (p.displayModules?.dps === false && p.displayModules?.pets !== false ? ['pets'] : [])), hudDetailRows: p.hudDetailRows === true,
     petPins: [...new Set((Array.isArray(p.petPins) ? p.petPins : []).slice(0, 100).filter(value => Number.isSafeInteger(value) && value >= 1000 && value <= 99999))].slice(0, PET_PIN_LIMIT),
     radarOpen: p.radarOpen === true, radarRange: [20, 50, 100, 200].includes(p.radarRange) ? p.radarRange : 100,
     petGoal: oneOf(p.petGoal, ['next', 'max'], 'max'), petAutoTrack: p.petAutoTrack !== false, showPetTracker: p.showPetTracker !== false, petTrackerCollapsed: p.petTrackerCollapsed === true,

@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="fullscreen.css">
   <link rel="stylesheet" href="records.css">
   <link rel="stylesheet" href="spatial.css">
+  <link rel="stylesheet" href="clear.css">
 </head>
 <body>
   <main id="meter" class="meter" aria-label="Luma DPS">
@@ -23,13 +24,14 @@
       <button id="fullscreen-button" class="icon-button" aria-label="Saydam tam ekran" aria-pressed="false" title="Saydam tam ekran"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4"/></svg></button>
       <button id="modules-button" class="icon-button modules-button" aria-label="Görünür modülleri seç" title="Görünür modülleri seç" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3" width="5" height="5" rx="1"/><rect x="12" y="3" width="5" height="5" rx="1"/><rect x="3" y="12" width="5" height="5" rx="1"/><rect x="12" y="12" width="5" height="5" rx="1"/></svg></button>
       <button id="settings-button" class="icon-button" aria-label="Ayarlar" title="Ayarlar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8.5 2.5-.4 1.6-1.6.9-1.6-.5-1.5 2.6 1.2 1.1v1.8L3.4 11.1l1.5 2.6 1.6-.5 1.6.9.4 1.6h3l.4-1.6 1.6-.9 1.6.5 1.5-2.6-1.2-1.1V8.2l1.2-1.1-1.5-2.6-1.6.5-1.6-.9-.4-1.6z" transform="translate(0 .9)"/><circle cx="10" cy="10" r="2.3"/></svg></button>
+      <button id="tools-button" class="icon-button tools-button" aria-label="Araçlar ve görünüm" title="Araçlar ve görünüm" aria-expanded="false" aria-controls="tools-menu" aria-haspopup="dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
       <button id="close-window" class="icon-button close-window" aria-label="Pencereyi kapat" title="Pencereyi kapat">×</button>
     </header>
     <section class="encounter-header">
       <div class="target-label" id="target-label">HEDEF</div>
       <div class="target-line"><h1 id="target-name">—</h1><span id="combat-time" class="combat-time">00:00</span></div>
       <button id="event-chip" class="event-chip" hidden><span id="event-name"></span><time id="event-time"></time><span aria-hidden="true">↗</span></button>
-      <div id="target-vitals" class="target-vitals" hidden><span id="target-hp"></span><i id="target-hp-track" role="progressbar" aria-label="Hedef canı" aria-valuemin="0" aria-valuemax="100"><b></b></i></div>
+      <div id="target-vitals" class="target-vitals" hidden><span id="target-hp"></span><i id="target-hp-track" role="progressbar" aria-label="Hedef canı" aria-valuemin="0" aria-valuemax="100"><b></b></i><span id="target-hp-percent" class="target-hp-percent"></span></div>
     </section>
     <section class="metrics" aria-label="Hasar özeti">
       <div class="primary-metric"><span class="metric-label" id="dps-label">KİŞİSEL DPS</span><strong id="dps-value">0/sn</strong><span id="mode-caption" class="metric-caption"></span></div>
@@ -43,6 +45,7 @@
         <button data-mode="all" aria-pressed="true">Tümü</button><button data-mode="boss" aria-pressed="false">Boss</button><button data-mode="both" aria-pressed="false">İkisi</button>
       </div>
       <label class="sort-label"><span class="sr-only" id="sort-label">Sıralama</span><select id="sort" aria-labelledby="sort-label"><option value="dps">DPS ↓</option><option value="damage">Hasar ↓</option><option value="name">A–Z</option></select></label>
+      <div class="clear-column-headings" aria-hidden="true"><span id="column-rate">DPS</span><span id="column-damage">Toplam</span></div>
     </section>
     <div id="live-tools" class="live-tools" hidden><button id="odyle-chip" hidden></button><button id="team-chip" hidden></button><button id="pet-chip">Pet rehberi</button><button id="radar-chip" aria-expanded="false">Radar</button></div>
     <section class="roster-stage" aria-label="Oyuncular ve yakın Küp sinyali">
@@ -66,9 +69,11 @@
     <footer class="footer">
       <div class="footer-controls"><button id="pause-button" class="icon-button" aria-label="Duraklat" title="Duraklat">Ⅱ</button><button id="reset-button" class="icon-button" aria-label="Sıfırla" title="Sıfırla"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.2 5.5A6 6 0 1 1 4 12M5 2.5v4H1"/></svg></button><button id="lock-button" class="icon-button" aria-label="Kilitle" aria-pressed="false" title="Kilitle">◇</button><button id="training-button" class="icon-button" aria-label="Süreli antrenman" title="Süreli antrenman"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="11" r="6"/><path d="M10 11V7m-2-5h4m-2 0v3m4.5.5L16 4"/></svg></button></div>
       <div id="roster-summary" class="roster-summary" aria-label="DPS kapsamları"><span data-summary-scope="personal"><small>BEN</small><strong>—</strong></span><span data-summary-scope="party"><small>TAKIM</small><strong>—</strong></span><span data-summary-scope="observed"><small>YAKIN</small><strong>—</strong></span></div>
+      <span id="clear-roster-summary" class="clear-roster-summary"></span>
       <button id="dps-view-button" class="text-button" hidden>DPS’i aç</button><button id="analysis-button" class="text-button">Analiz ↗</button>
       <button id="resize-button" class="resize-button" aria-label="Pencereyi yeniden boyutlandır" title="Pencereyi yeniden boyutlandır"><span aria-hidden="true">◢</span></button>
     </footer>
+    <section id="tools-menu" class="tools-menu" role="dialog" aria-label="Araçlar ve görünüm" hidden></section>
     <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
     <section id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
       <div class="drawer-header" id="drawer-drag-region"><div><span class="eyebrow">LUMA DPS</span><h2 id="drawer-title"></h2></div><button id="close-drawer" class="icon-button" aria-label="Kapat" title="Kapat">×</button></div>

@@ -1,0 +1,249 @@
+/* Luma Clear: one meter, with additional tools opened intentionally. */
+.tools-button { display: none; }
+.clear-column-headings, .clear-roster-summary, .target-hp-percent { display: none; }
+body.preview-frame:not(.fullscreen-overlay) { display: grid; place-items: center; background: #101419; }
+body.preview-frame:not(.fullscreen-overlay) > #meter { width: var(--preview-width); height: var(--preview-height); max-width: 100vw; max-height: 100vh; }
+body.preview-frame:not(.fullscreen-overlay) > #meter.compact-strip { height: 44px; }
+.player-class-icon > svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linejoin: round; stroke-linecap: round; }
+
+.tools-menu { position: absolute; z-index: 5; inset: 42px 8px 8px auto; width: min(354px, calc(100% - 16px)); min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); box-shadow: 0 12px 40px #0007; }
+.tools-menu-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); gap: 8px; flex-shrink: 0; }
+.tools-menu-heading strong { font-size: 12px; font-weight: 650; }
+.tools-menu-heading > button { font-size: 22px; width: 28px; height: 28px; }
+.tools-menu-scroll { overflow: auto; overscroll-behavior: contain; min-height: 0; padding: 8px 10px 12px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.tools-links, .tools-window-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
+.tools-links button, .tools-window-actions button { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 8px; text-align: left; font-size: 12px; line-height: 1.4; background: transparent; color: var(--text); border-radius: 7px; }
+.tools-links button:hover, .tools-window-actions button:hover { background: var(--panel); }
+.tools-links button > span, .tools-window-actions button > span { color: var(--muted); font-size: 10px; }
+.tools-menu h3 { font-size: 10px; font-weight: 600; color: var(--muted); margin: 15px 8px 6px; }
+.tools-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 12px; padding: 0 8px 10px; }
+.tools-toggles label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; font-size: 12px; line-height: 1.3; cursor: pointer; }
+.tools-toggles input, .tools-filters input { accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
+.tools-filters { margin: 0 0 8px; padding: 10px 8px; border-block: 1px solid var(--line); }
+.tools-filters > summary { font-size: 12px; cursor: pointer; color: var(--muted); line-height: 1.5; }
+.tools-filters[open] > summary { margin-bottom: 12px; color: var(--text); }
+.tools-filters .field > span, .tools-filters .check-field { font-size: 12px; }
+.tools-filters .field select { font-size: 12px; min-height: 34px; }
+.pet-panel-empty { display: grid; gap: 6px; padding: 12px; font-size: 12px; line-height: 1.5; }
+.pet-panel-empty > span { color: var(--muted); }
+.pet-panel-empty > button { justify-self: start; padding: 3px 0; font-size: 12px; color: var(--accent); }
+
+#meter[data-layout=cupertino] { --number-width: 83px; --damage-width: 61px; container: meter-size / size; border-radius: 14px; background: color-mix(in srgb, var(--bg) calc(var(--opacity) * 100%), transparent); }
+#meter[data-layout=cupertino]:not(.compact-strip) { display: flex; flex-direction: column; }
+#meter[data-layout=cupertino]::after { background: linear-gradient(145deg, color-mix(in srgb, var(--text) 3%, transparent), transparent 70%); }
+#meter[data-layout=cupertino] > .topbar { height: 36px; flex: 0 0 36px; padding: 0 11px; gap: 5px; background: transparent; }
+#meter[data-layout=cupertino] .brand { flex: 1; gap: 7px; font-size: 11px; letter-spacing: 1.7px; }
+#meter[data-layout=cupertino] .brand-mark { font-size: 21px; }
+#meter[data-layout=cupertino] .brand small { display: none; }
+#meter[data-layout=cupertino] .topbar > .identity-button,
+#meter[data-layout=cupertino] .topbar > #cube-entry,
+#meter[data-layout=cupertino] .topbar > #compact-button,
+#meter[data-layout=cupertino] .topbar > #fullscreen-button,
+#meter[data-layout=cupertino] .topbar > #modules-button,
+#meter[data-layout=cupertino] .topbar > #settings-button { display: none; }
+#meter[data-layout=cupertino] .topbar > .tools-button { display: grid; }
+#meter[data-layout=cupertino] .topbar > .icon-button { width: 28px; height: 28px; }
+#meter[data-layout=cupertino] .connection { flex: 0 1 auto; max-width: 110px; min-width: 12px; margin-left: auto; gap: 6px; font-size: 10px; }
+#meter[data-layout=cupertino] .connection i { width: 6px; height: 6px; }
+#meter[data-layout=cupertino] .connection > span { font-size: 10px; }
+#meter[data-layout=cupertino] .connection:has(.latency-chip:not([hidden])) > span { display: none; }
+#meter[data-layout=cupertino] .latency-chip { padding: 0; border: 0; font-size: 11px; }
+#meter[data-layout=cupertino] > .encounter-header { flex: 0 0 auto; min-width: 0; overflow: hidden; padding: 10px 14px 5px; margin: 0; }
+#meter[data-layout=cupertino] .target-line { min-height: 23px; gap: 10px; margin: 0; }
+#meter[data-layout=cupertino] .target-line h1 { font-size: var(--target-size); line-height: 1.35; font-weight: 650; letter-spacing: -.2px; }
+#meter[data-layout=cupertino] .combat-time { font-size: 11px; font-weight: 500; }
+#meter[data-layout=cupertino] .target-vitals { position: static; inset: auto; display: flex; align-items: center; gap: 9px; font-size: 10px; height: auto; min-height: 12px; margin-top: 5px; line-height: 1.2; }
+#meter[data-layout=cupertino] .target-vitals > #target-hp { display: none; }
+#meter[data-layout=cupertino] .target-vitals > i { flex: 1; min-width: 0; height: 5px; margin: 0; border-radius: 3px; }
+#meter[data-layout=cupertino] .target-vitals > .target-hp-percent { position: static; inset: auto; display: block; width: auto; height: auto; flex: 0 0 auto; font-size: 10px; color: var(--muted); }
+#meter[data-layout=cupertino] .event-chip { margin-top: 6px; font-size: 10px; line-height: 1.4; padding: 3px 6px; min-height: 21px; }
+#meter[data-layout=cupertino][data-hud-events=false] #event-chip { display: none; }
+#meter[data-layout=cupertino] > .metrics { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; padding: 12px 14px 13px; margin: 0 10px; border-bottom: 1px solid var(--line); background: transparent; border-radius: 0; }
+#meter[data-layout=cupertino] .primary-metric, #meter[data-layout=cupertino] .secondary-metric { min-width: 0; width: auto; --metric-max: 34px; container-type: inline-size; }
+#meter[data-layout=cupertino] .secondary-metric { --metric-max: 28px; text-align: right; }
+#meter[data-layout=cupertino] .metric-label { font-size: 9px; font-weight: 550; letter-spacing: .5px; line-height: 1.4; }
+#meter[data-layout=cupertino] .metrics strong { display: block; font-size: clamp(16px, calc(100cqw / var(--metric-length, 8) / .65), var(--metric-max)); font-weight: 650; line-height: 1.2; letter-spacing: -.6px; margin-top: 5px; white-space: nowrap; }
+#meter[data-layout=cupertino] .primary-metric strong { color: var(--accent); }
+#meter[data-layout=cupertino] .secondary-metric strong { color: var(--text); margin-top: 5px; }
+#meter[data-layout=cupertino] .metric-caption, #meter[data-layout=cupertino] .secondary-metric #boss-summary { display: none; }
+#meter[data-layout=cupertino] > .roster-controls { flex: 0 0 auto; min-width: 0; min-height: 34px; padding: 4px 14px; display: flex; gap: 10px; margin: 0; }
+#meter[data-layout=cupertino] > .roster-controls .segmented,
+#meter[data-layout=cupertino] > .roster-controls .sort-label { display: none; }
+#meter[data-layout=cupertino] .scope-label { flex: 1; min-width: 0; }
+#meter[data-layout=cupertino] .scope-label select { min-height: 27px; height: auto; font-size: 11px; max-width: 100%; width: auto; background: transparent; border-color: transparent; color: var(--text); padding: 3px 22px 3px 0; }
+#meter[data-layout=cupertino] .clear-column-headings { display: grid; grid-template-columns: var(--number-width) var(--damage-width); gap: 8px; margin-right: calc(var(--roster-gutter, 0px) + 1px); text-align: right; color: var(--muted); font-size: 10px; letter-spacing: 0; }
+#meter[data-layout=cupertino] > .notice { flex: 0 0 auto; position: static; height: auto; min-height: 0; max-height: 38px; margin: 0 12px 5px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 6px; font-size: 10px; line-height: 1.4; white-space: normal; overflow: hidden; }
+#meter[data-layout=cupertino] > .combat-warning { position: static; flex: 0 0 auto; margin: 0 12px 5px; font-size: 11px; max-width: calc(100% - 24px); min-height: 26px; }
+#meter[data-layout=cupertino] > .live-tools { display: none; }
+#meter[data-layout=cupertino][data-hud-team=true] > .live-tools,
+#meter[data-layout=cupertino][data-hud-odyle=true] > .live-tools { display: flex; padding: 0 12px 5px; flex: 0 0 auto; }
+#meter[data-layout=cupertino] > .live-tools > #pet-chip,
+#meter[data-layout=cupertino] > .live-tools > #radar-chip,
+#meter[data-layout=cupertino][data-hud-team=false] #team-chip,
+#meter[data-layout=cupertino][data-hud-odyle=false] #odyle-chip { display: none; }
+#meter[data-layout=cupertino] > .roster-stage { flex: 1 1 0; min-height: 0; min-width: 0; padding: 0 9px; margin: 0; }
+#meter[data-layout=cupertino] .roster-list { min-width: 0; min-height: 0; overflow: auto; display: block; padding: 0; scrollbar-width: thin; scrollbar-gutter: stable; scrollbar-color: var(--line) transparent; }
+#meter[data-layout=cupertino] .list-heading, #meter[data-layout=cupertino] #target-board-controls { display: none; }
+#meter[data-layout=cupertino] #target-roster-strip { min-height: 0; padding: 0; border: 0; margin: 0; display: none; }
+#meter[data-layout=cupertino] .players { padding: 0 0 5px; overflow: visible; display: block; }
+#meter[data-layout=cupertino] .player { position: relative; isolation: isolate; display: grid; grid-template-columns: 17px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); align-items: center; gap: 7px; padding: 7px 5px; min-height: 36px; margin: 0 0 3px; border: 1px solid transparent; border-radius: 7px; background: transparent; }
+#meter[data-layout=cupertino] .player:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+#meter[data-layout=cupertino] .player-bar { inset: 0; opacity: .2; border-radius: 6px; background: var(--bar-color, var(--class-color)); transform: scaleX(var(--share)); }
+#meter[data-layout=cupertino] .player::before { display: none; }
+#meter[data-layout=cupertino] .player.is-own { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 4%, transparent); box-shadow: none; }
+#meter[data-layout=cupertino] .rank { align-self: center; font-size: max(10px, calc(11px * var(--scale))); }
+#meter[data-layout=cupertino] .player-main { min-width: 0; display: block; }
+#meter[data-layout=cupertino] .player-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; line-height: 1.4; }
+#meter[data-layout=cupertino] .player-name { min-width: 0; font-size: max(12px, calc(12px * var(--scale))); font-weight: 550; line-height: 1.4; }
+#meter[data-layout=cupertino] .player-class-icon { flex: 0 0 20px; width: 20px; height: 20px; background: transparent; color: var(--class-color); border-radius: 0; }
+#meter[data-layout=cupertino] .player-class-icon > svg { width: 19px; height: 19px; }
+html[data-surface=light] #meter[data-layout=cupertino] .player-class-icon { color: color-mix(in srgb, var(--class-color) 40%, var(--text)); }
+#meter[data-layout=cupertino] .own-tag { font-size: 7px; line-height: 1.4; color: var(--accent); padding: 1px 3px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); background: transparent; flex: 0 0 auto; }
+#meter[data-layout=cupertino] .player-stats { min-width: 0; display: block; }
+#meter[data-layout=cupertino] .player-numbers { display: grid; grid-template-columns: var(--number-width) var(--damage-width); align-items: center; gap: 8px; width: 100%; }
+#meter[data-layout=cupertino] .player-numbers > .player-dps { order: 0; min-width: 0; font-size: max(11px, calc(12px * var(--scale))); font-weight: 650; line-height: 1.4; margin: 0; text-align: right; }
+#meter[data-layout=cupertino] .player-numbers > .player-dps { color: var(--text); }
+#meter[data-layout=cupertino] .player-numbers > .player-damage { order: 1; min-width: 0; font-size: max(11px, calc(12px * var(--scale))); font-weight: 450; line-height: 1.4; color: var(--muted); margin: 0; text-align: right; }
+#meter[data-layout=cupertino][data-detail-rows=false] .player-class,
+#meter[data-layout=cupertino][data-detail-rows=false] .player-share,
+#meter[data-layout=cupertino][data-detail-rows=false] .player-cooldown { display: none; }
+#meter[data-layout=cupertino][data-detail-rows=true] .player-class { font-size: 10px; margin-top: 4px; }
+#meter[data-layout=cupertino][data-detail-rows=true] .player-cooldown { font-size: 10px; line-height: 1.4; margin-top: 3px; }
+#meter[data-layout=cupertino][data-detail-rows=true] .player-share { display: block; font-size: 10px; margin-top: 3px; }
+#meter[data-layout=cupertino][data-row-metric=dps], #meter[data-layout=cupertino][data-row-metric=damage] { --number-width: 96px; --damage-width: 0px; }
+#meter[data-layout=cupertino][data-row-metric=dps] .clear-column-headings > #column-damage,
+#meter[data-layout=cupertino][data-row-metric=damage] .clear-column-headings > #column-rate { display: none; }
+#meter[data-layout=cupertino]:not([data-row-metric=both]) .player-numbers { display: block; }
+#meter[data-layout=cupertino]:not([data-row-metric=both]) .player-numbers > span { text-align: right; }
+#meter[data-layout=cupertino]:not([data-row-metric=both]) .clear-column-headings { display: flex; justify-content: flex-end; }
+#meter[data-layout=cupertino] > .footer { flex: 0 0 36px; height: 36px; padding: 0 10px; gap: 5px; }
+#meter[data-layout=cupertino] .footer-controls { flex: 0 0 auto; gap: 2px; }
+#meter[data-layout=cupertino] .footer-controls > #lock-button,
+#meter[data-layout=cupertino] .footer-controls > #training-button,
+#meter[data-layout=cupertino] #roster-summary { display: none; }
+#meter[data-layout=cupertino] .clear-roster-summary { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#meter[data-layout=cupertino] #analysis-button { margin-left: auto; font-size: 11px; padding: 6px; }
+#meter[data-layout=cupertino] .resize-button { flex-shrink: 0; width: 13px; }
+#meter[data-layout=cupertino] .drawer-content { font-size: 12px; }
+#meter[data-layout=cupertino] .help,
+#meter[data-layout=cupertino] .check-field,
+#meter[data-layout=cupertino] .field > span,
+#meter[data-layout=cupertino] .record-meta,
+#meter[data-layout=cupertino] .settings-hint { font-size: 12px; line-height: 1.6; }
+#meter[data-layout=cupertino] .field input,
+#meter[data-layout=cupertino] .field select,
+#meter[data-layout=cupertino] .field textarea { font-size: 12px; min-height: 34px; }
+#meter[data-layout=cupertino] .action-button { font-size: 12px; }
+#meter[data-layout=cupertino] .section-title { font-size: 14px; }
+#meter[data-layout=cupertino] .drawer-tabs button { font-size: 11px; padding: 6px 9px; }
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-heading button { font-size: 11px; min-height: 25px; }
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-title strong { font-size: 13px; }
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-counter { font-size: 12px; }
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-percent,
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-level,
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-meta small,
+#meter[data-layout=cupertino] #pet-tracker .pet-tracker-eta { font-size: 10px; line-height: 1.4; }
+#meter[data-layout=cupertino] #pet-tracker .pet-progress-track { height: 7px; }
+#meter[data-layout=cupertino].no-dps > .roster-controls { display: none; }
+#meter[data-layout=cupertino].no-dps .clear-roster-summary { display: none; }
+#meter[data-layout=cupertino].no-dps[data-hud-events=false] > .encounter-header { display: none !important; }
+#meter[data-layout=cupertino].no-dps .roster-list { display: flex; flex-direction: column; }
+#meter[data-layout=cupertino][data-large-type=true] .player { grid-template-columns: 17px minmax(0, 1fr) calc(88px * var(--scale)); }
+#meter[data-layout=cupertino][data-large-type=true] .player-numbers { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
+#meter[data-layout=cupertino][data-large-type=true] .clear-column-headings { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
+
+/* Keep numbers aligned; use a second stats line before shrinking their text. */
+@container meter-size (max-width: 370px) {
+  #meter[data-layout=cupertino] .player { grid-template-columns: 14px minmax(0, 1fr) 89px; gap: 5px; padding-block: 7px; }
+  #meter[data-layout=cupertino] .player-numbers { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
+  #meter[data-layout=cupertino] .player-numbers > .player-dps { font-size: max(12px, calc(12px * var(--scale))); }
+  #meter[data-layout=cupertino] .player-numbers > .player-damage { font-size: max(11px, calc(11px * var(--scale))); }
+  #meter[data-layout=cupertino] .clear-column-headings { display: flex; flex-direction: column; align-items: flex-end; gap: 0; font-size: 9px; }
+  #meter[data-layout=cupertino] .own-tag { margin-left: 1px; }
+}
+@container meter-size (max-height: 280px) {
+  #meter[data-layout=cupertino]:not(.compact-strip) > .topbar { flex-basis: 30px; height: 30px; }
+  #meter[data-layout=cupertino] > .encounter-header { padding: 4px 12px 2px; }
+  #meter[data-layout=cupertino] .target-line { min-height: 19px; }
+  #meter[data-layout=cupertino] .target-vitals { margin-top: 2px; min-height: 9px; }
+  #meter[data-layout=cupertino] > .metrics { padding: 5px 4px 7px; gap: 10px; }
+  #meter[data-layout=cupertino] .primary-metric { --metric-max: 26px; }
+  #meter[data-layout=cupertino] .secondary-metric { --metric-max: 23px; }
+  #meter[data-layout=cupertino] .metric-label { font-size: 8px; }
+  #meter[data-layout=cupertino] .metrics strong { margin-top: 2px; }
+  #meter[data-layout=cupertino] > .roster-controls { min-height: 26px; padding-block: 1px; }
+  #meter[data-layout=cupertino] .player { min-height: 32px; padding-block: 4px; }
+  #meter[data-layout=cupertino] > .footer { height: 29px; flex-basis: 29px; }
+  #meter[data-layout=cupertino] > .notice { font-size: 9px; max-height: 24px; padding-block: 3px; margin-bottom: 2px; white-space: nowrap; text-overflow: ellipsis; }
+  #meter[data-layout=cupertino] .tools-menu { top: 33px; }
+}
+@container meter-size (max-height: 230px) {
+  #meter[data-layout=cupertino]:not(.compact-strip) > .topbar { height: 28px; flex-basis: 28px; }
+  #meter[data-layout=cupertino] > .encounter-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 2px 12px 1px; gap: 2px 5px; }
+  #meter[data-layout=cupertino] .target-line { grid-column: 1 / -1; min-height: 18px; }
+  #meter[data-layout=cupertino] .target-line h1 { font-size: min(var(--target-size), 14px); line-height: 18px; }
+  #meter[data-layout=cupertino] .target-vitals { grid-column: 1 / -1; min-height: 3px; height: 3px; margin: 0; }
+  #meter[data-layout=cupertino] .target-vitals > i { height: 3px; }
+  #meter[data-layout=cupertino] .target-vitals > .target-hp-percent { display: none; }
+  #meter[data-layout=cupertino] .event-chip { grid-column: 2; grid-row: 1; margin: 0; min-height: 18px; max-width: 86px; padding: 1px 4px; }
+  #meter[data-layout=cupertino] .encounter-header:has(.event-chip:not([hidden])) .target-line { grid-column: 1; }
+  #meter[data-layout=cupertino] .event-chip #event-name { display: none; }
+  #meter[data-layout=cupertino] > .metrics { padding: 3px 2px 4px; }
+  #meter[data-layout=cupertino] .primary-metric { --metric-max: 22px; }
+  #meter[data-layout=cupertino] .secondary-metric { --metric-max: 21px; }
+  #meter[data-layout=cupertino] .metrics strong { margin-top: 0; line-height: 1.1; }
+  #meter[data-layout=cupertino] > .roster-controls { min-height: 22px; height: 22px; padding-block: 0; }
+  #meter[data-layout=cupertino] .scope-label select { min-height: 22px; padding-block: 0; }
+  #meter[data-layout=cupertino] .clear-column-headings { flex-direction: row; gap: 5px; }
+  #meter[data-layout=cupertino] > .footer { height: 26px; flex-basis: 26px; min-height: 0; }
+  #meter[data-layout=cupertino] > .notice { padding: 2px 5px; font-size: 9px; line-height: 11px; max-height: 17px; }
+  #meter[data-layout=cupertino] .player { min-height: 30px; padding-block: 1px; }
+}
+/* Detailed native fullscreen mode expands naturally rather than scaling a HUD. */
+body.fullscreen-dashboard #meter[data-layout=cupertino]:not(.compact-strip) { display: flex; --number-width: clamp(100px, 14vw, 200px); --damage-width: clamp(85px, 10vw, 150px); padding: 12px clamp(14px, 4vw, 64px); gap: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .topbar { flex-basis: 44px; height: 44px; margin: 0; padding-inline: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .encounter-header { min-height: 0; border: 0; border-radius: 0; background: transparent; padding: 12px 0 5px; margin: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .metrics { min-height: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 14px 0 18px; margin: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .primary-metric { --metric-max: 56px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .secondary-metric { --metric-max: 46px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .target-line h1 { font-size: clamp(20px, calc(var(--target-size) * 1.4), 36px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-controls { padding: 7px 0; min-height: 40px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-stage { padding: 0; gap: 14px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .roster-list { background: transparent; border: 0; border-radius: 0; padding: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player { min-height: 52px; padding: 10px 14px; gap: 12px; grid-template-columns: 26px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-name { font-size: max(14px, calc(16px * var(--scale))); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers > .player-dps { font-size: max(14px, calc(18px * var(--scale))); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers > .player-damage { font-size: max(13px, calc(16px * var(--scale))); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-class-icon, body.fullscreen-dashboard #meter[data-layout=cupertino] .player-class-icon > svg { width: 24px; height: 24px; flex-basis: 24px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .footer { flex-basis: 44px; min-height: 44px; height: 44px; margin: 8px 0 0; padding-inline: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-roster-summary { font-size: 12px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .tools-menu { top: 58px; right: clamp(14px, 4vw, 64px); bottom: auto; max-height: calc(100% - 72px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .target-label,
+body.fullscreen-dashboard #meter[data-layout=cupertino] .metric-caption,
+body.fullscreen-dashboard #meter[data-layout=cupertino] .secondary-metric #boss-summary,
+body.fullscreen-dashboard #meter[data-layout=cupertino] .list-heading,
+body.fullscreen-dashboard #meter[data-layout=cupertino] #target-roster-strip { display: none; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .target-vitals { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .target-vitals > i { flex: 1; height: 5px; margin: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .target-vitals > .target-hp-percent { flex: 0 0 auto; font-size: 12px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .secondary-metric { text-align: right; align-items: flex-end; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-controls { align-self: stretch; width: auto; justify-content: space-between; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label { flex: 1; max-width: none; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label select { width: auto; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-column-headings { margin-right: calc(var(--roster-gutter, 0px) + 15px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers { column-gap: 8px; row-gap: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-class,
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-share,
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-cooldown { display: none; }
+#meter[data-layout=cupertino][data-cube-dock=true] .player { grid-template-columns: 14px minmax(0, 1fr) 89px; gap: 5px; }
+#meter[data-layout=cupertino][data-cube-dock=true] .player-numbers { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
+#meter[data-layout=cupertino][data-cube-dock=true] .clear-column-headings { display: none; }
+#meter[data-layout=cupertino].compact-strip { display: grid; }
+#meter[data-layout=cupertino].compact-strip > .topbar { height: 42px; padding-inline: 6px; gap: 3px; }
+#meter[data-layout=cupertino].compact-strip > .topbar .brand { min-width: 0; font-size: 9px; gap: 3px; }
+#meter[data-layout=cupertino].compact-strip > .topbar .brand-mark { font-size: 16px; }
+#meter[data-layout=cupertino].compact-strip > .metrics { display: flex; margin: 0; padding: 0 9px 0 4px; border: 0; gap: 8px; }
+#meter[data-layout=cupertino].compact-strip > .metrics .primary-metric, #meter[data-layout=cupertino].compact-strip > .metrics .secondary-metric { container-type: normal; }
+#meter[data-layout=cupertino].compact-strip:has(.tools-menu:not([hidden])) { height: 100%; }
+#meter[data-layout=cupertino].compact-strip .tools-menu { top: 44px; }
+@media (prefers-reduced-motion: reduce) { #meter[data-layout=cupertino] .player-bar { transition: none; } }
