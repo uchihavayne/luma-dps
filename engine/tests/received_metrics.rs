@@ -94,7 +94,9 @@ fn player_to_player_heal_or_pvp_stays_unclassified_and_cannot_inflate_pve_or_tak
     let record = engine.current_record(5000);
     assert_eq!(record.damage_samples.len(), 1);
     assert_eq!(record.damage_samples[0].amount, 200);
-    assert!(!record.sample_complete);
+    // Heal-like and PvP amounts stay excluded and are counted above; they do not make the
+    // PvE damage samples incomplete.
+    assert!(record.sample_complete);
 }
 
 #[test]

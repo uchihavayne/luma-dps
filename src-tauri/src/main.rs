@@ -2452,34 +2452,36 @@ mod shell_tests {
 
     #[test]
     fn community_current_selection_preserves_target_filter_and_requires_completion() {
+        // The fixture's boss is alive, so its fight stays open for the boss limit (30 s) after the last hit.
         let mut engine = community_fixture_engine();
         assert!(select_community_record(&engine, None, 2_100).is_err());
         engine.pause(true);
         assert!(!engine.live_state(2_100).encounter_active);
         assert!(select_community_record(&engine, None, 2_100).is_err());
         engine.pause(false);
-        engine.tick(12_000);
+        engine.tick(32_000);
         engine.set_target_mode("boss");
-        let current = select_community_record(&engine, None, 12_000).unwrap();
+        let current = select_community_record(&engine, None, 32_000).unwrap();
         assert_eq!(current.total_damage, 200);
         assert!(current.targets.iter().all(|target| target.id == 9));
         let saved =
-            select_community_record(&engine, Some(&current.id.to_string()), 12_000).unwrap();
+            select_community_record(&engine, Some(&current.id.to_string()), 32_000).unwrap();
         assert_eq!(saved.total_damage, 300);
-        assert!(select_community_record(&engine, Some("9999999"), 12_000).is_err());
+        assert!(select_community_record(&engine, Some("9999999"), 32_000).is_err());
     }
 
     #[test]
     fn community_selection_clones_only_the_chosen_record_and_preserves_import_source() {
+        // The fixture's boss is alive, so its fight stays open for the boss limit (30 s) after the last hit.
         let mut engine = community_fixture_engine();
-        engine.tick(12_000);
+        engine.tick(32_000);
         let (_, records) = engine.history_snapshot();
         let original = records[0].clone();
         let mut other_engine = MeterEngine::default();
         other_engine.merge_history(&[original]).unwrap();
         let (_, imported) = other_engine.history_snapshot();
         let id = imported[0].id.to_string();
-        let selected = select_community_record(&other_engine, Some(&id), 12_000).unwrap();
+        let selected = select_community_record(&other_engine, Some(&id), 32_000).unwrap();
         assert_eq!(selected.source, "imported");
         assert_eq!(selected.total_damage, 300);
         other_engine.reset();

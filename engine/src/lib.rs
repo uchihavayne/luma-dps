@@ -19,9 +19,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const IDLE_MS: u64 = 10_000;
+/// A boss that is still alive keeps the fight open this long between hits.
+const BOSS_IDLE_MS: u64 = 30_000;
 const MAX_HITS: usize = 250_000;
 const MAX_SAMPLES: usize = 20_000;
 const MAX_HISTORY_SAMPLES: usize = 100_000;
+const MAX_HISTORY_RECORDS: usize = 200;
+const TIMELINE_BUCKETS: u64 = 240;
+const TIMELINE_PLAYERS: usize = 64;
 const PROFILE_PENDING_MS: u64 = 30_000;
 const MAX_PENDING_PROFILES: usize = 64;
 const RECENT_PERSONAL_TARGET_MS: u64 = 10_000;
@@ -186,10 +191,28 @@ struct RecentPersonalHit {
     target_id: u64,
     hit_at_ms: u64,
 }
+/// Damage per fixed interval for the whole encounter and per player (PvE damage only).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DamageTimeline {
+    pub interval_ms: u64,
+    pub started_ms: u64,
+    pub total: Vec<u64>,
+    pub players: Vec<TimelinePlayer>,
+    /// False when the samples it was built from were known to be incomplete.
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TimelinePlayer {
+    pub id: u64,
+    pub damage: Vec<u64>,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
     pub spatial: spatial::Snapshot,
+    pub timeline: DamageTimeline,
     pub focused_target_id: Option<u64>,
     pub focused_target_observed_at_ms: Option<u64>,
     pub context: EncounterContext,
@@ -1556,7 +1579,7 @@ impl MeterEngine {
                 }
                 self.observe_recent_personal_hit(&hit, now);
                 self.training_hit(&hit, now);
-                if self.started.is_some() && now.saturating_sub(self.last_hit) >= IDLE_MS {
+                if self.started.is_some() && self.idle_for(now) {
                     self.finish(self.last_hit.saturating_add(IDLE_MS))
                 }
                 if self.started.is_none() {
@@ -1785,7 +1808,7 @@ impl MeterEngine {
         if !player(owner) || !player(hit.target) {
             return;
         }
-        if self.started.is_some() && now.saturating_sub(self.last_hit) >= IDLE_MS {
+        if self.started.is_some() && self.idle_for(now) {
             self.finish(self.last_hit.saturating_add(IDLE_MS));
         }
         if self.started.is_none() {
@@ -1924,7 +1947,7 @@ impl MeterEngine {
             self.training.status = "complete".into();
         }
         self.streams.expire(now);
-        if !self.paused && self.started.is_some() && now.saturating_sub(self.last_hit) >= IDLE_MS {
+        if !self.paused && self.started.is_some() && self.idle_for(now) {
             self.finish(self.last_hit.saturating_add(IDLE_MS))
         }
     }
@@ -2057,6 +2080,25 @@ impl MeterEngine {
             completed.bosses.clone_from(&self.bosses);
         }
         self.dirty();
+    }
+    /// Whether the current encounter has been quiet long enough to end. Phase changes and
+    /// mechanics routinely pause the damage on a boss for longer than the ordinary limit, and
+    /// ending the fight there splits one boss fight into several records, so a boss that was hit
+    /// and has not died keeps it open for `BOSS_IDLE_MS`. The recorded end stays one ordinary
+    /// idle limit after the last hit, so the pause is not counted into the duration twice.
+    fn idle_for(&self, now: u64) -> bool {
+        let quiet = now.saturating_sub(self.last_hit);
+        if quiet < IDLE_MS {
+            return false;
+        }
+        if quiet >= BOSS_IDLE_MS {
+            return true;
+        }
+        let bosses = self.report_bosses();
+        !self
+            .alive_targets
+            .iter()
+            .any(|target| bosses.contains(target))
     }
     fn report_bosses(&self) -> Vec<u64> {
         let (manual, identities) = self
@@ -2469,16 +2511,30 @@ impl MeterEngine {
                 .filter(|sample| sample.metric == "damage-taken")
                 .cloned()
                 .collect();
-            if record
-                .damage_samples
-                .iter()
-                .any(|sample| sample.metric.starts_with("unclassified"))
-            {
-                record.sample_complete = false;
-            }
+            // Unclassified amounts (heal-like or PvP, between players) are excluded from
+            // every damage total and disclosed through `unclassified_player_target_*`.
+            // They do not make the PvE damage samples incomplete: only lost or truncated
+            // data does. Marking the record incomplete would hide the chart, boss records
+            // and comparisons for every fight in which a support class heals.
             record
                 .damage_samples
                 .retain(|sample| sample.metric == "damage");
+        }
+    }
+    /// Keeps the history within its record limit without losing boss fights: records are
+    /// dropped oldest first, zero-damage ones before other fights and boss fights last. The
+    /// newest record is never dropped here, so a fight just finished is always visible.
+    fn trim_history(&mut self) {
+        while self.history.len() > MAX_HISTORY_RECORDS {
+            let oldest = |keep: &dyn Fn(&Encounter) -> bool| {
+                (1..self.history.len())
+                    .rev()
+                    .find(|&index| keep(&self.history[index]))
+            };
+            let index = oldest(&|record| record.total_damage == 0)
+                .or_else(|| oldest(&|record| !boss_record(record)))
+                .unwrap_or(self.history.len() - 1);
+            self.history.remove(index);
         }
     }
     fn bound_history_samples(&mut self) {
@@ -3143,6 +3199,7 @@ impl MeterEngine {
         record.ended_ms = now;
         record.network_latency = self.latency.snapshot(record.started_ms, now);
         self.attach_samples(&mut record);
+        record.timeline = build_timeline(&record);
         record.character_build = self.encounter_build.clone();
         record.assist = self.assistance.snapshot(now);
         record.spatial = self.spatial.snapshot(now, Some((record.started_ms, now)));
@@ -3157,7 +3214,7 @@ impl MeterEngine {
         self.observe_boss_record(&record);
         if measured_record(&record) {
             self.history.push_front(record.clone());
-            self.history.truncate(200);
+            self.trim_history();
             self.bound_history_samples();
             self.history_revision = self.history_revision.wrapping_add(1)
         }
@@ -3510,7 +3567,7 @@ impl MeterEngine {
             }
             self.history.push_front(record);
         }
-        self.history.truncate(200);
+        self.trim_history();
         self.bound_history_samples();
         self.history_revision = self.history_revision.wrapping_add(1);
         Ok(records.len())
@@ -3699,6 +3756,49 @@ fn clean_alias(name: &str) -> String {
 fn observed_scope() -> String {
     "observed".into()
 }
+fn boss_record(record: &Encounter) -> bool {
+    record.targets.iter().any(|target| target.is_boss)
+}
+
+/// A compact per-second damage series for the whole encounter and each player. Raw samples
+/// are dropped from older history to bound memory; this small series keeps the chart.
+fn build_timeline(record: &Encounter) -> DamageTimeline {
+    let samples = &record.damage_samples;
+    let (Some(first), Some(last)) = (
+        samples.iter().map(|sample| sample.timestamp_ms).min(),
+        samples.iter().map(|sample| sample.timestamp_ms).max(),
+    ) else {
+        return DamageTimeline::default();
+    };
+    let start = record.started_ms.min(first);
+    let span = record.ended_ms.max(last).saturating_sub(start).max(1);
+    let interval_ms = span.div_ceil(TIMELINE_BUCKETS).div_ceil(1000).max(1) * 1000;
+    let buckets = (span / interval_ms + 1) as usize;
+    let mut total = vec![0u64; buckets];
+    let mut by_player: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for sample in samples {
+        let bucket = ((sample.timestamp_ms - start) / interval_ms) as usize;
+        total[bucket] = total[bucket].saturating_add(sample.amount);
+        let series = by_player
+            .entry(sample.player_id)
+            .or_insert_with(|| vec![0u64; buckets]);
+        series[bucket] = series[bucket].saturating_add(sample.amount);
+    }
+    let mut players: Vec<TimelinePlayer> = by_player
+        .into_iter()
+        .map(|(id, damage)| TimelinePlayer { id, damage })
+        .collect();
+    players.sort_by_key(|player| std::cmp::Reverse(player.damage.iter().sum::<u64>()));
+    players.truncate(TIMELINE_PLAYERS);
+    DamageTimeline {
+        interval_ms,
+        started_ms: start,
+        total,
+        players,
+        complete: record.sample_complete,
+    }
+}
+
 fn measured_record(record: &Encounter) -> bool {
     record.total_damage > 0
         || record.unclassified_player_target_events > 0
