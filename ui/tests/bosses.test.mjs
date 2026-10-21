@@ -328,3 +328,13 @@ test('an unknown target clock preserves damage but never manufactures a damage-a
   const firstHit = targetSummary(target({ elapsed_ms: 0, own_participant: player(1, 100, { dps: null }) }), state());
   assert.equal(firstHit.elapsedMs, 0); assert.equal(firstHit.dps, 100);
 });
+
+test('a missing target gives an unknown vital instead of throwing and blanking the meter', () => {
+  for (const missing of [null, undefined]) {
+    const vital = targetVital(missing, 1000);
+    assert.equal(vital.status, 'unknown');
+    assert.equal(vital.current, null);
+    assert.equal(vital.max, null);
+    assert.equal(vital.percent, null);
+  }
+});

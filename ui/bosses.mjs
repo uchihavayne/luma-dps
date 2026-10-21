@@ -61,7 +61,10 @@ export function continuedPersonalTarget(previous, state = {}, now = Date.now()) 
   return { target, source: 'continued-personal-target', memory: previous };
 }
 
-export function targetVital(target = {}, now = Date.now(), freshnessMs = 5000) {
+export function targetVital(target, now = Date.now(), freshnessMs = 5000) {
+  // `null` (no target yet) must not throw: a default parameter only covers `undefined`,
+  // and a throw here aborts the whole meter render.
+  if (!target) target = {};
   const current = number(target.current_hp), reported = number(target.reported_max_hp);
   // Peak HP and a max-only packet are not evidence of a fresh current value.
   const at = number(target.current_hp_observed_at_ms);
