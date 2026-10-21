@@ -400,3 +400,27 @@ test('a history storage error reaches the state as bounded plain text and defaul
   assert.equal(normalizeState({ history_storage_error: '2 oldest encounters exceed the limit' }).history_storage_error, '2 oldest encounters exceed the limit');
   assert.equal(normalizeState({ history_storage_error: 'x'.repeat(500) }).history_storage_error.length, 200);
 });
+
+import { normalizeSkill } from '../model.mjs';
+import { SKILL_NAMES, skillLabel, isPlaceholderSkillName } from '../skill-names.mjs';
+
+test('skill rows get their catalog name unless the record already carries a real one', () => {
+  assert.equal(skillLabel(18050340), 'Bursting Blow');
+  assert.equal(skillLabel('11170450'), 'Overhead Slam');
+  assert.equal(skillLabel(999999999), 'Skill #999999999');
+  assert.equal(skillLabel(null), 'Skill #?');
+  assert.equal(normalizeSkill({ id: 18050340, name: 'Skill #18050340', damage: 5, hits: 1 }).name, 'Bursting Blow');
+  assert.equal(normalizeSkill({ id: 18050340, name: '', damage: 5, hits: 1 }).name, 'Bursting Blow');
+  assert.equal(normalizeSkill({ id: 18050340, name: '18050340', damage: 5, hits: 1 }).name, 'Bursting Blow');
+  assert.equal(normalizeSkill({ id: 18050340, name: 'Custom name', damage: 5, hits: 1 }).name, 'Custom name');
+  assert.equal(normalizeSkill({ id: 999999999, name: 'Skill #999999999', damage: 5, hits: 1 }).name, 'Skill #999999999');
+});
+
+test('the bundled skill table is well formed', () => {
+  const entries = Object.entries(SKILL_NAMES);
+  assert.ok(entries.length > 16000);
+  assert.ok(entries.every(([id, name]) => /^\d+$/.test(id) && typeof name === 'string' && name.length > 0 && name.length <= 100));
+  assert.ok(Object.isFrozen(SKILL_NAMES));
+  for (const name of ['Skill #123', '#45', '678', '', null, undefined]) assert.equal(isPlaceholderSkillName(name), true, String(name));
+  assert.equal(isPlaceholderSkillName('Bursting Blow'), false);
+});

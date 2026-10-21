@@ -1,10 +1,10 @@
 export const SETTINGS_SECTIONS = ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'controls', 'hiddenCube', 'about'];
-export const ANALYSIS_SECTIONS = ['overview', 'skills', 'rotation', 'healing', 'training', 'records', 'radar', 'playback', 'curves', 'effects', 'team', 'pets', 'build', 'worldBosses', 'gameReport', 'history', 'runs', 'community', 'planner', 'alerts'];
+export const ANALYSIS_SECTIONS = ['bossLog', 'overview', 'skills', 'rotation', 'healing', 'training', 'records', 'radar', 'playback', 'curves', 'effects', 'team', 'pets', 'build', 'worldBosses', 'gameReport', 'history', 'runs', 'community', 'planner', 'alerts'];
 
 // Presentation only: groups split the 20 analysis tabs into four short rows. Tab ids stay unchanged.
 export const ANALYSIS_GROUPS = [
   { id: 'groupCombat', sections: ['overview', 'skills', 'rotation', 'healing', 'curves', 'effects', 'training'] },
-  { id: 'groupRecords', sections: ['history', 'runs', 'records', 'playback', 'gameReport'] },
+  { id: 'groupRecords', sections: ['bossLog', 'history', 'runs', 'records', 'playback', 'gameReport'] },
   { id: 'groupWorld', sections: ['team', 'build', 'pets', 'worldBosses', 'radar'] },
   { id: 'groupMore', sections: ['community', 'planner', 'alerts'] },
 ];

@@ -347,3 +347,13 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 .appearance-details > summary { font-size: 12px; }
 .appearance-details .module-settings { margin: 10px 0 0; padding: 0; border: 0; background: none; }
 .appearance-details .module-settings > .record-top { display: none; }
+
+/* Boss log: one folded card per boss with its fights listed inside. */
+.boss-card > summary > strong { display: block; font-size: 13px; color: var(--text); }
+.boss-sum { display: block; margin-top: 2px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.boss-fights { display: grid; padding-bottom: 4px; }
+.boss-fight { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.boss-fight .when { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.boss-fight strong, .boss-fight small { font-variant-numeric: tabular-nums; }
+.boss-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.boss-actions .action-button { min-height: 28px; padding: 3px 10px; font-size: 11px; }

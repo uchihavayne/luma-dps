@@ -92,3 +92,57 @@ test('taken zero with missing or false coverage stays partial and unresolved pla
   assert.equal(takenCoverage({ damage_taken: 0, damage_taken_complete: true }).kind, 'complete');
   assert.equal(takenCoverage({ damage_taken: null, damage_taken_complete: true }).kind, 'unknown');
 });
+
+const timelineRecord = (overrides = {}) => ({
+  started_ms: 100000, ended_ms: 106000, elapsed_ms: 6000, local_player_id: 1, local_identity_source: 'server',
+  party_membership_source: 'server', party_member_ids: [1, 2], damage_samples: [],
+  timeline: { interval_ms: 2000, started_ms: 100000, total: [300, 0, 450], complete: true,
+    players: [{ id: '1', damage: [100, 0, 400] }, { id: '2', damage: [150, 0, 50] }, { id: '3', damage: [50, 0, 0] }] },
+  ...overrides,
+});
+
+test('a record without raw samples still draws its chart from the stored timeline', () => {
+  const personal = damageCurve(timelineRecord(), { scope: 'personal' });
+  assert.equal(personal.available, true);
+  assert.equal(personal.summary, true);
+  assert.deepEqual(personal.points.map(point => point.damage), [100, 0, 400]);
+  assert.deepEqual(personal.points.map(point => point.at_ms), [0, 2000, 4000]);
+  assert.equal(personal.points[2].dps, 200);
+  assert.equal(personal.totalDamage, 500);
+  assert.equal(personal.interval_ms, 2000);
+  assert.equal(personal.bestBurst, null);
+
+  assert.deepEqual(damageCurve(timelineRecord(), { scope: 'party' }).points.map(point => point.damage), [250, 0, 450]);
+  assert.deepEqual(damageCurve(timelineRecord(), { scope: 'observed' }).points.map(point => point.damage), [300, 0, 450]);
+});
+
+test('the stored timeline respects unknown identity and an empty timeline', () => {
+  assert.equal(damageCurve(timelineRecord({ local_identity_source: 'unresolved' }), { scope: 'personal' }).available, false);
+  assert.equal(damageCurve(timelineRecord({ party_membership_source: 'unresolved' }), { scope: 'party' }).available, false);
+  assert.equal(damageCurve(timelineRecord({ timeline: undefined }), { scope: 'observed' }).available, false);
+  assert.equal(damageCurve(timelineRecord({ timeline: { interval_ms: 0, started_ms: 0, total: [], players: [], complete: false } }), { scope: 'observed' }).available, false);
+  // A personal chart for a character that dealt no damage is a flat line, not an error.
+  const flat = damageCurve(timelineRecord({ local_player_id: 9 }), { scope: 'personal' });
+  assert.equal(flat.available, true);
+  assert.equal(flat.totalDamage, 0);
+});
+
+test('raw samples take precedence over the stored timeline', () => {
+  const sampled = timelineRecord({ sample_complete: true, damage_samples: [{ timestamp_ms: 100500, amount: 77, player_id: 1, source: 1 }] });
+  const curve = damageCurve(sampled, { scope: 'personal' });
+  assert.equal(curve.summary, undefined);
+  assert.equal(curve.totalDamage, 77);
+});
+
+test('encounters keep a validated timeline through normalization', () => {
+  const kept = normalizeEncounter({ total_damage: 10, started_ms: 100000, timeline: timelineRecord().timeline });
+  assert.deepEqual(kept.timeline.total, [300, 0, 450]);
+  assert.equal(kept.timeline.players.length, 3);
+  assert.equal(kept.timeline.complete, true);
+  const bad = [null, 'x', {}, { interval_ms: 500, started_ms: 1, total: [1] }, { interval_ms: 1000, started_ms: 1, total: [1, -2] },
+    { interval_ms: 1000, started_ms: 1, total: [1, 2], players: [{ id: '1', damage: [1] }] }];
+  for (const timeline of bad.slice(0, 5)) assert.equal(normalizeEncounter({ total_damage: 10, timeline }).timeline.total.length, 0);
+  // A player series of the wrong length is dropped without discarding the rest.
+  assert.equal(normalizeEncounter({ total_damage: 10, timeline: bad[5] }).timeline.players.length, 0);
+  assert.equal(normalizeEncounter({ total_damage: 10, timeline: bad[5] }).timeline.total.length, 2);
+});

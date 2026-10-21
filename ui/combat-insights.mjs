@@ -1,3 +1,4 @@
+import { skillLabel } from './skill-names.mjs';
 // Local analysis of retained observations. A hit is never promoted to a cast,
 // and damage while an effect is present is not attributed causal bonus damage.
 const LIMITS = Object.freeze({ timeline: 1000, samples: 20000, effects: 256, health: 512, players: 100, skills: 500 });
@@ -52,7 +53,7 @@ function actors(record) {
     const skills = new Map();
     for (const skill of list(player.skills, LIMITS.skills)) {
       const skillId = identifier(skill?.id);
-      if (skillId !== null) skills.set(skillId, text(skill.name) || `Skill #${skillId}`);
+      if (skillId !== null) skills.set(skillId, text(skill.name) || skillLabel(skillId));
     }
     result.set(actor, { name: text(player.name) || `#${actor}`, skills });
   }
@@ -78,7 +79,7 @@ function observedData(record, options) {
     const key = `${at}:${actor}:${skill}:${target}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.casts.push({ ...row, elapsed_ms: at - window.start_ms, actor_name: names.get(actor)?.name || `#${actor}`, skill_name: names.get(actor)?.skills.get(skill) || `Skill #${skill}` });
+    result.casts.push({ ...row, elapsed_ms: at - window.start_ms, actor_name: names.get(actor)?.name || `#${actor}`, skill_name: names.get(actor)?.skills.get(skill) || skillLabel(skill) });
   }
   for (const sample of rawSamples.slice(0, LIMITS.samples)) {
     if (!object(sample)) { result.partial = true; continue; }
@@ -118,7 +119,7 @@ export function encounterInsights(record, options = {}) {
   const bySkill = new Map();
   const skillRow = (actor, skill) => {
     const key = `${actor}:${skill}`;
-    if (!bySkill.has(key)) bySkill.set(key, { actor_id: actor, actor_name: names.get(actor)?.name || `#${actor}`, skill_id: skill, skill_name: names.get(actor)?.skills.get(skill) || `Skill #${skill}`, cast_count: 0, damage_event_count: 0, tick_event_count: 0, observed_damage: 0, cast_times_ms: [], hit_times_ms: [] });
+    if (!bySkill.has(key)) bySkill.set(key, { actor_id: actor, actor_name: names.get(actor)?.name || `#${actor}`, skill_id: skill, skill_name: names.get(actor)?.skills.get(skill) || skillLabel(skill), cast_count: 0, damage_event_count: 0, tick_event_count: 0, observed_damage: 0, cast_times_ms: [], hit_times_ms: [] });
     return bySkill.get(key);
   };
   for (const cast of data.casts) { const row = skillRow(cast.actor_id, cast.skill_id); row.cast_count++; row.cast_times_ms.push(cast.at_ms); }
@@ -203,7 +204,7 @@ export function effectAttribution(record, options = {}) {
     // summon. Match the actual wire attacker, rather than credited player ID.
     const merged = mergeIntervals(row.intervals), matches = data.hits.filter(hit => hit.source_id === row.recipient_id && merged.some(interval => hit.at_ms >= interval.start_ms && hit.at_ms < interval.end_ms)), bySkill = new Map();
     for (const hit of matches) {
-      if (!bySkill.has(hit.skill_id)) bySkill.set(hit.skill_id, { skill_id: hit.skill_id, skill_name: names.get(hit.actor_id)?.skills.get(hit.skill_id) || `Skill #${hit.skill_id}`, damage_event_count: 0, tick_event_count: 0, observed_damage: 0 });
+      if (!bySkill.has(hit.skill_id)) bySkill.set(hit.skill_id, { skill_id: hit.skill_id, skill_name: names.get(hit.actor_id)?.skills.get(hit.skill_id) || skillLabel(hit.skill_id), damage_event_count: 0, tick_event_count: 0, observed_damage: 0 });
       const skill = bySkill.get(hit.skill_id); skill.damage_event_count++; skill.tick_event_count += Number(hit.tick); skill.observed_damage = Math.min(Number.MAX_SAFE_INTEGER, skill.observed_damage + hit.amount);
     }
     result.rows.push({ ...row, effect_ids: [...row.effect_ids], intervals: merged, observed_uptime_ms: sum(merged.map(interval => interval.end_ms - interval.start_ms)), uptime_fraction: sum(merged.map(interval => interval.end_ms - interval.start_ms)) / window.duration_ms, damage_event_count: matches.length, observed_damage: sum(matches.map(hit => hit.amount)), skills: [...bySkill.values()].sort((a, b) => b.observed_damage - a.observed_damage) });

@@ -1,3 +1,4 @@
+import { skillLabel, isPlaceholderSkillName } from './skill-names.mjs';
 import { spatialSnapshot } from './spatial.mjs';
 import { trainingState } from './analysis.mjs';
 import { assistanceState, encounterAssistance } from './assistance.mjs';
@@ -205,7 +206,7 @@ export function manualOdyle(plan, now = Date.now()) {
 
 export function normalizeSkill(skill = {}) {
   const quality = Object.fromEntries(['direction_1_hits', 'direction_2_hits', 'perfect_hits', 'double_hits', 'parry_hits', 'quality_hits', 'direct_hits', 'tick_hits'].map(key => [key, typeof skill[key] === 'number' && Number.isFinite(skill[key]) && skill[key] >= 0 ? skill[key] : null]));
-  return { ...quality, id: identifier(skill.id), name: str(skill.name, 100) || `Skill #${identifier(skill.id) || '?'}`, hits: Math.max(0, finite(skill.hits)), damage: Math.max(0, finite(skill.damage)), crit_hits: Math.max(0, finite(skill.crit_hits)), min: Math.max(0, finite(skill.min)), max: Math.max(0, finite(skill.max)) };
+  return { ...quality, id: identifier(skill.id), name: isPlaceholderSkillName(str(skill.name, 100)) ? skillLabel(identifier(skill.id)) : str(skill.name, 100), hits: Math.max(0, finite(skill.hits)), damage: Math.max(0, finite(skill.damage)), crit_hits: Math.max(0, finite(skill.crit_hits)), min: Math.max(0, finite(skill.min)), max: Math.max(0, finite(skill.max)) };
 }
 
 export function observedPlayerName(player = {}) {
@@ -339,6 +340,20 @@ function encounterSamples(rows, metric) {
   return (Array.isArray(rows) ? rows : []).slice(0, 20000).filter(row => row && Number.isSafeInteger(row.timestamp_ms) && row.timestamp_ms >= 0 && typeof row.amount === 'number' && Number.isFinite(row.amount) && row.amount >= 0 && row.amount <= Number.MAX_SAFE_INTEGER && (!row.metric || row.metric === metric)).map(row => ({ timestamp_ms: row.timestamp_ms, amount: row.amount, source: identifier(row.source), player_id: identifier(row.player_id ?? row.source), target: identifier(row.target), skill: identifier(row.skill), critical: row.critical === true, tick: row.tick === true, metric }));
 }
 
+/** Compact per-interval damage kept with every saved encounter (see the engine's DamageTimeline). */
+export function normalizeTimeline(value) {
+  const none = { interval_ms: 0, started_ms: 0, total: [], players: [], complete: false };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return none;
+  const interval = Number(value.interval_ms), started = Number(value.started_ms);
+  const series = list => Array.isArray(list) && list.length <= 1200 && list.every(item => Number.isFinite(item) && item >= 0) ? list.map(Number) : null;
+  const total = series(value.total);
+  if (!Number.isInteger(interval) || interval < 1000 || interval > 3_600_000 || !(started > 0) || !total?.length) return none;
+  const players = (Array.isArray(value.players) ? value.players : []).slice(0, 64)
+    .map(player => ({ id: identifier(player?.id), damage: series(player?.damage) }))
+    .filter(player => player.id && player.damage?.length === total.length);
+  return { interval_ms: interval, started_ms: started, total, players, complete: value.complete === true };
+}
+
 export function normalizeEncounter(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const actorScope = oneOf(value.actor_scope, ['personal', 'party', 'observed'], 'observed');
@@ -348,7 +363,7 @@ export function normalizeEncounter(value) {
   const timestamp = publishedTime && Date.parse(publishedTime) <= 253_402_300_799_999 ? publishedTime : Number.isFinite(value.started_ms) && value.started_ms > 0 && value.started_ms <= 253_402_300_799_999 ? new Date(value.started_ms).toISOString() : '';
   const samples = Array.isArray(value.damage_samples) ? value.damage_samples : [];
   const damageSamples = encounterSamples(samples, 'damage'), healingSamples = encounterSamples(value.healing_samples, 'healing');
-  return { spatial: spatialSnapshot(value.spatial), assist: encounterAssistance(value.assist), context: encounterContext(value.context), healing_samples: healingSamples, healing_sample_complete: value.healing_sample_complete === true && healingSamples.length === (value.healing_samples?.length || 0), source: oneOf(value.source, ['captured', 'imported', 'demo'], 'unknown'), stream_gaps: Math.max(0, finite(value.stream_gaps ?? value.diagnostics?.stream_gaps)), truncated: value.truncated === true || value.diagnostics?.truncated_encounter === true, ...identityState(value), timing_valid: value.timing_valid !== false && !(finite(value.elapsed_ms) <= 0 && finite(value.total_damage ?? value.damage) > 0), network_latency: normalizeLatencyHistory(value.network_latency, value), character_build: characterSnapshot({ own: value.character_build }).own, actor_scope: actorScope, provenance: value.provenance === 'imported-unverified' || value.source === 'imported' ? 'imported-unverified' : value.provenance === 'demo' ? 'demo' : 'received', id: identifier(value.id), name: str(value.name ?? value.target_name ?? value.targets?.[0]?.name, 100) || 'Encounter', timestamp, started_ms: Number.isFinite(value.started_ms) ? Math.max(0, value.started_ms) : null, ended_ms: Number.isFinite(value.ended_ms) ? Math.max(0, value.ended_ms) : null, sample_complete: value.sample_complete === true && damageSamples.length === samples.length, damage_samples: damageSamples, elapsed_ms: Math.max(0, finite(value.elapsed_ms)), total_damage: unknownScopedTotal ? null : Math.max(0, finite(value.total_damage ?? value.damage)), dps: nullableRate(value.dps), players: (Array.isArray(value.players) ? value.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(value.targets) ? value.targets : []).slice(0, 100).map(normalizeTarget) };
+  return { spatial: spatialSnapshot(value.spatial), timeline: normalizeTimeline(value.timeline), assist: encounterAssistance(value.assist), context: encounterContext(value.context), healing_samples: healingSamples, healing_sample_complete: value.healing_sample_complete === true && healingSamples.length === (value.healing_samples?.length || 0), source: oneOf(value.source, ['captured', 'imported', 'demo'], 'unknown'), stream_gaps: Math.max(0, finite(value.stream_gaps ?? value.diagnostics?.stream_gaps)), truncated: value.truncated === true || value.diagnostics?.truncated_encounter === true, ...identityState(value), timing_valid: value.timing_valid !== false && !(finite(value.elapsed_ms) <= 0 && finite(value.total_damage ?? value.damage) > 0), network_latency: normalizeLatencyHistory(value.network_latency, value), character_build: characterSnapshot({ own: value.character_build }).own, actor_scope: actorScope, provenance: value.provenance === 'imported-unverified' || value.source === 'imported' ? 'imported-unverified' : value.provenance === 'demo' ? 'demo' : 'received', id: identifier(value.id), name: str(value.name ?? value.target_name ?? value.targets?.[0]?.name, 100) || 'Encounter', timestamp, started_ms: Number.isFinite(value.started_ms) ? Math.max(0, value.started_ms) : null, ended_ms: Number.isFinite(value.ended_ms) ? Math.max(0, value.ended_ms) : null, sample_complete: value.sample_complete === true && damageSamples.length === samples.length, damage_samples: damageSamples, elapsed_ms: Math.max(0, finite(value.elapsed_ms)), total_damage: unknownScopedTotal ? null : Math.max(0, finite(value.total_damage ?? value.damage)), dps: nullableRate(value.dps), players: (Array.isArray(value.players) ? value.players : []).slice(0, 100).map(normalizePlayer), targets: (Array.isArray(value.targets) ? value.targets : []).slice(0, 100).map(normalizeTarget) };
 }
 
 function normalizeTarget(target = {}) {

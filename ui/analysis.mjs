@@ -12,12 +12,34 @@ export function trainingState(value = {}) {
   return { status: ['idle', 'armed', 'running', 'complete', 'cancelled'].includes(value.status) ? value.status : 'idle', duration_ms: duration, remaining_ms: Math.min(duration, metric(value.remaining_ms) ?? duration), total_damage: metric(value.total_damage) ?? 0, dps: metric(value.dps) ?? 0, started_ms: metric(value.started_ms), local_player_id: value.local_player_id === null || value.local_player_id === undefined ? null : id(value.local_player_id), target_id: value.target_id === null || value.target_id === undefined ? null : id(value.target_id), capture_incomplete: value.capture_incomplete === true };
 }
 
+const noCurve = () => ({ available: false, complete: false, points: [], bestBurst: null, activityMs: null, totalDamage: null });
+
+/** A chart from the compact per-interval series kept after the raw hit samples were dropped. */
+function timelineCurve(record, scope) {
+  const timeline = record?.timeline;
+  if (!timeline?.total?.length || !(timeline.interval_ms >= 1000)) return noCurve();
+  let series = timeline.total;
+  if (scope === 'personal') {
+    if (!['server', 'manual', 'name-match'].includes(record.local_identity_source) || record.local_player_id === null || record.local_player_id === undefined) return noCurve();
+    series = timeline.players.find(player => player.id === id(record.local_player_id))?.damage ?? timeline.total.map(() => 0);
+  } else if (scope === 'party') {
+    if (!['server', 'manual'].includes(record.party_membership_source)) return noCurve();
+    const members = new Set((record.party_member_ids || []).map(id));
+    series = timeline.total.map((_, index) => timeline.players.filter(player => members.has(player.id)).reduce((sum, player) => sum + player.damage[index], 0));
+  }
+  const interval = timeline.interval_ms;
+  const points = series.map((damage, index) => ({ at_ms: index * interval, damage, dps: damage * 1000 / interval }));
+  return { available: true, complete: false, summary: true, dataComplete: timeline.complete === true, points, bestBurst: null, activityMs: null,
+    totalDamage: series.reduce((sum, value) => sum + value, 0), interval_ms: interval, started_ms: timeline.started_ms, elapsed_ms: metric(record.elapsed_ms) ?? points.length * interval };
+}
+
 export function damageCurve(record, { scope = 'personal', intervalMs = 1000 } = {}) {
   const raw = Array.isArray(record?.damage_samples) ? record.damage_samples : [];
   let started = metric(record?.started_ms);
   let elapsed = metric(record?.elapsed_ms) ?? 0;
   const interval = [1000, 5000, 10000].includes(intervalMs) ? intervalMs : 1000;
-  if (started === null || elapsed <= 0 || raw.length === 0) return { available: false, complete: false, points: [], bestBurst: null, activityMs: null, totalDamage: null };
+  if (started === null || elapsed <= 0) return noCurve();
+  if (raw.length === 0) return timelineCurve(record, scope);
   let members = null;
   if (scope === 'personal') {
     if (!['server', 'manual', 'name-match'].includes(record.local_identity_source) || record.local_player_id === null || record.local_player_id === undefined) return { available: false, complete: false, points: [], bestBurst: null, activityMs: null, totalDamage: null };
