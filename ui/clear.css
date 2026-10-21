@@ -1,6 +1,8 @@
 /* Luma Clear: one meter, with additional tools opened intentionally. */
 .tools-button { display: none; }
 .clear-column-headings, .clear-roster-summary, .target-hp-percent { display: none; }
+.compact-status, .compact-summary { display: none; }
+.tools-status { padding: 9px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 12px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
 body.preview-frame:not(.fullscreen-overlay) { display: grid; place-items: center; background: #101419; }
 body.preview-frame:not(.fullscreen-overlay) > #meter { width: var(--preview-width); height: var(--preview-height); max-width: 100vw; max-height: 100vh; }
 body.preview-frame:not(.fullscreen-overlay) > #meter.compact-strip { height: 44px; }
@@ -164,56 +166,76 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-class-icon { colo
   #meter[data-layout=cupertino] .clear-column-headings { display: flex; flex-direction: column; align-items: flex-end; gap: 0; font-size: 9px; }
   #meter[data-layout=cupertino] .own-tag { margin-left: 1px; }
 }
-@container meter-size (max-height: 280px) {
-  #meter[data-layout=cupertino]:not(.compact-strip) > .topbar { flex-basis: 30px; height: 30px; }
-  #meter[data-layout=cupertino] > .encounter-header { padding: 4px 12px 2px; }
-  #meter[data-layout=cupertino] .target-line { min-height: 19px; }
-  #meter[data-layout=cupertino] .target-vitals { margin-top: 2px; min-height: 9px; }
-  #meter[data-layout=cupertino] > .metrics { padding: 5px 4px 7px; gap: 10px; }
-  #meter[data-layout=cupertino] .primary-metric { --metric-max: 26px; }
-  #meter[data-layout=cupertino] .secondary-metric { --metric-max: 23px; }
-  #meter[data-layout=cupertino] .metric-label { font-size: 8px; }
-  #meter[data-layout=cupertino] .metrics strong { margin-top: 2px; }
-  #meter[data-layout=cupertino] > .roster-controls { min-height: 26px; padding-block: 1px; }
-  #meter[data-layout=cupertino] .player { min-height: 32px; padding-block: 4px; }
-  #meter[data-layout=cupertino] > .footer { height: 29px; flex-basis: 29px; }
-  #meter[data-layout=cupertino] > .notice { font-size: 9px; max-height: 24px; padding-block: 3px; margin-bottom: 2px; white-space: nowrap; text-overflow: ellipsis; }
-  #meter[data-layout=cupertino] .tools-menu { top: 33px; }
-}
-@container meter-size (max-height: 230px) {
-  #meter[data-layout=cupertino]:not(.compact-strip) > .topbar { height: 28px; flex-basis: 28px; }
-  #meter[data-layout=cupertino] > .encounter-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 2px 12px 1px; gap: 2px 5px; }
-  #meter[data-layout=cupertino] .target-line { grid-column: 1 / -1; min-height: 18px; }
-  #meter[data-layout=cupertino] .target-line h1 { font-size: min(var(--target-size), 14px); line-height: 18px; }
-  #meter[data-layout=cupertino] .target-vitals { grid-column: 1 / -1; min-height: 3px; height: 3px; margin: 0; }
-  #meter[data-layout=cupertino] .target-vitals > i { height: 3px; }
-  #meter[data-layout=cupertino] .target-vitals > .target-hp-percent { display: none; }
-  #meter[data-layout=cupertino] .event-chip { grid-column: 2; grid-row: 1; margin: 0; min-height: 18px; max-width: 86px; padding: 1px 4px; }
-  #meter[data-layout=cupertino] .encounter-header:has(.event-chip:not([hidden])) .target-line { grid-column: 1; }
-  #meter[data-layout=cupertino] .event-chip #event-name { display: none; }
-  #meter[data-layout=cupertino] > .metrics { padding: 0 2px 1px; }
-  #meter[data-layout=cupertino] .primary-metric { --metric-max: 22px; }
-  #meter[data-layout=cupertino] .secondary-metric { --metric-max: 21px; }
-  #meter[data-layout=cupertino] .metrics strong { margin-top: 0; line-height: 1.1; }
-  #meter[data-layout=cupertino] > .roster-controls { min-height: 22px; height: 22px; padding-block: 0; }
-  #meter[data-layout=cupertino] .scope-label select { min-height: 22px; padding-block: 0; }
-  #meter[data-layout=cupertino] .clear-column-headings { flex-direction: row; gap: 5px; }
-  #meter[data-layout=cupertino] > .footer { height: 26px; flex-basis: 26px; min-height: 0; }
-  #meter[data-layout=cupertino] > .notice { padding: 2px 5px; font-size: 9px; line-height: 11px; max-height: 17px; }
-  #meter[data-layout=cupertino] .player { min-height: 30px; padding-block: 1px; }
-}
+/* The windowed HUD gives space to the roster. Summary stays in the footer;
+   warnings remain available from the persistent status button. */
+#meter[data-layout=cupertino]:not(.compact-strip) > .topbar { flex-basis: 24px; height: 24px; padding-inline: 9px; gap: 4px; }
+#meter[data-layout=cupertino] .topbar > .icon-button { height: 23px; width: 24px; }
+#meter[data-layout=cupertino] .brand { font-size: 10px; letter-spacing: 1px; }
+#meter[data-layout=cupertino] .brand-mark { font-size: 16px; }
+#meter[data-layout=cupertino] .compact-status { display: block; flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: #e3bb7b; font-size: 9px; font-weight: 650; }
+#meter[data-layout=cupertino] .compact-status[data-tone=error] { color: #ff9393; border-color: currentColor; }
+html[data-surface=light] #meter[data-layout=cupertino] .compact-status { color: #855318; }
+html[data-surface=light] #meter[data-layout=cupertino] .compact-status[data-tone=error] { color: #b52b36; }
+#meter[data-layout=cupertino] > .encounter-header { display: flex; flex-direction: column; padding: 0 10px 1px; gap: 1px; }
+#meter[data-layout=cupertino] .target-line { min-height: 19px; gap: 6px; }
+#meter[data-layout=cupertino] .target-line h1 { font-size: min(var(--target-size), 13px); line-height: 19px; }
+#meter[data-layout=cupertino] .combat-time { font-size: 10px; }
+#meter[data-layout=cupertino] .target-vitals { min-height: 3px; height: 3px; margin: 0; }
+#meter[data-layout=cupertino] .target-vitals > i { height: 3px; }
+#meter[data-layout=cupertino] .target-vitals > .target-hp-percent { display: none; }
+#meter[data-layout=cupertino] .event-chip { margin: 0; padding: 1px 5px; min-height: 18px; font-size: 10px; }
+#meter[data-layout=cupertino]:not(.compact-strip) > .metrics,
+#meter[data-layout=cupertino] > .notice { display: none; }
+#meter[data-layout=cupertino] > .roster-controls { min-height: 21px; height: 21px; padding: 0 10px; gap: 5px; }
+#meter[data-layout=cupertino] .scope-label select { font-size: 10px; min-height: 21px; height: 21px; padding-block: 0; }
+#meter[data-layout=cupertino] .clear-column-headings { display: grid; grid-template-columns: max(76px, calc(76px * var(--scale))) max(56px, calc(56px * var(--scale))); gap: 6px; font-size: 9px; margin-right: calc(var(--roster-gutter, 0px) + 4px); }
+#meter[data-layout=cupertino] > .roster-stage { padding: 0 6px; }
+#meter[data-layout=cupertino] #players { padding: 0; }
+#meter[data-layout=cupertino] #players .player { grid-template-columns: 12px minmax(0, 1fr) calc(max(76px, 76px * var(--scale)) + max(56px, 56px * var(--scale)) + 6px); gap: 4px; min-height: 20px; margin-bottom: 1px; padding: 1px 4px; border-radius: 4px; }
+#meter[data-layout=cupertino] .player-name-line { gap: 4px; line-height: 16px; }
+#meter[data-layout=cupertino] .player-name { font-size: max(11px, calc(11px * var(--scale))); line-height: 16px; }
+#meter[data-layout=cupertino] .rank { font-size: 9px; }
+#meter[data-layout=cupertino] .player-class-icon,
+#meter[data-layout=cupertino] .player-class-icon > svg { width: 16px; height: 16px; flex-basis: 16px; }
+#meter[data-layout=cupertino] .own-tag { display: none; }
+#meter[data-layout=cupertino] .player-numbers { display: grid; grid-template-columns: max(76px, calc(76px * var(--scale))) max(56px, calc(56px * var(--scale))); gap: 6px; }
+#meter[data-layout=cupertino] .player-numbers > .player-dps,
+#meter[data-layout=cupertino] .player-numbers > .player-damage { font-size: max(11px, calc(11px * var(--scale))); line-height: 16px; }
+#meter[data-layout=cupertino]:not([data-row-metric=both]) #players .player { grid-template-columns: 12px minmax(0, 1fr) 88px; }
+#meter[data-layout=cupertino]:not([data-row-metric=both]) .player-numbers { display: block; }
+#meter[data-layout=cupertino][data-density=comfortable] #players .player { min-height: 29px; padding-block: 5px; margin-bottom: 2px; }
+#meter[data-layout=cupertino][data-large-type=true] #players .player { grid-template-columns: 12px minmax(0, 1fr) calc(82px * var(--scale)); }
+#meter[data-layout=cupertino][data-large-type=true] .player-numbers { display: flex; flex-direction: column; gap: 0; }
+#meter[data-layout=cupertino][data-large-type=true] .player-name,
+#meter[data-layout=cupertino][data-large-type=true] .player-numbers > span { line-height: 1.3; }
+#meter[data-layout=cupertino][data-large-type=true] .clear-column-headings { display: flex; flex-direction: column; gap: 0; }
+#meter[data-layout=cupertino] > .footer { height: 22px; flex-basis: 22px; min-height: 0; padding: 0 6px; gap: 4px; }
+#meter[data-layout=cupertino] .footer .icon-button { height: 22px; width: 21px; }
+#meter[data-layout=cupertino] #analysis-button { font-size: 10px; padding: 2px; }
+#meter[data-layout=cupertino] .clear-roster-summary { display: none; }
+#meter[data-layout=cupertino]:not(.no-dps) .compact-summary { display: flex; flex: 1; min-width: 0; align-items: baseline; justify-content: center; gap: 6px; white-space: nowrap; font-size: 10px; font-variant-numeric: tabular-nums; }
+#meter[data-layout=cupertino] #compact-summary-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+#meter[data-layout=cupertino] #compact-summary-rate { color: var(--accent); font-size: 11px; }
+#meter[data-layout=cupertino] #compact-summary-damage { color: var(--muted); }
+#meter[data-layout=cupertino][data-summary-metric=dps] #compact-summary-damage,
+#meter[data-layout=cupertino][data-summary-metric=damage] #compact-summary-rate { display: none; }
+#meter[data-layout=cupertino] .tools-menu { top: 28px; }
 /* Detailed native fullscreen mode expands naturally rather than scaling a HUD. */
 body.fullscreen-dashboard #meter[data-layout=cupertino]:not(.compact-strip) { display: flex; --number-width: clamp(100px, 14vw, 200px); --damage-width: clamp(85px, 10vw, 150px); padding: 12px clamp(14px, 4vw, 64px); gap: 0; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] > .topbar { flex-basis: 44px; height: 44px; margin: 0; padding-inline: 0; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] > .encounter-header { min-height: 0; border: 0; border-radius: 0; background: transparent; padding: 12px 0 5px; margin: 0; }
-body.fullscreen-dashboard #meter[data-layout=cupertino] > .metrics { min-height: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 14px 0 18px; margin: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .metrics { display: grid; min-height: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 14px 0 18px; margin: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] > .notice { display: block; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .compact-status,
+body.fullscreen-dashboard #meter[data-layout=cupertino]:not(.no-dps) .compact-summary { display: none; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-roster-summary { display: block; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .primary-metric { --metric-max: 56px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .secondary-metric { --metric-max: 46px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .target-line h1 { font-size: clamp(20px, calc(var(--target-size) * 1.4), 36px); }
 body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-controls { padding: 7px 0; min-height: 40px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-stage { padding: 0; gap: 14px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .roster-list { background: transparent; border: 0; border-radius: 0; padding: 0; }
-body.fullscreen-dashboard #meter[data-layout=cupertino] .player { min-height: 52px; padding: 10px 14px; gap: 12px; grid-template-columns: 26px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] #players .player { min-height: 52px; padding: 10px 14px; gap: 12px; grid-template-columns: 26px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); margin-bottom: 3px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .player-name { font-size: max(14px, calc(16px * var(--scale))); }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers > .player-dps { font-size: max(14px, calc(18px * var(--scale))); }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers > .player-damage { font-size: max(13px, calc(16px * var(--scale))); }
@@ -233,13 +255,17 @@ body.fullscreen-dashboard #meter[data-layout=cupertino] .secondary-metric { text
 body.fullscreen-dashboard #meter[data-layout=cupertino] > .roster-controls { align-self: stretch; width: auto; justify-content: space-between; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label { flex: 1; max-width: none; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label select { width: auto; }
-body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-column-headings { margin-right: calc(var(--roster-gutter, 0px) + 15px); }
-body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers { column-gap: 8px; row-gap: 0; }
-body.fullscreen-dashboard #meter[data-layout=cupertino][data-density=comfortable] .player { min-height: 68px; padding-block: 15px; margin-bottom: 8px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-column-headings { display: grid; grid-template-columns: var(--number-width) var(--damage-width); margin-right: calc(var(--roster-gutter, 0px) + 15px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers { display: grid; grid-template-columns: var(--number-width) var(--damage-width); column-gap: 8px; row-gap: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino]:not([data-row-metric=both]) { --damage-width: 0px; }
+body.fullscreen-dashboard #meter[data-layout=cupertino]:not([data-row-metric=both]) .player-numbers,
+body.fullscreen-dashboard #meter[data-layout=cupertino]:not([data-row-metric=both]) .clear-column-headings { display: flex; justify-content: flex-end; }
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-large-type=true] #players .player { grid-template-columns: 26px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); }
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-density=comfortable] #players .player { min-height: 68px; padding-block: 15px; margin-bottom: 8px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-class,
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-share,
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-cooldown { display: none; }
-#meter[data-layout=cupertino][data-cube-dock=true] .player { grid-template-columns: 14px minmax(0, 1fr) 89px; gap: 5px; }
+#meter[data-layout=cupertino][data-cube-dock=true] #players .player { grid-template-columns: 14px minmax(0, 1fr) 89px; gap: 5px; }
 #meter[data-layout=cupertino][data-cube-dock=true] .player-numbers { display: flex; flex-direction: column; align-items: flex-end; gap: 0; }
 #meter[data-layout=cupertino][data-cube-dock=true] .clear-column-headings { display: none; }
 #meter[data-layout=cupertino].compact-strip { display: grid; }

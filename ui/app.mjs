@@ -193,6 +193,11 @@ if (telemetryDemo && targetPetDemo) {
     recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
 if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
+if (demo && new URLSearchParams(location.search).get('identityDemo') === 'unknown') {
+  state = normalizeState({ ...state, local_player_id: null, local_player_name: '', local_identity_source: 'unresolved',
+    personal_total_damage: null, personal_dps: null, personal_elapsed_ms: null, personal_targets: [],
+    players: state.players.map(player => ({ ...player, is_local: false })) });
+}
 
 const words = {
   tr: {
@@ -553,6 +558,7 @@ function toolsMenuContent() {
   const item = (action, label) => `<button type="button" data-tools-action="${action}">${label}<span aria-hidden="true">↗</span></button>`;
   return `<div class="tools-menu-heading"><strong>${pair('Araçlar ve görünüm', 'Tools and appearance')}</strong><button type="button" class="icon-button" data-tools-action="close" aria-label="${t('close')}">×</button></div>
     <div class="tools-menu-scroll">
+    <section id="tools-status" class="tools-status" role="status" hidden></section>
     <div class="tools-links">${item('pets', pair('Pet rehberi', 'Pet guide'))}${item('radar-details', 'Radar')}${item('playback', 'Replay')}${item('team', pair('Takım cooldown’ları', 'Team cooldowns'))}${item('calendar', pair('Etkinlikler', 'Events'))}${item('cube', pair('Küp sesi', 'Cube audio'))}${item('character', pair('Karakterim', 'My character'))}${item('history', pair('Geçmiş', 'History'))}${item('records', pair('Rekorlar', 'Personal bests'))}${item('community', pair('Sıralama ve paylaşım', 'Rankings and sharing'))}</div>
     <h3>${pair('Ana ekranda göster', 'Show in the meter')}</h3>
     <div class="tools-toggles">${[['dps', pair('DPS listesi', 'DPS roster')], ['pets', pair('Pet takibi', 'Pet tracker')], ['radar', 'Radar'], ['events', pair('Etkinlik saati', 'Event timer')], ['team', pair('Takım kısayolu', 'Team shortcut')], ['odyle', 'Odyle']].map(([name, label]) => `<label><span>${label}</span><input type="checkbox" data-hud-panel="${name}"></label>`).join('')}</div>
@@ -572,6 +578,9 @@ function renderToolsMenu() {
   const host = $('#tools-menu');
   if (toolsLocale !== prefs.locale || !host.childElementCount) { host.innerHTML = toolsMenuContent(); toolsLocale = prefs.locale; }
   setAttribute(host, 'aria-label', $('#tools-button').title);
+  const status = $('#tools-status'), notice = $('#notice');
+  status.hidden = notice.hidden;
+  setText(status, notice.title || notice.textContent);
   for (const input of host.querySelectorAll('[data-hud-panel]')) {
     const name = input.dataset.hudPanel;
     input.checked = name === 'dps' ? prefs.displayModules.dps : name === 'radar' ? prefs.radarOpen : hudPanelVisible(prefs, name) && (name !== 'pets' || prefs.showPetTracker);
@@ -745,6 +754,16 @@ function renderMeter() {
     notice.hidden = false; notice.classList.add('warning');
     setText(notice, measurementMessage(measurement, targetView));
   }
+  const compactStatus = $('#compact-status');
+  compactStatus.hidden = notice.hidden;
+  setText(compactStatus, status.kind === 'demo' ? 'DEMO' : '!');
+  compactStatus.dataset.tone = status.tone;
+  compactStatus.title = notice.title = [...new Set([notice.textContent, status.message, status.detail].filter(Boolean))].join('\n');
+  setAttribute(compactStatus, 'aria-label', `${prefs.locale === 'tr' ? 'Ölçüm durumu' : 'Measurement status'}: ${notice.textContent}`);
+  setText($('#compact-summary-label'), prefs.locale === 'tr' ? {personal:'Sen', party:'Takım', observed:'Yakın'}[prefs.damageScope] : {personal:'You', party:'Party', observed:'Nearby'}[prefs.damageScope]);
+  setText($('#compact-summary-rate'), $('#dps-value').textContent);
+  setText($('#compact-summary-damage'), $('#damage-value').textContent);
+  $('#compact-summary').title = `${$('#dps-label').textContent}: ${$('#dps-value').textContent} · ${$('#damage-label').textContent}: ${$('#damage-value').textContent}`;
   const rosterCaption = targetScoped ? (prefs.locale === 'tr' ? 'Hedef' : 'Target') : prefs.rosterScope === 'personal' ? (prefs.locale === 'tr' ? 'Sen' : 'You') : prefs.rosterScope === 'party' && !scopes.fallback ? (prefs.locale === 'tr' ? 'Takım' : 'Party') : (prefs.locale === 'tr' ? 'Yakın' : 'Nearby');
   setText($('#clear-roster-summary'), `${rosterCaption} ${roster.known ? rate(roster.dps) : '—'}`);
   $('#clear-roster-summary').title = targetScoped ? $('#target-roster-strip').title : $('#damage-scope').title;
@@ -2459,6 +2478,10 @@ function openCaptureDiagnostics(event) {
 }
 $('#notice').addEventListener('click', openCaptureDiagnostics);
 $('#notice').addEventListener('keydown', openCaptureDiagnostics);
+$('#compact-status').addEventListener('click', () => {
+  if (!toolsOpen) openTools();
+  $('#tools-status')?.scrollIntoView({ block: 'nearest' });
+});
 window.addEventListener('resize', syncOverlayGeometry);
 window.addEventListener('blur', () => { if (hudGesture) finishHudGesture({ pointerId: hudGesture.pointerId }); });
 if (typeof ResizeObserver === 'function') {

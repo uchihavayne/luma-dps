@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24.1 · 21 October 2026
+
+- Made the windowed Luma Clear interface a roster-first HUD. Personal DPS and total damage stay in the footer; target name, duration and received HP remain above the list. Resizing no longer switches to large summary cards that crowd out players.
+- Kept class symbols, player names, DPS and total damage on one compact row. At the default text size and compact density, a 320×200 window fits five complete rows even with target HP; additional players remain scrollable. Larger text and comfortable density stay optional.
+- Replaced full-width status banners in the windowed Clear layout with a persistent status button. It opens the complete message and tools menu; unresolved identity remains unknown and observed damage is not assigned to personal totals. Fullscreen, other layouts, optional tools and collection/capture behavior remain available.
+
 ## 0.24.0 · 21 October 2026
 
 - Reworked Luma Clear around a quiet header, target HP, personal/selected summary and aligned DPS/total-damage columns. Additional tools and display options are available from one overflow menu; the existing analysis, sharing and settings pages remain available.

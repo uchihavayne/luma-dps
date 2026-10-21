@@ -17,6 +17,7 @@
   <main id="meter" class="meter" aria-label="Luma DPS">
     <header class="topbar">
       <div class="brand" id="drag-region"><span class="brand-mark" aria-hidden="true">◈</span><span>LUMA <small>DPS</small></span></div>
+      <button id="compact-status" class="compact-status" aria-label="Ölçüm durumu" hidden>!</button>
       <button id="identity-button" class="identity-button" aria-label="Karakterini seç"><span aria-hidden="true">◎</span><span id="identity-name">Karakter</span></button>
       <span id="connection" class="connection" role="status" aria-live="polite"><i aria-hidden="true"></i><span>—</span><small id="latency-chip" class="latency-chip" hidden>— ms</small></span>
       <button id="cube-entry" class="cube-entry" aria-label="Hidden Cube ses ayarları" title="Hidden Cube ses ayarları"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></svg><i aria-hidden="true"></i></button>
@@ -70,6 +71,7 @@
       <div class="footer-controls"><button id="pause-button" class="icon-button" aria-label="Duraklat" title="Duraklat">Ⅱ</button><button id="reset-button" class="icon-button" aria-label="Sıfırla" title="Sıfırla"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.2 5.5A6 6 0 1 1 4 12M5 2.5v4H1"/></svg></button><button id="lock-button" class="icon-button" aria-label="Kilitle" aria-pressed="false" title="Kilitle">◇</button><button id="training-button" class="icon-button" aria-label="Süreli antrenman" title="Süreli antrenman"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="11" r="6"/><path d="M10 11V7m-2-5h4m-2 0v3m4.5.5L16 4"/></svg></button></div>
       <div id="roster-summary" class="roster-summary" aria-label="DPS kapsamları"><span data-summary-scope="personal"><small>BEN</small><strong>—</strong></span><span data-summary-scope="party"><small>TAKIM</small><strong>—</strong></span><span data-summary-scope="observed"><small>YAKIN</small><strong>—</strong></span></div>
       <span id="clear-roster-summary" class="clear-roster-summary"></span>
+      <span id="compact-summary" class="compact-summary"><span id="compact-summary-label"></span><b id="compact-summary-rate"></b><span id="compact-summary-damage"></span></span>
       <button id="dps-view-button" class="text-button" hidden>DPS’i aç</button><button id="analysis-button" class="text-button">Analiz ↗</button>
       <button id="resize-button" class="resize-button" aria-label="Pencereyi yeniden boyutlandır" title="Pencereyi yeniden boyutlandır"><span aria-hidden="true">◢</span></button>
     </footer>
