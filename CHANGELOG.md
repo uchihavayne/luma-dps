@@ -4,7 +4,7 @@
 
 - Fixed anonymous periodic sources crowding out named players in the main roster. Damage alone no longer identifies a HUD player: received player/class identity, local identity or confirmed party membership is required. Unclassified sources and their amounts remain in the encounter and analysis data; this does not guess their owners or change personal damage.
 - Fit up to twelve HUD players to the available space automatically. Five players fit a 320×200 window without scrolling. Text stays at least 11px; when a larger roster needs more space, the native window minimum height grows within the monitor work area instead of making text unreadable. Saved density and text size remain preferred sizes within that fit.
-- Use received party names for their matching actors and retain confirmed zero-hit members. Names received before an actor binding show unknown DPS rather than a fabricated zero. A changed live party cannot relabel a previous encounter.
+- Use received party names for their matching actors and retain members whose combat row has not arrived. A missing combat row shows unknown DPS rather than a fabricated zero; an explicitly received zero stays zero. A changed live party cannot relabel a previous encounter.
 - Reset stale roster scroll positions when the encounter or scope changes. Cover named players plus unbound periodic sources, missing actor bindings, small-window fitting and bounded native minimum sizing with regression checks. Recorded encounter checks leave the original damage data unchanged; synchronized live combat accuracy remains a separate validation.
 
 ## 0.24.1 · 21 October 2026

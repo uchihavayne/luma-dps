@@ -22,7 +22,7 @@ test('known classes, own identity and confirmed party members survive a delayed 
   assert.equal(mainRoster([{ id: '42', name: '#42', damage: 100 }], { party_membership_source: 'server', party_member_ids: [42] }).players.length, 1);
 });
 
-test('a received party name resolves only its actor and zero-hit members remain visible', () => {
+test('party names resolve only their actors; a missing damage row is unknown and a received zero stays zero', () => {
   const state = { encounter_active: true, local_player_id: 1, party_member_ids: [1, 2], party_membership_source: 'server', party_identity_roster: { source: 'server', members: [
     { actor_id: 1, name: 'Local', class_name: 'Ranger', identity_confirmed: true },
     { actor_id: 2, name: 'Healer', class_name: 'Cleric', identity_confirmed: true },
@@ -31,7 +31,10 @@ test('a received party name resolves only its actor and zero-hit members remain 
   const result = mainRoster([{ id: '1', name: '#1', damage: 100, dps: 10 }], state);
   assert.deepEqual(result.players.map(row => row.name), ['Local', 'Healer', 'Joining']);
   assert.equal(result.players[0].damage, 100);
-  assert.equal(result.players[1].dps, 0);
+  assert.equal(result.players[1].dps, null);
+  assert.equal(result.players[1].damage, null);
+  const zero = mainRoster([{ id: '2', name: 'Healer', damage: 0, dps: 0, identity_confirmed: true }], state);
+  assert.equal(zero.players.find(row => row.id === '2').dps, 0);
   assert.equal(result.players[2].dps, null);
   assert.equal(result.players[2].pending_actor, true);
   assert.equal(mainRoster([], state, { scope: 'personal' }).players.length, 0);
