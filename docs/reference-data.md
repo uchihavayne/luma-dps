@@ -18,6 +18,12 @@ The same revision's `Client/assets/aion2/npcs/boss_npcs.json` supplies 559 exact
 
 Current and maximum HP still come from received health observations. Name lookup does not manufacture HP, infer maximum HP from the first reading, or subtract damage from a guessed maximum. A stale value is marked as last received. A known maximum enables a percentage; otherwise the bar is striped and displays the received current amount. A confirmed NPC death supplies zero current HP.
 
+## Skill names
+
+`ui/skill-names.mjs` holds 16,899 English skill id/name pairs copied unchanged from `Client/assets/aion2/skills/skill_names.json` in the same repository (revision `7e37d59b0a783a0685b8131cc50ef82cb7878ded`, file SHA-256 `8d5e30edb81d37f8f0735044a7b6ebf98e82ccdf25055be00752ff90abdcba9f`). The file states no terms of its own beyond the repository's MIT license, and its README says it was generated from the Aion 2 client database, so the names belong to NCSOFT. See [the notice](../dependency-notices/aion-dps-meter-skill-names.txt). Including it was a decision of the project owner; deleting `ui/skill-names.mjs` falls back to `Skill #<id>` everywhere.
+
+A name is resolved only from the received numeric skill id, after the record's own name when it carries a real one. A real match covered 295 of 297 skill ids and all of the damage in one reviewed local history. Only damage and healing skill rows, rotation, reports, cooldown and windup labels use it; buff and effect ids have no table.
+
 ## Reviewed implementation differences
 
 The reference meter resolves non-boss monster names through an NPC table, while Luma previously relied on optional spawn text. Luma now uses the same exact NPC-id lookup approach with the attributed data above. Its transparent meter, display preferences, scope totals and capture pipeline remain Luma's implementation. This change does not establish complete feature parity or certify live combat accuracy on every server version.

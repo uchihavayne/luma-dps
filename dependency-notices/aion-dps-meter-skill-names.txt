@@ -1,0 +1,42 @@
+AION 2 skill-name table (ui/skill-names.mjs)
+
+Source:      https://github.com/SkeeveAN/Aion-DPS-Meter
+Revision:    7e37d59b0a783a0685b8131cc50ef82cb7878ded
+File:        Client/assets/aion2/skills/skill_names.json
+File SHA-256: 8d5e30edb81d37f8f0735044a7b6ebf98e82ccdf25055be00752ff90abdcba9f
+Entries:     16,899 skill id -> English name pairs, copied unchanged (sorted by id).
+
+Provenance and terms, as stated by the source:
+- The repository is published under the MIT License reproduced below.
+- The table's own README states no separate license or redistribution terms. It says the files
+  come from the installed aion2t.com DPS meter, whose headers say they were generated from the
+  Aion 2 client database. Skill names belong to NCSOFT.
+- Including this table was a decision of the project owner. It is a single replaceable file:
+  delete ui/skill-names.mjs and every label falls back to "Skill #<id>".
+
+Luma resolves a name only from the received numeric skill id; nothing is guessed from damage,
+class or order.
+
+----- MIT License of the source repository -----
+
+MIT License
+
+Copyright (c) 2026 SkeeveTV
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
