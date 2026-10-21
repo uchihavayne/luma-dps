@@ -88,6 +88,9 @@ body.preview-frame:not(.fullscreen-overlay) > #meter.compact-strip { height: 44p
 #meter[data-layout=cupertino] .players { padding: 0 0 5px; overflow: visible; display: block; }
 #meter[data-layout=cupertino] .player { position: relative; isolation: isolate; display: grid; grid-template-columns: 17px minmax(0, 1fr) calc(var(--number-width) + var(--damage-width) + 8px); align-items: center; gap: 7px; padding: 7px 5px; min-height: 36px; margin: 0 0 3px; border: 1px solid transparent; border-radius: 7px; background: transparent; }
 #meter[data-layout=cupertino] .player:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+#meter[data-layout=cupertino][data-density=comfortable] .player { min-height: 46px; padding-block: 11px; margin-bottom: 5px; }
+#meter[data-layout=cupertino][data-summary-metric=dps] > .metrics,
+#meter[data-layout=cupertino][data-summary-metric=damage] > .metrics { grid-template-columns: minmax(0, 1fr); }
 #meter[data-layout=cupertino] .player-bar { inset: 0; opacity: .2; border-radius: 6px; background: var(--bar-color, var(--class-color)); transform: scaleX(var(--share)); }
 #meter[data-layout=cupertino] .player::before { display: none; }
 #meter[data-layout=cupertino] .player.is-own { border-color: color-mix(in srgb, var(--accent) 60%, transparent); background: color-mix(in srgb, var(--accent) 4%, transparent); box-shadow: none; }
@@ -232,6 +235,7 @@ body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label { flex: 1; 
 body.fullscreen-dashboard #meter[data-layout=cupertino] .scope-label select { width: auto; }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .clear-column-headings { margin-right: calc(var(--roster-gutter, 0px) + 15px); }
 body.fullscreen-dashboard #meter[data-layout=cupertino] .player-numbers { column-gap: 8px; row-gap: 0; }
+body.fullscreen-dashboard #meter[data-layout=cupertino][data-density=comfortable] .player { min-height: 68px; padding-block: 15px; margin-bottom: 8px; }
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-class,
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-share,
 body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] .player-cooldown { display: none; }
