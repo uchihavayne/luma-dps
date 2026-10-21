@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0 · 21 October 2026
+
+- Added an integrated coordinate radar with 20–200 metre ranges, party/creature/pet filters and pet pin actions. Only received positions are shown; cast aim points remain separate from actor positions.
+- Added local encounter replay with play/pause, scrubbing, speed controls and self/party/observed retained-hit totals. New recordings retain bounded position paths and actor generations; older recordings play their available hit timeline.
+- Recovered nearby names from a bounded typed nickname profile and preserved home servers in acting-player appearance frames. Permanent character-list IDs are not substituted for combat actor IDs. Added Brawler class metadata.
+- Fixed old capture gaps permanently disqualifying subsequent clean boss-DPS bests and completeness checks. Gaps during the active encounter still invalidate coverage.
+- Kept radar controls stable during updates. Scoped JSON preserves selected spatial data; anonymous exports omit paths and embedded identities. No complete server-wide Top 10, calibrated world bearing or complete feature parity is claimed.
+
 ## 0.22.0 · 21 October 2026
 
 - Add automatic highest-single-PvE-hit records for server-identified self and confirmed game-party members, keyed by received character/home server/class. Ties and smaller hits do not create records. Received summon-owner attribution is respected; nearby strangers and manual rosters cannot establish party records.

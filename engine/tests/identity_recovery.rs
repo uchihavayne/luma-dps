@@ -109,11 +109,12 @@ fn player_appearance_names_the_acting_combat_id_without_promoting_self_or_target
         .collect();
     assert_eq!(
         decode(&bytes).unwrap(),
-        Some(Event::Identity {
-            id: 1086,
-            name: "Aahz".into(),
-            class: None,
-            own: false,
+        Some(Event::MemberProfiles {
+            members: vec![luma_engine::packets::MemberProfile {
+                id: 1086,
+                server: 1304,
+                name: "Aahz".into()
+            }]
         })
     );
     let mut engine = MeterEngine::default();
@@ -135,11 +136,12 @@ fn appearance_handles_self_target_unicode_and_all_home_servers_without_name_scan
         bytes.extend(b"Guild");
         assert_eq!(
             decode(&bytes).unwrap(),
-            Some(Event::Identity {
-                id: 42,
-                name: name.into(),
-                class: None,
-                own: false,
+            Some(Event::MemberProfiles {
+                members: vec![luma_engine::packets::MemberProfile {
+                    id: 42,
+                    server,
+                    name: name.into()
+                }]
             })
         );
     }
@@ -151,7 +153,7 @@ fn incomplete_or_malformed_appearance_does_not_become_a_name_or_owner_guess() {
     for end in 0..bytes.len() {
         assert!(!matches!(
             decode(&bytes[..end]),
-            Ok(Some(Event::Identity { .. }))
+            Ok(Some(Event::Identity { .. } | Event::MemberProfiles { .. }))
         ));
     }
     for bytes in [

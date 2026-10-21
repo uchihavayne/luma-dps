@@ -46,6 +46,7 @@ pub enum Event {
         zone_id: u32,
     },
     Assistance(crate::assistance::AssistEvent),
+    Position(crate::spatial::Observation),
     FieldBoss(crate::field_boss::FieldBossEvent),
     Character(crate::character::CharacterEvent),
     Resource(crate::resources::ResourceEvent),
@@ -234,13 +235,59 @@ fn character_identity(
     })
 }
 
+/// A bounded nickname prefix followed by the complete typed character suffix:
+/// server u16, class u32, faction byte and level u32. A name-shaped guild or
+/// chat string without this suffix cannot establish a combat actor identity.
+fn nearby_profile(frame: &[u8], id: u64, prefix: usize) -> Result<Option<Event>, ReadError> {
+    let mut result = None;
+    for at in prefix..frame.len().min(prefix + 17) {
+        let mut reader = Bytes {
+            data: frame,
+            offset: at,
+        };
+        let Ok(name) = reader.character_text() else {
+            continue;
+        };
+        let after = reader.offset;
+        let Some(tail) = frame.get(after..after + 11) else {
+            continue;
+        };
+        let server = u16::from_le_bytes([tail[0], tail[1]]);
+        let class = u32::from_le_bytes(tail[2..6].try_into().map_err(|_| ReadError::Invalid)?);
+        let level = u32::from_le_bytes(tail[7..11].try_into().map_err(|_| ReadError::Invalid)?);
+        if !(1000..3000).contains(&server)
+            || !(5..=40).contains(&class)
+            || ![1, 2].contains(&tail[6])
+            || !(1..=100).contains(&level)
+        {
+            continue;
+        }
+        let event = Event::Updates(vec![
+            Event::Identity {
+                id,
+                name: name.clone(),
+                class: Some(class),
+                own: false,
+            },
+            Event::MemberProfiles {
+                members: vec![MemberProfile { id, name, server }],
+            },
+        ]);
+        if result.as_ref().is_some_and(|old| *old != event) {
+            return Err(ReadError::Invalid);
+        }
+        result = Some(event);
+    }
+    Ok(result)
+}
+
 // The subtree position has two documented mask widths. Names at any other
 // position in an opaque packet are not a source of entity identity.
 fn npc_subtree(
     data: &[u8],
     mask_start: usize,
     width: usize,
-) -> Result<(Option<String>, u32), ReadError> {
+) -> Result<(Option<String>, u32, usize), ReadError> {
     let mut bytes = Bytes {
         data,
         offset: mask_start + width,
@@ -255,7 +302,7 @@ fn npc_subtree(
     if !(100_000..=9_999_999).contains(&model) {
         return Err(ReadError::Invalid);
     }
-    Ok((name, model))
+    Ok((name, model, bytes.offset))
 }
 
 fn explicit_spawn_owner(frame: &[u8], id: u64) -> Option<u64> {
@@ -553,12 +600,24 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
     let Some(opcode) = frame.get(..2) else {
         return Err(ReadError::Short);
     };
+    if let Some(position) = crate::spatial::position(frame) {
+        return Ok(Some(Event::Position(position)));
+    }
     if matches!(
         opcode,
         [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d] | [5, 0xe0]
     ) {
         return crate::assistance::decode(frame)
-            .map(|event| event.map(Event::Assistance))
+            .map(|event| {
+                event.map(|event| {
+                    let event = Event::Assistance(event);
+                    if let Some(position) = crate::assistance::local_effect_position(frame) {
+                        Event::Updates(vec![event, Event::Position(position)])
+                    } else {
+                        event
+                    }
+                })
+            })
             .map_err(|_| ReadError::Invalid);
     }
     if opcode == [1, 0x91] {
@@ -615,7 +674,25 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             if !(1..=10_000_000).contains(&zone_id) {
                 return Err(ReadError::Invalid);
             }
-            Ok(Some(Event::ZoneChange { zone_id }))
+            let zone = Event::ZoneChange { zone_id };
+            if let (Some(x), Some(y)) = (frame.get(18..22), frame.get(22..26)) {
+                let x = f32::from_le_bytes(x.try_into().map_err(|_| ReadError::Invalid)?);
+                let y = f32::from_le_bytes(y.try_into().map_err(|_| ReadError::Invalid)?);
+                if crate::spatial::coordinates(x, y, None) && x.abs() > 100.0 && y.abs() > 100.0 {
+                    return Ok(Some(Event::Updates(vec![
+                        zone,
+                        Event::Position(crate::spatial::Observation {
+                            actor_id: 0,
+                            x,
+                            y,
+                            z: None,
+                            source: "server-zone".into(),
+                            local_only: true,
+                        }),
+                    ])));
+                }
+            }
+            Ok(Some(zone))
         }
         [4, 0x38] => {
             let target = u64::from(bytes.variable()?);
@@ -717,6 +794,11 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 return Ok(None);
             }
             let prefix = bytes.offset;
+            if !own {
+                if let Some(profile) = nearby_profile(frame, id, prefix)? {
+                    return Ok(Some(profile));
+                }
+            }
             let fixed = (|| {
                 bytes.word()?;
                 let mask = bytes.byte()?;
@@ -777,7 +859,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             }
             let narrow = npc_subtree(frame, mask_start, 2).ok();
             let wide = npc_subtree(frame, mask_start, 4).ok();
-            let (name, model) = match (narrow, wide) {
+            let (name, model, model_end) = match (narrow, wide) {
                 (Some(a), Some(b)) if a != b => return Err(ReadError::Invalid),
                 (Some(a), _) | (_, Some(a)) => a,
                 _ => return Ok(None),
@@ -792,10 +874,31 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 model,
                 kind: if owner.is_some() { 0x5f } else { kind },
             };
-            Ok(Some(if let Some(owner) = owner {
-                Event::Updates(vec![spawn, Event::Owner { id, owner }])
+            let mut events = vec![spawn];
+            if let Some(owner) = owner {
+                events.push(Event::Owner { id, owner });
+            }
+            if let (Some(x), Some(y)) = (
+                frame.get(model_end + 2..model_end + 6),
+                frame.get(model_end + 6..model_end + 10),
+            ) {
+                let x = f32::from_le_bytes(x.try_into().map_err(|_| ReadError::Invalid)?);
+                let y = f32::from_le_bytes(y.try_into().map_err(|_| ReadError::Invalid)?);
+                if crate::spatial::coordinates(x, y, None) && x.abs() > 1.0 && y.abs() > 1.0 {
+                    events.push(Event::Position(crate::spatial::Observation {
+                        actor_id: id,
+                        x,
+                        y,
+                        z: None,
+                        source: "server-spawn".into(),
+                        local_only: false,
+                    }));
+                }
+            }
+            Ok(Some(if events.len() == 1 {
+                events.remove(0)
             } else {
-                spawn
+                Event::Updates(events)
             }))
         }
         [4, 0x8d] => {
@@ -822,11 +925,12 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                     return Err(ReadError::Invalid);
                 }
                 let name = bytes.character_text()?;
-                return Ok(Some(Event::Identity {
-                    id: owner,
-                    name,
-                    class: None,
-                    own: false,
+                return Ok(Some(Event::MemberProfiles {
+                    members: vec![MemberProfile {
+                        id: owner,
+                        name,
+                        server,
+                    }],
                 }));
             }
             // A bare target/skill/actor prefix is not verified ownership.

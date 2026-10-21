@@ -128,6 +128,36 @@ fn character_snapshots_follow_canonical_variable_prefix_widths_and_received_clas
 }
 
 #[test]
+fn nearby_typed_profiles_recover_names_across_prefix_widths_and_preserve_home_server() {
+    for opcode in [0x44, 0x45] {
+        for width in [0, 2, 4, 8, 12] {
+            let mut frame = vec![opcode, 0x36];
+            frame.extend(variable(17500));
+            frame.extend(vec![0xff; width]);
+            frame.push(6);
+            frame.extend(b"Archer");
+            frame.extend(1304u16.to_le_bytes());
+            frame.extend(14u32.to_le_bytes());
+            frame.push(1);
+            frame.extend(45u32.to_le_bytes());
+            let mut e = MeterEngine::default();
+            hit(&mut e, 17500, 88, 100, 1000);
+            apply(&mut e, &frame, 1100);
+            let s = e.live_state(1200);
+            assert_eq!(s.players[0].name, "Archer");
+            assert!(s.players[0].identity_confirmed);
+            assert_eq!(s.local_player_id, None);
+            // Incomplete suffixes cannot be mistaken for a full server profile.
+            for end in 0..frame.len() {
+                assert!(
+                    !matches!(decode(&frame[..end]),Ok(Some(Event::Updates(events))) if events.iter().any(|e|matches!(e,Event::MemberProfiles{..})))
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn variable_prefix_requires_a_real_class_suffix_and_never_searches_later_guild_names() {
     let frame = snapshot(0x45, 128, 16384, "Support");
     for end in 0..frame.len() {

@@ -109,7 +109,7 @@ test('display modules persist a recoverable pet-only view independently of captu
   const before = normalizePreferences({ cubeAutoListen: true, showCubeLocator: true, petPins: [1002], damageScope: 'party', compactStrip: true });
   const pets = normalizePreferences({ ...before, displayModules: displayModulePreset('pets') });
   assert.equal(petOnlyDisplay(pets), true);
-  assert.deepEqual(visibleAnalysisSections(ANALYSIS_SECTIONS, pets), ['pets']);
+  assert.deepEqual(visibleAnalysisSections(ANALYSIS_SECTIONS, pets), ['radar', 'pets']);
   assert.deepEqual(visibleSettingsSections(SETTINGS_SECTIONS, pets), ['appearance', 'character', 'controls', 'about']);
   for (const key of ['cubeAutoListen', 'showCubeLocator', 'petPins', 'damageScope', 'compactStrip']) assert.deepEqual(pets[key], before[key]);
   assert.deepEqual(normalizePreferences(JSON.parse(JSON.stringify(pets))), pets);

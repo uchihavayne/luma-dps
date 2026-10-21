@@ -55,6 +55,46 @@ pub struct EffectObservation {
     pub refreshed: bool,
 }
 
+/// The optional trailing coordinates report the caster's place. They are
+/// eligible only for already confirmed local self, never a new self identity.
+pub fn local_effect_position(frame: &[u8]) -> Option<crate::spatial::Observation> {
+    let opcode = frame.get(..2)?;
+    if !matches!(opcode, [0x2a, 0x38] | [0x2b, 0x38]) || frame.len() > MAX_FRAME {
+        return None;
+    }
+    let mut reader = Reader {
+        bytes: frame,
+        offset: 2,
+    };
+    reader.actor().ok()?;
+    if opcode[0] == 0x2a && reader.byte().ok()? != 1 {
+        return None;
+    }
+    reader.byte().ok()?;
+    reader.actor().ok()?;
+    reader.take::<20>().ok()?;
+    let actor_id = reader.actor().ok()?;
+    let start = frame.len().checked_sub(12)?;
+    if start <= reader.offset {
+        return None;
+    }
+    let mut tail = Reader {
+        bytes: frame,
+        offset: start,
+    };
+    let x = tail.float(500000.0).ok()?;
+    let y = tail.float(500000.0).ok()?;
+    let z = tail.float(50000.0).ok()?;
+    (x.abs() > 100.0 && y.abs() > 100.0).then_some(crate::spatial::Observation {
+        actor_id,
+        x,
+        y,
+        z: Some(z),
+        source: "server-effect".into(),
+        local_only: true,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AssistEvent {
     Windup(CastObservation),

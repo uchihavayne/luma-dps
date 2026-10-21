@@ -1,3 +1,4 @@
+import { spatialSnapshot } from './spatial.mjs';
 import { formatRate } from './model.mjs';
 import { normalizeLatencyHistory, renderLatencyHistory } from './latency-history.mjs';
 import { characterCollections, renderCharacterCollections } from './character.mjs';
@@ -118,6 +119,7 @@ function normalizeEncounter(value, budget) {
     ...(Object.hasOwn(value, 'healing_samples') ? { healing_samples: samples(value.healing_samples, 'healing'), healing_sample_complete: value.healing_sample_complete === true } : {}),
     sample_complete: value.sample_complete === true, source: text(value.source, 40) || 'unspecified',
     assist: normalizeAssist(value.assist),
+    ...(value.spatial ? { spatial: reportSpatial(value.spatial, budget) } : {}),
     character_build: normalizeBuild(value.character_build),
     ...(Object.hasOwn(value, 'context') ? { context: {
       source: ['server-zone', 'imported'].includes(value.context?.source) ? value.context.source : 'unknown',
@@ -133,6 +135,19 @@ function normalizeEncounter(value, budget) {
   if (latency) record.network_latency = latency;
   if (record.total_damage === null && record.personal_total_damage === null && record.party_total_damage === null && !(SCOPES.has(value.actor_scope) && value.actor_scope !== 'observed')) throw new Error('Encounter has no valid damage metric');
   return record;
+}
+
+function reportSpatial(value, budget) {
+  if (['actors', 'positions', 'track', 'aims'].some(key => value[key] !== undefined && !Array.isArray(value[key]))) throw new Error('Invalid spatial data');
+  const data = spatialSnapshot(value);
+  for (const key of ['actors', 'positions', 'track', 'aims']) if ((value[key]?.length || 0) !== data[key].length) throw new Error('Invalid or excessive spatial data');
+  budget.spatial = (budget.spatial || 0) + data.track.length;
+  if (budget.spatial > 50000) throw new Error('Collection position limit exceeded');
+  for (const list of [data.actors, data.positions, data.track, data.aims]) for (const row of list) {
+    row.actor_id = Number(row.actor_id);
+    if (Object.hasOwn(row, 'target_id')) row.target_id = row.target_id === null ? 0 : Number(row.target_id);
+  }
+  return data;
 }
 
 function collection(value) {
@@ -213,6 +228,15 @@ function prepared(input, options = {}) {
       const latency = normalizeLatencyHistory({ ...record.network_latency, samples }, selected);
       if (latency) selected.network_latency = latency; else delete selected.network_latency;
     }
+    if (selected.spatial) {
+      const allowed = new Set([...selected.players, ...selected.targets].map(row => String(row.id)));
+      const spatial = selected.spatial;
+      const include = row => (selected.actor_scope === 'observed' || allowed.has(String(row.actor_id))) && (selected.started_ms === null || row.at_ms >= Math.max(0, selected.started_ms - 5000)) && (end === null || row.at_ms <= end);
+      spatial.positions = spatial.positions.filter(include); spatial.track = spatial.track.filter(include);
+      spatial.aims = spatial.aims.filter(row => include(row) && (selected.actor_scope === 'observed' || row.target_id === null || allowed.has(String(row.target_id))));
+      const keys = new Set([...spatial.positions, ...spatial.track, ...spatial.aims].map(row => `${row.actor_id}:${row.generation}`));
+      spatial.actors = spatial.actors.filter(row => keys.has(`${row.actor_id}:${row.generation}`));
+    }
     return selected;
   });
   if (!options.anonymize) return result;
@@ -228,6 +252,8 @@ function prepared(input, options = {}) {
     return actors.get(key);
   };
   for (const record of result.encounters) {
+    // Anonymous reports omit spatial paths and their embedded identities.
+    delete record.spatial;
     for (const player of record.players) { player.id = alias(player.id, player.name); player.name = `Player ${player.id}`; names.set(player.id, player.name); }
     for (const list of [record.targets, record.personal_targets, record.party_targets]) for (const target of list) {
       if (processedTargets.has(target)) continue;

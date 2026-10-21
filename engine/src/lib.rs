@@ -8,6 +8,7 @@ pub mod net;
 pub mod packets;
 pub mod records;
 pub mod resources;
+pub mod spatial;
 
 use packets::Event;
 #[cfg(test)]
@@ -187,6 +188,7 @@ struct RecentPersonalHit {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
+    pub spatial: spatial::Snapshot,
     pub focused_target_id: Option<u64>,
     pub focused_target_observed_at_ms: Option<u64>,
     pub context: EncounterContext,
@@ -291,6 +293,7 @@ impl From<&Encounter> for AllTargetsSummary {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeterState {
+    pub spatial: spatial::Snapshot,
     pub pet_collection_owner: Option<character::PetCollectionOwner>,
     pub encounter_started_ms: Option<u64>,
     pub focused_target_id: Option<u64>,
@@ -421,7 +424,10 @@ struct StreamPrefix {
 }
 
 pub struct MeterEngine {
+    spatial: spatial::Store,
+    pending_spawn_position: Option<(spatial::Observation, u64)>,
     record_observations: Vec<records::Observation>,
+    encounter_gaps_at_start: u64,
     collection_generation: u64,
     focus_epoch: u64,
     current_context: EncounterContext,
@@ -487,7 +493,10 @@ pub struct MeterEngine {
 impl Default for MeterEngine {
     fn default() -> Self {
         Self {
+            spatial: spatial::Store::default(),
+            pending_spawn_position: None,
             record_observations: Vec::new(),
+            encounter_gaps_at_start: 0,
             collection_generation: 0,
             focus_epoch: 0,
             current_context: EncounterContext::default(),
@@ -652,6 +661,8 @@ impl MeterEngine {
             self.pending_profiles.clear();
             self.party_snapshot_complete = false;
             self.assistance.clear();
+            self.spatial.clear();
+            self.pending_spawn_position = None;
             self.character.invalidate_capture(
                 now,
                 if segment.syn || segment.reset {
@@ -856,6 +867,8 @@ impl MeterEngine {
                     self.cooldowns.clear();
                     self.cooldowns.bind_self(self.own_id);
                     self.assistance.clear();
+                    self.spatial.clear();
+                    self.pending_spawn_position = None;
                     self.bosses.clear();
                     self.current_context = EncounterContext {
                         source: "server-zone".into(),
@@ -863,10 +876,26 @@ impl MeterEngine {
                         zone_observed_at_ms: Some(now),
                         session_id: format!("zone-{zone_id}-{now}-{}", self.generation),
                     };
+                    self.spatial.map(zone_id);
+                    self.pending_spawn_position = None;
                     self.dirty();
                 }
             }
             Event::Healing(hit) => self.observe_healing(hit, now),
+            Event::Position(mut position) => {
+                if position.actor_id == 0 {
+                    if let Some(id) = self.own_id {
+                        position.actor_id = id;
+                    } else {
+                        self.pending_spawn_position = Some((position, now));
+                        return;
+                    }
+                }
+                if !position.local_only || self.own_id == Some(position.actor_id) {
+                    self.spatial.observe(position, now);
+                    self.dirty();
+                }
+            }
             Event::Resource(event) => {
                 self.resources.ingest(event, now);
                 self.character_revision = self.character_revision.wrapping_add(1);
@@ -881,6 +910,11 @@ impl MeterEngine {
                 self.field_bosses.ingest(event, now);
             }
             Event::Assistance(event) => {
+                match &event {
+                    assistance::AssistEvent::Windup(value)
+                    | assistance::AssistEvent::Cast(value) => self.spatial.aim(value, now),
+                    _ => (),
+                }
                 if let assistance::AssistEvent::Cast(value) = &event {
                     self.cooldowns.observe_cast(
                         value.actor_id,
@@ -1053,6 +1087,8 @@ impl MeterEngine {
                     self.character_name.clear();
                     self.completed = None;
                     self.assistance.clear();
+                    self.spatial.clear();
+                    self.pending_spawn_position = None;
                     self.field_bosses.clear();
                     self.field_boss_available = false;
                     self.field_boss_revision = self.field_boss_revision.wrapping_add(1);
@@ -1061,6 +1097,14 @@ impl MeterEngine {
                     self.encounter_build = None;
                     self.encounter_build_taken = false;
                     self.character_revision = self.character_revision.wrapping_add(1);
+                }
+                if self.identities.get(&id).is_some_and(|old| {
+                    old.removed
+                        || old.npc
+                        || old.pet
+                        || old.name.as_deref().is_some_and(|old| old != name)
+                }) {
+                    self.spatial.replace(id, now);
                 }
                 self.prepare_entity(id, now);
                 if own {
@@ -1103,6 +1147,23 @@ impl MeterEngine {
                 if let Some(class) = class.and_then(class_name) {
                     identity.class = Some(class.into())
                 }
+                self.spatial.register(
+                    id,
+                    identity.name.as_deref().unwrap_or(""),
+                    identity.class.as_deref().unwrap_or(""),
+                    "player",
+                    None,
+                );
+                if own {
+                    if let Some((mut position, at)) = self
+                        .pending_spawn_position
+                        .take()
+                        .filter(|(_, at)| *at <= now && now - *at <= 30000)
+                    {
+                        position.actor_id = id;
+                        self.spatial.seed(position, at);
+                    }
+                }
                 if let Some(completed) = &mut self.completed {
                     // A late name may resolve an unnamed actor in the current
                     // completed view. Reused actor IDs must never relabel the
@@ -1139,6 +1200,7 @@ impl MeterEngine {
                 model,
                 kind,
             } => {
+                self.spatial.replace(id, now);
                 if self
                     .pet_collection_owner()
                     .is_some_and(|owner| owner.actor_id == id)
@@ -1193,6 +1255,19 @@ impl MeterEngine {
                 if let Some(name) = name {
                     entry.name = Some(name)
                 }
+                self.spatial.register(
+                    id,
+                    entry.name.as_deref().unwrap_or(""),
+                    "",
+                    if entry.pet {
+                        "pet"
+                    } else if entry.npc {
+                        "npc"
+                    } else {
+                        "unknown"
+                    },
+                    Some(model),
+                );
                 if self.own_id == Some(id) {
                     self.own_id = None;
                     self.alias_bound_id = None;
@@ -1439,6 +1514,7 @@ impl MeterEngine {
                 // the scene does not change damage it already dealt.
                 self.identities.entry(id).or_default().removed = true;
                 self.assistance.remove_actor(id, now);
+                self.spatial.remove(id, now);
                 self.cooldowns.remove_actor(id);
                 if self.own_id == Some(id) {
                     self.resources.clear();
@@ -1477,6 +1553,7 @@ impl MeterEngine {
                     self.sample_complete = true;
                     self.encounter_build = None;
                     self.encounter_build_taken = false;
+                    self.encounter_gaps_at_start = self.diagnostics.stream_gaps;
                     self.started = Some(now);
                     self.paused_ms = 0;
                     self.diagnostics.truncated_encounter = false;
@@ -1646,7 +1723,7 @@ impl MeterEngine {
             || record.local_identity_source != "server"
             || !record.sample_complete
             || self.diagnostics.truncated_encounter
-            || self.diagnostics.stream_gaps != 0
+            || self.diagnostics.stream_gaps != self.encounter_gaps_at_start
             || record.personal_targets.len() != 1
         {
             return;
@@ -1705,6 +1782,7 @@ impl MeterEngine {
             self.diagnostics.ambiguous_periodic_amount = 0;
             self.encounter_build = None;
             self.encounter_build_taken = false;
+            self.encounter_gaps_at_start = self.diagnostics.stream_gaps;
             self.started = Some(now);
             self.paused_ms = 0;
             self.diagnostics.truncated_encounter = false;
@@ -1751,7 +1829,10 @@ impl MeterEngine {
             .completed
             .as_ref()
             .map(|value| value.record.healing_sample_complete)
-            .unwrap_or(self.healing_sample_complete && self.diagnostics.stream_gaps == 0);
+            .unwrap_or(
+                self.healing_sample_complete
+                    && self.diagnostics.stream_gaps == self.encounter_gaps_at_start,
+            );
         record.healing_samples = samples
             .iter()
             .filter(|sample| sample.timestamp_ms >= record.started_ms)
@@ -1852,6 +1933,8 @@ impl MeterEngine {
         self.pending_owners.clear();
         self.bosses.clear();
         self.assistance.clear();
+        self.spatial.clear();
+        self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
         self.field_boss_revision = self.field_boss_revision.wrapping_add(1);
@@ -1872,6 +1955,7 @@ impl MeterEngine {
         self.manual_party_ids = None;
         self.last_seen = 0;
         self.diagnostics = Default::default();
+        self.encounter_gaps_at_start = 0;
         self.dirty();
     }
     pub fn capture_loss(&mut self) {
@@ -1906,6 +1990,8 @@ impl MeterEngine {
         }
         self.character_revision = self.character_revision.wrapping_add(1);
         self.assistance.clear();
+        self.spatial.gap(self.last_seen);
+        self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
         self.field_boss_revision = self.field_boss_revision.wrapping_add(1);
@@ -2371,7 +2457,13 @@ impl MeterEngine {
     }
     fn bound_history_samples(&mut self) {
         let mut remaining = MAX_HISTORY_SAMPLES;
+        let mut spatial_remaining = 50000usize;
         for record in &mut self.history {
+            if record.spatial.track.len() > spatial_remaining {
+                record.spatial.track.truncate(spatial_remaining);
+                record.spatial.retention_limited = true;
+            }
+            spatial_remaining = spatial_remaining.saturating_sub(record.spatial.track.len());
             if record.damage_samples.len() > remaining {
                 record.damage_samples.truncate(remaining);
                 record.sample_complete = false;
@@ -2628,7 +2720,7 @@ impl MeterEngine {
                             .as_ref()
                             .map(|completed| completed.capture_complete)
                             .unwrap_or(
-                                self.diagnostics.stream_gaps == 0
+                                self.diagnostics.stream_gaps == self.encounter_gaps_at_start
                                     && !self.diagnostics.truncated_encounter,
                             ),
                     unclassified_player_target_amount: unclassified
@@ -2649,6 +2741,7 @@ impl MeterEngine {
             .retain(|row| row.damage > 0 || row.identity_confirmed || row.is_local || row.in_party);
         player_rows.sort_by_key(|row| std::cmp::Reverse(row.damage));
         let mut record = Encounter {
+            spatial: spatial::Snapshot::default(),
             id: self.encounter_id,
             started_ms: self.started.unwrap_or(0),
             ended_ms: self.last_hit,
@@ -2685,7 +2778,8 @@ impl MeterEngine {
                     .as_ref()
                     .map(|completed| completed.capture_complete)
                     .unwrap_or(
-                        self.diagnostics.stream_gaps == 0 && !self.diagnostics.truncated_encounter,
+                        self.diagnostics.stream_gaps == self.encounter_gaps_at_start
+                            && !self.diagnostics.truncated_encounter,
                     ),
             unclassified_player_target_amount: unclassified
                 .values()
@@ -2759,7 +2853,10 @@ impl MeterEngine {
             .completed
             .as_ref()
             .map(|value| value.capture_complete)
-            .unwrap_or(self.diagnostics.stream_gaps == 0 && !self.diagnostics.truncated_encounter);
+            .unwrap_or(
+                self.diagnostics.stream_gaps == self.encounter_gaps_at_start
+                    && !self.diagnostics.truncated_encounter,
+            );
         let participant = |id: u64, damage: u64, total: u64| {
             let player = metadata.get(&id);
             TargetParticipant {
@@ -3022,6 +3119,7 @@ impl MeterEngine {
         self.attach_samples(&mut record);
         record.character_build = self.encounter_build.clone();
         record.assist = self.assistance.snapshot(now);
+        record.spatial = self.spatial.snapshot(now, Some((record.started_ms, now)));
         record
             .assist
             .health_history
@@ -3076,7 +3174,7 @@ impl MeterEngine {
             pair_activity: std::mem::take(&mut self.pair_activity),
             paused_ms: self.paused_ms,
             generation: self.generation,
-            capture_complete: self.diagnostics.stream_gaps == 0
+            capture_complete: self.diagnostics.stream_gaps == self.encounter_gaps_at_start
                 && !self.diagnostics.truncated_encounter,
         });
         self.started = None;
@@ -3203,6 +3301,7 @@ impl MeterEngine {
         );
         cooldowns.sort_by_key(|row| row["skill_id"].as_u64().unwrap_or(0));
         MeterState {
+            spatial: self.spatial.snapshot(now, None),
             pet_collection_owner: self.pet_collection_owner(),
             encounter_started_ms,
             focused_target_id,
@@ -3392,6 +3491,11 @@ impl MeterEngine {
     }
     pub fn current_record(&self, now: u64) -> Encounter {
         let mut record = self.snapshot(now, &self.target_mode);
+        record.spatial = self
+            .completed
+            .as_ref()
+            .map(|c| c.record.spatial.clone())
+            .unwrap_or_else(|| self.spatial.snapshot(now, Some((record.started_ms, now))));
         self.attach_samples(&mut record);
         record.character_build = if let Some(completed) = &self.completed {
             completed.record.character_build.clone()
@@ -3634,6 +3738,9 @@ fn combine_skill(existing: &mut SkillState, row: &SkillState) {
     }
 }
 fn record_details_bounded(record: &Encounter) -> bool {
+    if !record.spatial.valid(record.started_ms, record.ended_ms) {
+        return false;
+    }
     let build_valid = record.character_build.as_ref().is_none_or(|build| {
         build.name.len() <= 320
             && build.source.len() <= 64
@@ -3834,6 +3941,7 @@ fn class_name(code: u32) -> Option<&'static str> {
         25..=28 => Some("Sorcerer"),
         29..=32 => Some("Cleric"),
         33..=36 => Some("Chanter"),
+        37..=40 => Some("Brawler"),
         _ => None,
     }
 }
@@ -3950,9 +4058,36 @@ mod tests {
                 engine.ingest_event(hit(1, 10, 3000, false), at);
             }
             engine.take_record_observations();
+            if hp.is_some() {
+                engine.capture_loss();
+            }
             engine.reset();
             assert!(engine.take_record_observations().is_empty());
         }
+    }
+    #[test]
+    fn an_earlier_capture_gap_does_not_disqualify_a_later_clean_boss_record() {
+        let mut e = record_fixture();
+        e.current_context = EncounterContext {
+            source: "server-zone".into(),
+            map_id: Some(5),
+            ..Default::default()
+        };
+        e.set_boss_targets(&[10]);
+        e.ingest_event(hit(1, 10, 1000, false), 1000);
+        e.capture_loss();
+        e.reset();
+        e.take_record_observations();
+        for at in [20000, 25000, 30000] {
+            e.ingest_event(hit(1, 10, 2000, false), at);
+        }
+        e.take_record_observations();
+        e.reset();
+        let best = e.take_record_observations();
+        assert_eq!(best.len(), 1);
+        assert_eq!(best[0].metric, "boss-dps");
+        assert_eq!(best[0].amount, 6000);
+        assert_eq!(e.diagnostics.stream_gaps, 1);
     }
     fn hit(source: u64, target: u64, amount: u64, critical: bool) -> Event {
         Event::Damage(Hit {
