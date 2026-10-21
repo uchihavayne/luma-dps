@@ -41,6 +41,11 @@ export function createHistoryCache({ read, normalizeRecord = value => value, onC
       }
       return fetchLatest();
     },
+    // Note a newer revision without reading it: the full history can be tens of MB, so
+    // the read waits for retry()/observe() once a view actually needs the records.
+    track(nextRevision) {
+      if (validRevision(nextRevision) && nextRevision > desiredRevision) { desiredRevision = nextRevision; failedRevision = null; }
+    },
     retry() { failedRevision = null; return fetchLatest(); },
     get history() { return history; },
     get revision() { return revision; },

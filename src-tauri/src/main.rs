@@ -2898,14 +2898,22 @@ async fn open_community_url(
     .map_err(|_| "Community report could not be opened".to_string())?
 }
 
+// Typed payload: serialized directly instead of first building a `Value` tree of the
+// whole (up to 32 MB) history.
+#[derive(serde::Serialize)]
+struct HistoryPayload {
+    revision: u64,
+    history: Vec<luma_engine::Encounter>,
+}
+
 #[tauri::command]
-fn get_history(shared: State<Arc<Shared>>) -> Result<Value, String> {
+fn get_history(shared: State<Arc<Shared>>) -> Result<HistoryPayload, String> {
     let (revision, history) = shared
         .engine
         .lock()
         .map_err(|_| "Meter history unavailable")?
         .history_snapshot();
-    Ok(serde_json::json!({ "revision": revision, "history": history }))
+    Ok(HistoryPayload { revision, history })
 }
 
 #[tauri::command]
@@ -2972,7 +2980,15 @@ fn persist_history(shared: &Shared) -> Result<(), String> {
         .history_snapshot();
     let result = local_history::save(&shared.data_dir.join("history.json"), &records);
     if let Ok(mut message) = shared.history_storage_error.lock() {
-        *message = result.as_ref().err().cloned().unwrap_or_default();
+        let expected = records.len().min(200);
+        *message = match &result {
+            Err(error) => error.clone(),
+            Ok(retained) if *retained < expected => format!(
+                "{} oldest encounters exceed the history storage limit and were not saved",
+                expected - retained
+            ),
+            Ok(_) => String::new(),
+        };
     }
     result?;
     shared

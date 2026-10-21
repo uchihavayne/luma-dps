@@ -137,3 +137,17 @@ test('browser clear only removes local imports and never invokes an available na
   assert.equal(await clearImportedHistory({ native: false, clearNative: () => { throw new Error('Must not run'); }, clearLocal: () => { calls.push('local'); }, refresh: value => { assert.equal(value, null); calls.push('refresh'); } }), null);
   assert.deepEqual(calls, ['local', 'refresh']);
 });
+
+test('tracking a newer revision defers the large history read until a view requests it', async () => {
+  let reads = 0;
+  const cache = createHistoryCache({ read: async () => { reads += 1; return { revision: 3, history: [record(3)] }; } });
+  cache.track(3); cache.track(2); cache.track(Number.NaN);
+  assert.equal(reads, 0);
+  assert.equal(cache.desiredRevision, 3);
+  assert.equal(cache.revision, 0);
+  await cache.retry();
+  assert.equal(reads, 1);
+  assert.equal(cache.revision, 3);
+  await cache.retry();
+  assert.equal(reads, 1);
+});

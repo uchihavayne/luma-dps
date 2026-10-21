@@ -393,3 +393,10 @@ test('live resource and raw cooldown ownership never reuse completed encounter i
   assert.equal(liveServerActorId({ ...prior, live_team_identity: { local: { actor_id: 9, identity_source: 'server' } } }), '9');
   assert.equal(liveServerActorId({ ...prior, live_team_identity: { local: { actor_id: 9, identity_source: 'manual' } } }), null);
 });
+
+test('a history storage error reaches the state as bounded plain text and defaults to empty', () => {
+  assert.equal(normalizeState({}).history_storage_error, '');
+  assert.equal(normalizeState({ history_storage_error: 3 }).history_storage_error, '');
+  assert.equal(normalizeState({ history_storage_error: '2 oldest encounters exceed the limit' }).history_storage_error, '2 oldest encounters exceed the limit');
+  assert.equal(normalizeState({ history_storage_error: 'x'.repeat(500) }).history_storage_error.length, 200);
+});

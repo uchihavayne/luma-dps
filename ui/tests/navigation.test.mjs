@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SETTINGS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from '../navigation.mjs';
+import { ANALYSIS_SECTIONS, ANALYSIS_GROUPS, SETTINGS_SECTIONS, settingsSection, nextTab, modalControls, focusBoundary, shouldApplyPollFailure, captureFormDraft, restoreFormDraft, createPanelSynchronizer } from '../navigation.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
@@ -9,6 +9,13 @@ test('settings routes calendar directly and defaults unknown sections to appeara
   assert.equal(settingsSection('overview'), 'appearance');
   assert.equal(settingsSection(undefined), 'appearance');
   assert.deepEqual(SETTINGS_SECTIONS, ['appearance', 'character', 'calendar', 'combatSettings', 'streaming', 'controls', 'hiddenCube', 'about']);
+});
+
+test('analysis groups place every analysis tab in exactly one short group', () => {
+  const grouped = ANALYSIS_GROUPS.flatMap(group => group.sections);
+  assert.deepEqual([...grouped].sort(), [...ANALYSIS_SECTIONS].sort());
+  assert.equal(new Set(grouped).size, grouped.length);
+  assert.ok(ANALYSIS_GROUPS.every(group => group.sections.length >= 1 && group.sections.length <= 7));
 });
 
 test('keyboard category navigation wraps and supports Home/End without handling typing', () => {
