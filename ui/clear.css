@@ -15,15 +15,24 @@ body.preview-frame:not(.fullscreen-overlay) > #meter.compact-strip { height: 44p
 .tools-menu-heading strong { font-size: 12px; font-weight: 650; }
 .tools-menu-heading > button { font-size: 22px; width: 28px; height: 28px; }
 .tools-menu-scroll { overflow: auto; overscroll-behavior: contain; min-height: 0; padding: 8px 10px 12px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.tools-links, .tools-window-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; }
-.tools-links button, .tools-window-actions button { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; padding: 8px; text-align: left; font-size: 12px; line-height: 1.4; background: transparent; color: var(--text); border-radius: 7px; }
-.tools-links button:hover, .tools-window-actions button:hover { background: var(--panel); }
-.tools-links button > span, .tools-window-actions button > span { color: var(--muted); font-size: 10px; }
-.tools-menu h3 { font-size: 10px; font-weight: 600; color: var(--muted); margin: 15px 8px 6px; }
-.tools-toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 12px; padding: 0 8px 10px; }
-.tools-toggles label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; font-size: 12px; line-height: 1.3; cursor: pointer; }
-.tools-toggles input, .tools-filters input { accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
-.tools-filters { margin: 0 0 8px; padding: 10px 8px; border-block: 1px solid var(--line); }
+.tools-quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.tools-quick button { min-height: 30px; padding: 4px 6px; font-size: 12px; line-height: 1.3; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools-quick button:hover { background: var(--panel); }
+.tools-quick button[aria-pressed=true] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tools-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; }
+.tools-links button { display: block; min-height: 30px; padding: 5px 8px; text-align: left; font-size: 12px; line-height: 1.4; background: transparent; color: var(--text); border-radius: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tools-links button:hover { background: var(--panel); }
+.tools-more { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.tools-more button { color: var(--muted); }
+.tools-menu h3 { font-size: 10px; font-weight: 600; color: var(--muted); margin: 14px 8px 6px; letter-spacing: .02em; }
+.tools-menu .tools-menu-scroll > h3:first-child, .tools-menu .tools-status:not([hidden]) + h3 { margin-top: 2px; }
+.tools-toggles { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 4px; }
+.tools-toggles label { position: relative; display: inline-flex; align-items: center; min-height: 28px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; line-height: 1.3; color: var(--muted); cursor: pointer; user-select: none; }
+.tools-toggles label:has(input:checked) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.tools-toggles label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tools-toggles input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.tools-filters input { accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
+.tools-filters { margin: 12px 0 0; padding: 10px 8px; border-top: 1px solid var(--line); }
 .tools-filters > summary { font-size: 12px; cursor: pointer; color: var(--muted); line-height: 1.5; }
 .tools-filters[open] > summary { margin-bottom: 12px; color: var(--text); }
 .tools-filters .field > span, .tools-filters .check-field { font-size: 12px; }
@@ -320,3 +329,21 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 .drawer-groups button { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 15px; padding: 5px 6px; border-radius: 6px; background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .drawer-groups button[aria-pressed=true] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); font-weight: 650; }
 .drawer-groups button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* History: a search bar with filters and export/import folded away, records first. */
+.history-page .history-filter-form { padding: 0; border: 0; background: none; margin: 0 0 10px; }
+.history-bar { display: flex; gap: 8px; align-items: flex-end; }
+.history-bar .history-search { flex: 1 1 auto; min-width: 0; margin: 0; }
+.history-bar .action-button { flex-shrink: 0; min-height: 36px; }
+.history-more { margin: 8px 0; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; }
+.history-more > summary { padding: 9px 0; font-size: 12px; line-height: 1.5; color: var(--muted); cursor: pointer; }
+.history-more[open] > summary { color: var(--text); }
+.history-more[open] { padding-bottom: 12px; }
+.history-page .history-result-count { margin: 4px 2px 10px; }
+.history-transfer { margin-top: 14px; }
+
+/* Settings: folded groups stay compact; the inner module card repeats the summary, so hide its heading. */
+.appearance-details { margin: 10px 0 0; padding: 10px 0 2px; }
+.appearance-details > summary { font-size: 12px; }
+.appearance-details .module-settings { margin: 10px 0 0; padding: 0; border: 0; background: none; }
+.appearance-details .module-settings > .record-top { display: none; }
