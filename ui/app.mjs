@@ -3,7 +3,7 @@ import { bossLog } from './boss-log.mjs';
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
 import { GAME_REFERENCE_NOTICE } from './reference-notices.mjs';
-import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, rosterFit } from './hud.mjs';
+import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, rosterFit, unnamedSourcesNotice } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
@@ -863,6 +863,9 @@ function renderPlayers(status, scoped) {
   const context = `${state.encounter_started_ms ?? ''}:${prefs.rosterScope}:${Boolean(scoped.ranked)}:${selectedBoardTargetId ?? 'auto'}`;
   if (context !== rosterContext) { $('.roster-list').scrollTop = 0; rosterContext = context; }
   container.dataset.unclassified = String(main.unclassifiedCount);
+  const unnamed = unnamedSourcesNotice(main.unclassifiedCount, main.unclassifiedDamage, prefs.locale, num), unnamedHost = $('#roster-unnamed');
+  unnamedHost.hidden = !unnamed;
+  if (unnamed) { setText(unnamedHost, unnamed.text); unnamedHost.title = unnamed.title; }
   container.title = main.unclassifiedCount ? (prefs.locale === 'tr' ? `${main.unclassifiedCount} oyuncu kimliği doğrulanmamış kaynak ana listeden ayrıldı. Alınan hasar Analiz’de korunur.` : `${main.unclassifiedCount} sources without player identity are kept in Analysis, outside the player roster.`) : '';
   const cooldownMembers = new Map(automaticTeamState(state).members.map(member => [member.actor_id, member]));
   if (!scoped.players.length) {

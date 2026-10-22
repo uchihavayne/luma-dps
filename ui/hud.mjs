@@ -64,6 +64,19 @@ export function mainRoster(players = [], state = {}, { scope = 'observed', ranke
   return { players: retained, unclassifiedCount: hidden.length, unclassifiedDamage: hidden.reduce((sum, row) => sum + (row.damage || 0), 0) };
 }
 
+/**
+ * One line that says who is missing from the roster. Sources whose player identity has not been
+ * received stay out of the named list, but their damage is real, so say so instead of showing an
+ * empty or short list with no explanation. Null when there is nothing to report.
+ */
+export function unnamedSourcesNotice(count, damage, locale = 'tr', format = value => String(value)) {
+  if (!Number.isSafeInteger(count) || count < 1 || !(Number.isFinite(damage) && damage > 0)) return null;
+  const amount = format(damage);
+  return locale === 'en'
+    ? { text: `+${count} source${count === 1 ? '' : 's'} awaiting identity · ${amount} damage`, title: 'The game has not sent these players\u2019 names or classes yet, which happens when Luma starts after you entered the game. Their damage is kept in Analysis and appears in the nearby total.' }
+    : { text: `+${count} kaynak kimlik bekliyor · ${amount} hasar`, title: 'Oyun bu oyuncuların ad ve sınıf bilgisini henüz göndermedi; Luma oyuna girdikten sonra açıldıysa böyle olur. Hasarları Analiz’de saklanır ve yakındaki toplama dahildir.' };
+}
+
 export function rosterFit({ count = 0, height = 0, width = 320, scale = 1, density = 'compact', both = true, details = false } = {}) {
   count = Number.isSafeInteger(count) ? Math.max(0, count) : 0;
   height = Number.isFinite(height) ? Math.max(0, height) : 0;

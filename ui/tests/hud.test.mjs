@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { classIcon, classIconPath, CLASS_ICONS } from '../class-icons.mjs';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { hudPanelChange, hudPanelVisible, previewFrame } from '../hud.mjs';
+import { hudPanelChange, hudPanelVisible, previewFrame, mainRoster, unnamedSourcesNotice } from '../hud.mjs';
 import { normalizePreferences, exportTheme, importTheme, visibleAnalysisSections } from '../model.mjs';
 import { ANALYSIS_SECTIONS } from '../navigation.mjs';
 
@@ -91,4 +91,16 @@ test('browser size fixtures match supported desktop limits and reject CSS inject
   assert.deepEqual(previewFrame('320x200'), { width: 320, height: 200 });
   assert.deepEqual(previewFrame('1600x1600'), { width: 1600, height: 1600 });
   for (const value of ['319x200', '420x199', '1601x900', '420x430;display:none', null]) assert.equal(previewFrame(value), null);
+});
+
+test('sources without a received identity are reported in one quiet line instead of silently hidden', () => {
+  const fmt = value => `${value / 1000}K`;
+  assert.deepEqual(unnamedSourcesNotice(2, 13000, 'en', fmt).text, '+2 sources awaiting identity · 13K damage');
+  assert.equal(unnamedSourcesNotice(1, 500, 'en', fmt).text, '+1 source awaiting identity · 0.5K damage');
+  assert.equal(unnamedSourcesNotice(3, 13000, 'tr', fmt).text, '+3 kaynak kimlik bekliyor · 13K hasar');
+  assert.ok(unnamedSourcesNotice(1, 1, 'tr').title.includes('Analiz'));
+  for (const [count, damage] of [[0, 100], [2, 0], [2, null], [-1, 5], [1.5, 5], [2, Number.NaN], [undefined, 5]]) assert.equal(unnamedSourcesNotice(count, damage), null, `${count}/${damage}`);
+  // mainRoster feeds it: an actor with damage but no identity is hidden from the list and counted.
+  const roster = mainRoster([{ id: '1', name: 'Self', class_name: 'Chanter', damage: 100, is_local: true, identity_confirmed: true }, { id: '2', name: '#2', class_name: 'Unknown', damage: 40 }], {});
+  assert.deepEqual([roster.players.length, roster.unclassifiedCount, roster.unclassifiedDamage], [1, 1, 40]);
 });

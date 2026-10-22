@@ -97,3 +97,16 @@ test('new default appearance upgrades once and explicit themes/layouts keep thei
   assert.equal(restored.theme, 'pearl'); assert.equal(restored.opacity, 0);
   assert.equal(Object.hasOwn(restored, 'fullscreenOverlay'), false);
 });
+
+test('appearance revision 3 moves every older layout to Luma Clear once and keeps later choices', () => {
+  for (const layout of ['focus', 'glass', 'minimal', 'studio']) {
+    const migrated = normalizePreferences({ appearanceRevision: 2, layout, density: 'comfortable' });
+    assert.equal(migrated.layout, 'cupertino', layout);
+    assert.equal(migrated.density, 'compact');
+    assert.equal(migrated.appearanceRevision, 3);
+    assert.equal(normalizePreferences({ ...migrated, layout }).layout, layout, `${layout} chosen afterwards is kept`);
+  }
+  assert.equal(normalizePreferences({}).layout, 'cupertino');
+  assert.equal(normalizePreferences({ appearanceRevision: 2, layout: 'cupertino', density: 'comfortable' }).density, 'comfortable');
+  assert.equal(importTheme(exportTheme({ appearanceRevision: 3, layout: 'focus' })).layout, 'focus', 'an imported theme keeps its layout');
+});

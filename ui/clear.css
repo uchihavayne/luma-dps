@@ -383,3 +383,14 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 #meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-counter { line-height: 1.25; }
 #meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-meta small { font-size: 10px; line-height: 1.2; }
 #meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-rows { max-height: 80px; }
+
+/* Sources without a received identity: said once, quietly, under the roster. */
+.roster-unnamed { margin: 4px 8px 6px; padding: 4px 8px; font-size: 11px; line-height: 1.4; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; font-variant-numeric: tabular-nums; }
+.roster-unnamed[hidden] { display: none; }
+
+/* In the other layouts a short window must still leave the roster some room: the big
+   personal cards give way before the list does (the footer repeats those figures). */
+@media (max-height: 460px) {
+  #meter:not([data-layout=cupertino]) .metrics { display: none; }
+  #meter:not([data-layout=cupertino]) .roster-list { min-height: 84px; }
+}

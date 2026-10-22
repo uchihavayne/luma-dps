@@ -71,7 +71,7 @@ export function visibleSettingsSections(sections, preferences = {}) {
     : name === 'hiddenCube' ? modules.cube : name === 'character' ? modules.dps || modules.pets || modules.odyle : true);
 }
 export const DEFAULTS = Object.freeze({
-  version: 1, appearanceRevision: 2, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
+  version: 1, appearanceRevision: 3, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
@@ -112,11 +112,15 @@ export function normalizePreferences(input = {}) {
     reminderEnabled: event?.reminderEnabled !== false, reminderLeadMinutes: Math.round(bounded(event?.reminderLeadMinutes, 0, 60, bounded(p.alerts?.eventLeadMinutes, 0, 60, 5))),
   })).filter(event => event.anchor);
   const custom = p.customColors || {};
+  // Revision 3 moves everyone once to the roster-first Luma Clear layout; a layout chosen
+  // afterwards is saved with revision 3 and kept.
+  const revision = Number.isInteger(p.appearanceRevision) ? p.appearanceRevision : 0;
+  const toClear = revision < 3;
   const builtInReminders = Object.fromEntries(Object.entries(p.builtInReminders && typeof p.builtInReminders === 'object' ? p.builtInReminders : {}).filter(([id, value]) => /^builtin:[a-z0-9-]{1,48}$/.test(id) && value && typeof value === 'object').slice(0, 32).map(([id, value]) => [id, { enabled: value.enabled === true, leadMinutes: Math.round(bounded(value.leadMinutes, 0, 60, 5)) }]));
   const activeEventId = !p.activeEventId && p.calendarVersion !== 1 ? 'builtin:rift' : p.activeEventId === '' ? '' : events.some(event => event.id === p.activeEventId) || /^boss:\d{1,20}:\d{1,20}$/.test(p.activeEventId || '') || /^builtin:[a-z0-9-]{1,48}$/.test(p.activeEventId || '') ? p.activeEventId : 'builtin:rift';
   return {
-    version: 1, appearanceRevision: 2, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
-    theme: p.appearanceRevision !== 2 && p.theme === 'aurora' && (!p.layout || p.layout === 'studio') ? 'graphite' : oneOf(p.theme, Object.keys(THEMES), DEFAULTS.theme),
+    version: 1, appearanceRevision: 3, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
+    theme: revision < 2 && p.theme === 'aurora' && (!p.layout || p.layout === 'studio') ? 'graphite' : oneOf(p.theme, Object.keys(THEMES), DEFAULTS.theme),
     font: oneOf(p.font, Object.keys(FONTS), DEFAULTS.font),
     targetFont: oneOf(p.targetFont, Object.keys(FONTS), DEFAULTS.targetFont),
     targetFontSize: bounded(p.targetFontSize, 8, 28, DEFAULTS.targetFontSize),
@@ -125,7 +129,7 @@ export function normalizePreferences(input = {}) {
     damageScope: oneOf(p.damageScope, ['personal', 'party', 'observed'], 'personal'), characterName: str(p.characterName, 64).trim(),
     rosterScope: oneOf(p.rosterScope, ['personal', 'party', 'observed'], 'observed'),
     rowColorMode: oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'performance'),
-    layout: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: p.appearanceRevision !== 2 && (!p.layout || p.layout === 'studio') ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
+    layout: toClear ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: toClear && p.layout !== 'cupertino' ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'), autoTargetRoster: p.autoTargetRoster !== false, recordNotifications: oneOf(p.recordNotifications, ['party', 'self', 'off'], 'party'),
@@ -176,7 +180,7 @@ export function acceptsStateSnapshot(current, incoming) {
 export function importTheme(text) {
   const parsed = JSON.parse(text);
   if (!parsed || parsed.type !== 'luma-theme' || parsed.version !== 1 || !parsed.theme || typeof parsed.theme !== 'object') throw new Error('Invalid Luma theme');
-  const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 2 });
+  const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 3 });
   if (parsed.theme.background && !p.background) throw new Error('Invalid raster background');
   return Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
 }
