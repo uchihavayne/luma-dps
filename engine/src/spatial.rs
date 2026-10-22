@@ -177,8 +177,31 @@ impl Snapshot {
     }
 }
 
+/// A spawned entity of any kind, kept only for the nearby-object probe. It never reaches saved
+/// records: its position is the spawn point until a later position record replaces it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Object {
+    pub id: u64,
+    pub kind: u8,
+    pub model: u32,
+    pub x: f32,
+    pub y: f32,
+    pub seen_ms: u64,
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Nearby {
+    pub id: u64,
+    pub kind: u8,
+    pub model: u32,
+    pub distance_cm: f32,
+    pub dx: f32,
+    pub dy: f32,
+}
+const MAX_OBJECTS: usize = 512;
+
 #[derive(Default)]
 pub struct Store {
+    objects: BTreeMap<u64, Object>,
     map: Option<u32>,
     epoch: u32,
     generations: BTreeMap<u64, u32>,
@@ -204,6 +227,7 @@ impl Store {
         self.epoch = self.epoch.wrapping_add(1);
         self.latest.clear();
         self.sampled.clear();
+        self.objects.clear();
     }
     pub fn gap(&mut self, now: u64) {
         let ids: Vec<_> = self.latest.keys().copied().collect();
@@ -271,6 +295,7 @@ impl Store {
     }
     pub fn remove(&mut self, id: u64, now: u64) {
         self.sampled.remove(&id);
+        self.objects.remove(&id);
         if let Some(mut last) = self.latest.remove(&id) {
             last.at_ms = now;
             last.present = false;
@@ -285,6 +310,59 @@ impl Store {
             }
         }
         self.track.push_back(point);
+    }
+    pub fn spawn_object(&mut self, object: Object) {
+        if object.id == 0
+            || object.id > u64::from(u32::MAX)
+            || !coordinates(object.x, object.y, None)
+        {
+            return;
+        }
+        if self.objects.len() >= MAX_OBJECTS && !self.objects.contains_key(&object.id) {
+            if let Some(oldest) = self
+                .objects
+                .values()
+                .min_by_key(|o| o.seen_ms)
+                .map(|o| o.id)
+            {
+                self.objects.remove(&oldest);
+            }
+        }
+        self.objects.insert(object.id, object);
+    }
+    /// Spawned entities within `radius_cm` of the local player's last received position, nearest
+    /// first. `None` while the local position is unknown or older than the fresh window.
+    pub fn nearby(
+        &self,
+        own: u64,
+        now: u64,
+        radius_cm: f32,
+        limit: usize,
+    ) -> Option<Vec<Nearby>> {
+        let me = self
+            .latest
+            .get(&own)
+            .filter(|p| p.present && p.at_ms <= now && now - p.at_ms <= FRESH_MS)?;
+        let mut rows: Vec<_> = self
+            .objects
+            .values()
+            .filter(|o| o.id != own)
+            .filter_map(|o| {
+                let (dx, dy) = (o.x - me.x, o.y - me.y);
+                let distance_cm = dx.hypot(dy);
+                (distance_cm <= radius_cm).then_some(Nearby {
+                    id: o.id,
+                    kind: o.kind,
+                    model: o.model,
+                    distance_cm,
+                    dx,
+                    dy,
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| a.distance_cm.total_cmp(&b.distance_cm));
+        rows.truncate(limit);
+        Some(rows)
     }
     pub fn observe(&mut self, observation: Observation, now: u64) {
         self.record(observation, now, false);
@@ -308,6 +386,11 @@ impl Store {
         }
         self.last_ms = self.last_ms.max(now);
         let id = observation.actor_id;
+        if let Some(object) = self.objects.get_mut(&id) {
+            object.x = observation.x;
+            object.y = observation.y;
+            object.seen_ms = now;
+        }
         if self.latest.len() >= MAX_ACTORS && !self.latest.contains_key(&id) {
             if let Some(oldest) = self
                 .latest

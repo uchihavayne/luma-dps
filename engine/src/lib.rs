@@ -1315,6 +1315,20 @@ impl MeterEngine {
                 }
                 self.dirty();
             }
+            Event::Object {
+                id,
+                kind,
+                model,
+                x,
+                y,
+            } => self.spatial.spawn_object(spatial::Object {
+                id,
+                kind,
+                model,
+                x,
+                y,
+                seen_ms: now,
+            }),
             Event::Owner { id, owner } => {
                 if id == 0 || owner == 0 || id == owner {
                     return;
@@ -3474,6 +3488,17 @@ impl MeterEngine {
             self.history_revision,
             self.history.iter().cloned().collect(),
         )
+    }
+    /// Spawned, non-pet entities within `radius_m` of the local player, nearest first. `None`
+    /// until the local player's own position has been received.
+    pub fn nearby_objects(
+        &self,
+        now: u64,
+        radius_m: f32,
+        limit: usize,
+    ) -> Option<Vec<spatial::Nearby>> {
+        self.spatial
+            .nearby(self.own_id?, now, radius_m * 100.0, limit)
     }
     pub fn history_revision(&self) -> u64 {
         self.history_revision

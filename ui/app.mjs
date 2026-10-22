@@ -196,7 +196,7 @@ if (telemetryDemo && targetPetDemo) {
     live_target: oneShot ? null : target, targets: oneShot ? [] : [target],
     recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
-if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000 });
+if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000, network: { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' } });
 const rosterDemoCount = demo ? Number(new URLSearchParams(location.search).get('rosterDemo')) : 0;
 if ([5, 6, 12].includes(rosterDemoCount)) {
   state = normalizeState(rosterDemoState(state, rosterDemoCount));
@@ -1139,7 +1139,7 @@ function cubeContent() {
   return `<h3 class="section-title">${t('cubeTitle')}</h3><p class="help">${t('cubeIntro')}</p>${!native ? `<p class="settings-hint">${t('cubePreview')}</p>` : ''}
     <div class="cube-locator" id="cube-locator"><div class="cube-status-line"><span id="cube-status-dot" class="cube-status-dot" aria-hidden="true"></span><strong id="cube-status-label"></strong><span id="cube-source-label" class="tag"></span></div>
     <div id="cube-direction-display" class="cube-direction-display" data-direction="unknown">${cubeCompassMarkup()}<div><strong id="cube-direction-label">—</strong><span>${t('cubeStereoAmbiguity')}</span><span id="cube-trend-label">—</span></div></div>
-    <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeRelativeStrength')}</span><strong id="cube-relative-strength">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div><div><span>${t('cubeSnr')}</span><strong id="cube-snr">—</strong></div></div><p class="help cube-detail" id="cube-detail" hidden></p></div>
+    <div class="cube-readings"><div><span>${t('cubeSimilarity')}</span><strong id="cube-similarity">—</strong></div><div><span>${t('cubeRelativeStrength')}</span><strong id="cube-relative-strength">—</strong></div><div><span>${t('cubeStrength')}</span><strong id="cube-strength">—</strong></div><div><span>${t('cubeSnr')}</span><strong id="cube-snr">—</strong></div></div><p class="help cube-network" id="cube-network-line"></p><p class="help cube-detail" id="cube-detail" hidden></p></div>
     <label class="check-field"><input name="cubeAutoListen" type="checkbox" ${prefs.cubeAutoListen ? 'checked' : ''} ${!native || cubePending ? 'disabled' : ''}>${t('cubeAutoListen')}</label><p class="help">${t('cubeAutoHelp')}</p>
     <div class="button-row"><button type="button" id="cube-toggle" class="action-button" data-action="toggle-cube" ${!native || cubePending ? 'disabled' : ''}>${t(cubePending ? 'cubeBusy' : cubeState.enabled ? 'cubeStop' : 'cubeStart')}</button></div>
     <label class="field"><span>${t('cubeSize')}</span><select name="cubeNavigatorSize"><option value="compact" ${prefs.cubeNavigatorSize === 'compact' ? 'selected' : ''}>${t('cubeCompactLabel')}</option><option value="full" ${prefs.cubeNavigatorSize === 'full' ? 'selected' : ''}>${t('cubeFullLabel')}</option></select></label>
@@ -1167,9 +1167,11 @@ function renderCubeLive() {
   $('#cube-navigator').setAttribute('aria-label', `Hidden Cube · ${t('cubeCompass')}`);
   setText($('#cube-nav-source'), view.sourceLabel);
   $('#cube-nav-source').hidden = native;
-  setText($('#cube-nav-direction'), view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : view.label);
+  const net = view.network;
+  setText($('#cube-nav-direction'), view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : net.near ? `${net.nearLabel} · ${net.distance}` : view.label);
+  $('#cube-nav-network').hidden = !net.near; $('#cube-nav-network').title = net.summary; setText($('#cube-nav-network-distance'), net.distance); setText($('#cube-nav-network-detail'), net.detail);
   setText($('#cube-nav-guidance'), view.sensitive && view.direction === 'unknown' ? (prefs.locale === 'tr' ? 'Zayıf sinyal · yön dinleniyor' : 'Faint signal · checking direction') : t('cubeStereoAmbiguity'));
-  setText($('#cube-nav-trend'), view.matched ? view.trendLabel : t('cubeTurn'));
+  setText($('#cube-nav-trend'), view.matched ? view.trendLabel : net.near ? '' : t('cubeTurn'));
   setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
   setText($('#cube-nav-similarity-label'), t('cubeSimilarity')); setText($('#cube-nav-strength-label'), t('cubeRelativeStrength'));
   const quietMessage = view.quietInput ? t(cubeState.source === 'system' ? 'cubeQuietSystem' : 'cubeQuiet') : '';
@@ -1186,7 +1188,7 @@ function renderCubeLive() {
     setText(compass.querySelector('.cube-compass-left'), t('cubeLeft')); setText(compass.querySelector('.cube-compass-right'), t('cubeRight'));
   }
   const panel = $('#cube-locator'); if (!panel) return;
-  panel.dataset.status = view.status;
+  panel.dataset.status = view.status; setText($('#cube-network-line'), net.label);
   setText($('#cube-status-label'), view.label); setText($('#cube-source-label'), view.sourceLabel);
   const direction = $('#cube-direction-display'); direction.dataset.direction = view.direction; direction.dataset.matched = String(view.matched);
   setText($('#cube-direction-label'), view.directionLabel); setText($('#cube-trend-label'), view.trendLabel);

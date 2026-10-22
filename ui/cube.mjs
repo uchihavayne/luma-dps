@@ -6,6 +6,21 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 const bounded = (value, minimum, maximum, fallback) => finite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
 const text = (value, maximum = 240) => typeof value === 'string' ? value.replace(/[\u0000-\u001f]/g, '').slice(0, maximum) : '';
 
+// The desktop learns which spawned entity is the Cube from the audio match, then reports the
+// nearest one it can see in the received game data. Distances are whole metres; the output keeps
+// the input's field names so a stored state can be normalized again.
+export function normalizeCubeNetwork(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const distance = Number.isSafeInteger(input.distance_m) && input.distance_m >= 0 && input.distance_m <= 500 ? input.distance_m : null;
+  const phase = ['ready', 'near'].includes(input.phase) ? input.phase : 'learning';
+  return {
+    phase: phase === 'near' && distance === null ? 'ready' : phase,
+    matches: Math.round(bounded(input.matches, 0, 10, 0)), needed: Math.round(bounded(input.needed, 1, 10, 3)),
+    distance_m: distance, trend: ['approaching', 'receding', 'steady'].includes(input.trend) ? input.trend : 'unknown',
+    facing: ['ahead', 'side', 'behind'].includes(input.facing) ? input.facing : 'unknown',
+  };
+}
+
 export function normalizeCubeState(value = {}) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const enabled = input.enabled === true;
@@ -34,6 +49,7 @@ export function normalizeCubeState(value = {}) {
     last_detection_ms: finite(input.last_detection_ms) && input.last_detection_ms > 0 ? input.last_detection_ms : null,
     audio_channels: Math.round(bounded(input.audio_channels, 0, 32, 0)),
     sample_rate: Math.round(bounded(input.sample_rate, 0, 384000, 0)),
+    network: normalizeCubeNetwork(input.network),
   };
 }
 
@@ -43,7 +59,7 @@ export function acceptsCubeSnapshot(current, incoming) {
 }
 
 export function cubeDockVisible(presentation, preferences = {}) {
-  return preferences.showCubeLocator !== false && presentation?.matched === true;
+  return preferences.showCubeLocator !== false && (presentation?.matched === true || presentation?.network?.near === true);
 }
 
 export function cubePresentation(input, { now = Date.now(), locale = 'tr', live = true, readError = '' } = {}) {
@@ -66,9 +82,18 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
     ? { approaching: 'Sinyal güçleniyor', receding: 'Sinyal zayıflıyor', steady: 'Sinyal dengeli', unknown: 'Değişim için dinleniyor' }
     : { approaching: 'Signal getting stronger', receding: 'Signal getting weaker', steady: 'Signal steady', unknown: 'Listening for a change' };
   const prefix = tr ? 'Küp' : 'Cube';
+  const net = state.network, netNear = !readError && net.phase === 'near';
+  const trendWords = tr ? { approaching: 'yaklaşıyorsun', receding: 'uzaklaşıyorsun', steady: 'yan geçiyorsun' } : { approaching: 'getting closer', receding: 'moving away', steady: 'passing by' };
+  const facingWords = tr ? { ahead: 'önünde', side: 'yanında', behind: 'arkanda' } : { ahead: 'ahead', side: 'to the side', behind: 'behind you' };
+  const netParts = netNear ? [`${net.distance_m} m`, trendWords[net.trend], facingWords[net.facing]].filter(Boolean) : [];
+  const netLabel = net.phase === 'learning'
+    ? tr ? `Ağ eşleşmesi öğreniyor · ${net.matches}/${net.needed} ses eşleşmesi` : `Learning the network match · ${net.matches}/${net.needed} sound matches`
+    : netNear ? tr ? `Küp ${net.distance_m} m yakında` : `Cube ${net.distance_m} m away`
+    : tr ? 'Ağ eşleşmesi hazır · yakında Küp yok' : 'Network match ready · no Cube nearby';
   const quietInput = !readError && state.enabled && status === 'listening' && !state.audio_present && state.sample_rate > 0 && state.received_audio_frames >= state.sample_rate * 2;
   const short = matched ? `${{ left: '←', right: '→', center: '↔', unknown: '◇' }[direction]} ${prefix}` : `${prefix} · ${tr ? { off: 'kapalı', waiting_game: 'bekliyor', listening: 'ara', error: 'hata' }[status] : { off: 'off', waiting_game: 'wait', listening: 'listen', error: 'error' }[status]}`;
   return {
+    network: { phase: net.phase, near: netNear, distance: netNear ? `${net.distance_m} m` : '—', summary: netParts.join(' · '), detail: netParts.slice(1).join(' · '), label: netLabel, nearLabel: tr ? 'Küp yakında' : 'Cube nearby' },
     status, matched, direction, label: labels[status], short, quietInput, sensitive: matched && state.analysis_window_ms >= 1024,
     // A stereo balance establishes a side, not a calibrated world bearing.
     // Balanced audio cannot prove that a Cube is in front of the player.

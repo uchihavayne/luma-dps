@@ -4,6 +4,7 @@ mod audio_capture;
 mod audio_decode;
 mod community;
 mod cube_locator;
+mod cube_network;
 mod cube_signal;
 mod event_schedule;
 mod fullscreen_overlay;
@@ -3997,6 +3998,7 @@ fn main() {
             )));
             let cube = Arc::new(cube_locator::Service::new(data_dir.clone())?);
             app.manage(cube.clone());
+            let cube_network_path = data_dir.join("cube-network.json");
             let preferences_path = data_dir.join("preferences.json");
             let mut preferences = fs::metadata(&preferences_path)
                 .ok()
@@ -4160,6 +4162,9 @@ fn main() {
                 let mut history_retry_at = 0;
                 let mut calendar_revision = None;
                 let mut cube_revision = None;
+                let mut cube_network = cube_network::Learner::new(Some(cube_network_path));
+                let mut cube_network_due = 0;
+                let mut cube_detection = None;
                 let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
                     if now_ms()>=z_order_checked_at {
@@ -4207,6 +4212,23 @@ fn main() {
                     });
                     if let Some(calendar) = calendar_update {
                         let _ = handle.emit("luma-calendar-state", calendar);
+                    }
+                    if let Ok(status) = cube.snapshot() {
+                        // A new audio match is read at once; otherwise about twice a second.
+                        let detected_at = status.last_detection_ms();
+                        let at = now_ms();
+                        if detected_at != cube_detection || at >= cube_network_due {
+                            cube_detection = detected_at;
+                            cube_network_due = at + 450;
+                            let nearby = shared.engine.lock().ok().and_then(|engine| {
+                                engine.nearby_objects(at, cube_network::RADIUS_M, cube_network::NEARBY_LIMIT)
+                            });
+                            cube.set_network(cube_network.step(cube_network::Step {
+                                now: at,
+                                detected_at,
+                                nearby: nearby.as_deref(),
+                            }));
+                        }
                     }
                     if let Ok(status) = cube.snapshot() {
                         if Some(status.revision) != cube_revision {

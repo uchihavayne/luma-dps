@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCubeState, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS, CUBE_DIRECTION_LIFETIME_MS } from '../cube.mjs';
+import { normalizeCubeState, normalizeCubeNetwork, acceptsCubeSnapshot, cubePresentation, cubeDockVisible, cubeReferenceBase64, CUBE_REFERENCE_MAX_BYTES, CUBE_MATCH_LIFETIME_MS, CUBE_DIRECTION_LIFETIME_MS } from '../cube.mjs';
 import { normalizePreferences, exportTheme, importTheme } from '../model.mjs';
 
 const now = 1791939600000;
@@ -169,4 +169,35 @@ test('quiet audio diagnostics require received frames and never become a Cube ma
   assert.equal(cubePresentation(match({ ...listening, status: 'detected' }), { now }).quietInput, false);
   const state = normalizeCubeState({ input_level_db: -121, received_audio_frames: -1, stream_discontinuities: NaN, timestamp_uncertain_packets: '9', audio_present: 1 });
   assert.equal(state.input_level_db, null); assert.equal(state.received_audio_frames, 0); assert.equal(state.stream_discontinuities, 0); assert.equal(state.timestamp_uncertain_packets, 0); assert.equal(state.audio_present, false);
+});
+
+test('the network notice shows the learned Cube distance with or without the audio match', () => {
+  const near = { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' };
+  const quiet = cubePresentation({ enabled: false, network: near }, { now });
+  assert.equal(quiet.matched, false); assert.equal(quiet.network.near, true); assert.equal(quiet.network.distance, '18 m');
+  assert.equal(quiet.network.summary, '18 m · yaklaşıyorsun · önünde'); assert.equal(quiet.network.detail, 'yaklaşıyorsun · önünde'); assert.equal(quiet.network.nearLabel, 'Küp yakında');
+  assert.equal(cubeDockVisible(quiet, {}), true); assert.equal(cubeDockVisible(quiet, { showCubeLocator: false }), false);
+  const english = cubePresentation({ network: { ...near, trend: 'receding', facing: 'behind' } }, { now, locale: 'en' });
+  assert.equal(english.network.summary, '18 m · moving away · behind you'); assert.equal(english.network.label, 'Cube 18 m away');
+  // A failed read never keeps a stale distance on screen, and an unknown reading adds no words.
+  assert.equal(cubePresentation({ network: near }, { now, readError: 'offline' }).network.near, false);
+  assert.equal(cubePresentation({ network: { ...near, trend: 'unknown', facing: 'unknown' } }, { now }).network.summary, '18 m');
+});
+
+test('the network notice says what it is still waiting for and rejects malformed readings', () => {
+  assert.equal(cubePresentation({}, { now }).network.label, 'Ağ eşleşmesi öğreniyor · 0/3 ses eşleşmesi');
+  assert.equal(cubePresentation({ network: { phase: 'learning', matches: 2, needed: 3 } }, { now, locale: 'en' }).network.label, 'Learning the network match · 2/3 sound matches');
+  const ready = cubePresentation({ network: { phase: 'ready' } }, { now });
+  assert.equal(ready.network.near, false); assert.equal(ready.network.label, 'Ağ eşleşmesi hazır · yakında Küp yok'); assert.equal(cubeDockVisible(ready, {}), false);
+  for (const bad of [{ distance_m: -1 }, { distance_m: 501 }, { distance_m: 1.5 }, { distance_m: '18' }, { distance_m: NaN }, {}]) assert.equal(normalizeCubeNetwork({ phase: 'near', ...bad }).phase, 'ready');
+  assert.equal(normalizeCubeNetwork({ phase: 'near', distance_m: 5, trend: 'sideways', facing: 'up' }).trend, 'unknown');
+  assert.equal(normalizeCubeNetwork({ phase: 'near', distance_m: 5, trend: 'sideways', facing: 'up' }).facing, 'unknown');
+  for (const value of [null, [], 'near', 7]) assert.equal(normalizeCubeNetwork(value).phase, 'learning');
+  assert.equal(normalizeCubeNetwork({ matches: 99, needed: 0 }).matches, 10); assert.equal(normalizeCubeNetwork({ matches: 99, needed: 0 }).needed, 1);
+});
+
+test('a stored Cube state keeps its network reading when it is normalized again for display', () => {
+  const stored = normalizeCubeState({ network: { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' } });
+  assert.deepEqual(normalizeCubeState(stored).network, stored.network);
+  assert.equal(cubePresentation(stored, { now }).network.summary, '18 m · yaklaşıyorsun · önünde');
 });

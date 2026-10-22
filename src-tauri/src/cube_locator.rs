@@ -1,4 +1,4 @@
-use crate::{audio_capture, audio_decode, cube_signal};
+use crate::{audio_capture, audio_decode, cube_network, cube_signal};
 use serde::Serialize;
 use std::{
     fs,
@@ -47,6 +47,7 @@ pub struct CubeState {
     last_detection_ms: Option<u64>,
     audio_channels: u16,
     sample_rate: u32,
+    network: cube_network::NetworkCube,
     #[serde(skip)]
     last_audio_at: Option<Instant>,
 }
@@ -79,8 +80,13 @@ impl CubeState {
             last_detection_ms: None,
             audio_channels: 0,
             sample_rate: 0,
+            network: cube_network::NetworkCube::default(),
             last_audio_at: None,
         }
+    }
+
+    pub fn last_detection_ms(&self) -> Option<u64> {
+        self.last_detection_ms
     }
 
     fn clear_signal(&mut self) {
@@ -180,6 +186,17 @@ impl Service {
             state.revision += 1;
         }
         Ok(state.clone())
+    }
+
+    /// The network notice runs whether or not the audio listener does, so it has no worker
+    /// generation to check; an unchanged reading does not bump the revision.
+    pub fn set_network(&self, network: cube_network::NetworkCube) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.network != network {
+                state.network = network;
+                state.revision += 1;
+            }
+        }
     }
 
     fn update(&self, generation: u64, change: impl FnOnce(&mut CubeState)) {

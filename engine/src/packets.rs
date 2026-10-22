@@ -70,6 +70,15 @@ pub enum Event {
         id: u64,
         owner: u64,
     },
+    /// Any spawned entity with a model and a spawn point. The nearby-object probe reads these;
+    /// they take no part in damage, identity or saved records.
+    Object {
+        id: u64,
+        kind: u8,
+        model: u32,
+        x: f32,
+        y: f32,
+    },
     Cooldown {
         skill: u32,
         remaining_units: Option<u32>,
@@ -851,16 +860,18 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             let id = u64::from(bytes.variable()?);
             let mask_start = bytes.offset;
             let kind = bytes.byte()?;
-            if ![0x0c, 0x0d, 0x1c, 0x1f, 0x5f].contains(&kind) {
-                return Ok(None);
-            }
+            // Other kinds are not combat entities; they are only offered to the probe, and a
+            // frame that does not read cleanly is dropped without being counted as rejected.
+            let listed = [0x0c, 0x0d, 0x1c, 0x1f, 0x5f].contains(&kind);
             if id == 0 {
                 return Ok(None);
             }
             let narrow = npc_subtree(frame, mask_start, 2).ok();
             let wide = npc_subtree(frame, mask_start, 4).ok();
             let (name, model, model_end) = match (narrow, wide) {
-                (Some(a), Some(b)) if a != b => return Err(ReadError::Invalid),
+                (Some(a), Some(b)) if a != b => {
+                    return if listed { Err(ReadError::Invalid) } else { Ok(None) }
+                }
                 (Some(a), _) | (_, Some(a)) => a,
                 _ => return Ok(None),
             };
@@ -868,13 +879,15 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 .contains(&kind)
                 .then(|| explicit_spawn_owner(frame, id))
                 .flatten();
-            let spawn = Event::Npc {
-                id,
-                name,
-                model,
-                kind: if owner.is_some() { 0x5f } else { kind },
-            };
-            let mut events = vec![spawn];
+            let mut events = Vec::new();
+            if listed {
+                events.push(Event::Npc {
+                    id,
+                    name,
+                    model,
+                    kind: if owner.is_some() { 0x5f } else { kind },
+                });
+            }
             if let Some(owner) = owner {
                 events.push(Event::Owner { id, owner });
             }
@@ -885,21 +898,32 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 let x = f32::from_le_bytes(x.try_into().map_err(|_| ReadError::Invalid)?);
                 let y = f32::from_le_bytes(y.try_into().map_err(|_| ReadError::Invalid)?);
                 if crate::spatial::coordinates(x, y, None) && x.abs() > 1.0 && y.abs() > 1.0 {
-                    events.push(Event::Position(crate::spatial::Observation {
-                        actor_id: id,
-                        x,
-                        y,
-                        z: None,
-                        source: "server-spawn".into(),
-                        local_only: false,
-                    }));
+                    if kind != 0x5f && owner.is_none() {
+                        events.push(Event::Object {
+                            id,
+                            kind,
+                            model,
+                            x,
+                            y,
+                        });
+                    }
+                    if listed {
+                        events.push(Event::Position(crate::spatial::Observation {
+                            actor_id: id,
+                            x,
+                            y,
+                            z: None,
+                            source: "server-spawn".into(),
+                            local_only: false,
+                        }));
+                    }
                 }
             }
-            Ok(Some(if events.len() == 1 {
-                events.remove(0)
-            } else {
-                Event::Updates(events)
-            }))
+            Ok(match events.len() {
+                0 => None,
+                1 => Some(events.remove(0)),
+                _ => Some(Event::Updates(events)),
+            })
         }
         [4, 0x8d] => {
             let id = u64::from(bytes.variable()?);

@@ -416,3 +416,12 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #meter[data-layout=cupertino][data-row-metric=both]:not([data-large-type=true]) .player-stats > .player-share { display: block; flex: 0 0 calc(var(--share-col) - 6px); margin: 0; font-size: max(11px, calc(11px * var(--scale))); line-height: 16px; font-variant-numeric: tabular-nums; text-align: right; color: color-mix(in srgb, var(--text) 78%, transparent); overflow: hidden; }
 #meter[data-layout=cupertino] .player-share[hidden] { display: none !important; }
 @media (max-width: 299px) { #meter[data-layout=cupertino] .player-stats > .player-share { display: none !important; } }
+
+/* The Cube's distance from received game data, under the audio reading. */
+.cube-nav-network { display: flex; flex-direction: column; align-items: center; gap: 1px; text-align: center; font-variant-numeric: tabular-nums; }
+.cube-nav-network > b { font-size: 16px; line-height: 20px; color: var(--accent, var(--text)); }
+.cube-nav-network > small { font-size: 10.5px; line-height: 14px; color: var(--muted); }
+.cube-nav-network[hidden] { display: none; }
+.cube-network { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+@media (max-height: 220px) { .cube-nav-network { display: none; } }
+@container roster (max-height: 280px) { .cube-nav-network { display: none; } }
