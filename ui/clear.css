@@ -394,3 +394,25 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
   #meter:not([data-layout=cupertino]) .metrics { display: none; }
   #meter:not([data-layout=cupertino]) .roster-list { min-height: 84px; }
 }
+
+/* Solid class-coloured bars like the reference meters: the bar length is each player's DPS
+   against the top one, the DPS takes the bar's colour, and the share of the total sits at the
+   end of the row. */
+#meter[data-layout=cupertino] .player-bar { opacity: .86; background: linear-gradient(90deg, color-mix(in srgb, var(--bar-color, var(--class-color)) 72%, #000), var(--bar-color, var(--class-color))); }
+html[data-surface=light] #meter[data-layout=cupertino] .player-bar { opacity: .62; }
+#meter[data-layout=cupertino] .player-name,
+#meter[data-layout=cupertino] .player-numbers > span,
+#meter[data-layout=cupertino] .player-share { text-shadow: 0 1px 2px #000b; }
+html[data-surface=light] #meter[data-layout=cupertino] .player-name,
+html[data-surface=light] #meter[data-layout=cupertino] .player-numbers > span,
+html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shadow: none; }
+#meter[data-layout=cupertino] .player-numbers > .player-dps { color: color-mix(in srgb, var(--bar-color, var(--class-color)) 38%, var(--text)); }
+#meter[data-layout=cupertino] .player-numbers > .player-damage { color: color-mix(in srgb, var(--text) 86%, transparent); }
+#meter[data-layout=cupertino] { --share-col: 42px; }
+@media (max-width: 299px) { #meter[data-layout=cupertino] { --share-col: 0px; } }
+#meter[data-layout=cupertino][data-row-metric=both]:not([data-large-type=true]) #players .player { grid-template-columns: 12px minmax(0, 1fr) calc(max(76px, 76px * var(--scale)) + max(56px, 56px * var(--scale)) + 6px + var(--share-col)); }
+#meter[data-layout=cupertino][data-row-metric=both]:not([data-large-type=true]) .player-stats { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; }
+#meter[data-layout=cupertino][data-row-metric=both]:not([data-large-type=true]) .player-stats > .player-numbers { flex: 1 1 auto; min-width: 0; }
+#meter[data-layout=cupertino][data-row-metric=both]:not([data-large-type=true]) .player-stats > .player-share { display: block; flex: 0 0 calc(var(--share-col) - 6px); margin: 0; font-size: max(11px, calc(11px * var(--scale))); line-height: 16px; font-variant-numeric: tabular-nums; text-align: right; color: color-mix(in srgb, var(--text) 78%, transparent); overflow: hidden; }
+#meter[data-layout=cupertino] .player-share[hidden] { display: none !important; }
+@media (max-width: 299px) { #meter[data-layout=cupertino] .player-stats > .player-share { display: none !important; } }

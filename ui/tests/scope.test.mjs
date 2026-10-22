@@ -176,7 +176,7 @@ test('a missing personal aggregate and absent or capped own row remain unknown d
 });
 
 test('appearance export roundtrip includes layout but never exports identity, roster or scope preferences', () => {
-  const encoded = exportTheme({ appearanceRevision: 3, layout: 'glass', density: 'compact', rowMetric: 'damage', showClass: false, showShares: false, characterName: 'Private name', damageScope: 'party' });
+  const encoded = exportTheme({ appearanceRevision: 4, layout: 'glass', density: 'compact', rowMetric: 'damage', showClass: false, showShares: false, characterName: 'Private name', damageScope: 'party' });
   const decoded = importTheme(encoded);
   assert.equal(decoded.layout, 'glass'); assert.equal(decoded.density, 'compact'); assert.equal(decoded.rowMetric, 'damage');
   assert.equal(decoded.showClass, false); assert.equal(decoded.showShares, false);

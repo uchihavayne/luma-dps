@@ -103,10 +103,19 @@ test('appearance revision 3 moves every older layout to Luma Clear once and keep
     const migrated = normalizePreferences({ appearanceRevision: 2, layout, density: 'comfortable' });
     assert.equal(migrated.layout, 'cupertino', layout);
     assert.equal(migrated.density, 'compact');
-    assert.equal(migrated.appearanceRevision, 3);
+    assert.equal(migrated.appearanceRevision, 4);
     assert.equal(normalizePreferences({ ...migrated, layout }).layout, layout, `${layout} chosen afterwards is kept`);
   }
   assert.equal(normalizePreferences({}).layout, 'cupertino');
   assert.equal(normalizePreferences({ appearanceRevision: 2, layout: 'cupertino', density: 'comfortable' }).density, 'comfortable');
-  assert.equal(importTheme(exportTheme({ appearanceRevision: 3, layout: 'focus' })).layout, 'focus', 'an imported theme keeps its layout');
+  assert.equal(importTheme(exportTheme({ appearanceRevision: 4, layout: 'focus' })).layout, 'focus', 'an imported theme keeps its layout');
+});
+
+test('appearance revision 4 moves untouched bar colours to class colours once and keeps later choices', () => {
+  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'cupertino', rowColorMode: 'performance' }).rowColorMode, 'class');
+  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'cupertino' }).rowColorMode, 'class');
+  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'cupertino', rowColorMode: 'accent' }).rowColorMode, 'accent');
+  assert.equal(normalizePreferences({ appearanceRevision: 4, layout: 'cupertino', rowColorMode: 'performance' }).rowColorMode, 'performance', 'chosen after the move');
+  assert.equal(normalizePreferences({}).rowColorMode, 'class');
+  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'focus' }).layout, 'focus', 'a layout kept at revision 3 stays');
 });

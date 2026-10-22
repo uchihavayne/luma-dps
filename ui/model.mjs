@@ -71,7 +71,7 @@ export function visibleSettingsSections(sections, preferences = {}) {
     : name === 'hiddenCube' ? modules.cube : name === 'character' ? modules.dps || modules.pets || modules.odyle : true);
 }
 export const DEFAULTS = Object.freeze({
-  version: 1, appearanceRevision: 3, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
+  version: 1, appearanceRevision: 4, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
@@ -116,10 +116,13 @@ export function normalizePreferences(input = {}) {
   // afterwards is saved with revision 3 and kept.
   const revision = Number.isInteger(p.appearanceRevision) ? p.appearanceRevision : 0;
   const toClear = revision < 3;
+  // Revision 4 moves the untouched DPS-relative bar colours to class colours (solid bars like
+  // the reference meters); a colour mode picked afterwards is kept.
+  const toClassColors = revision < 4 && (!p.rowColorMode || p.rowColorMode === 'performance');
   const builtInReminders = Object.fromEntries(Object.entries(p.builtInReminders && typeof p.builtInReminders === 'object' ? p.builtInReminders : {}).filter(([id, value]) => /^builtin:[a-z0-9-]{1,48}$/.test(id) && value && typeof value === 'object').slice(0, 32).map(([id, value]) => [id, { enabled: value.enabled === true, leadMinutes: Math.round(bounded(value.leadMinutes, 0, 60, 5)) }]));
   const activeEventId = !p.activeEventId && p.calendarVersion !== 1 ? 'builtin:rift' : p.activeEventId === '' ? '' : events.some(event => event.id === p.activeEventId) || /^boss:\d{1,20}:\d{1,20}$/.test(p.activeEventId || '') || /^builtin:[a-z0-9-]{1,48}$/.test(p.activeEventId || '') ? p.activeEventId : 'builtin:rift';
   return {
-    version: 1, appearanceRevision: 3, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
+    version: 1, appearanceRevision: 4, locale: oneOf(p.locale, ['tr', 'en'], DEFAULTS.locale),
     theme: revision < 2 && p.theme === 'aurora' && (!p.layout || p.layout === 'studio') ? 'graphite' : oneOf(p.theme, Object.keys(THEMES), DEFAULTS.theme),
     font: oneOf(p.font, Object.keys(FONTS), DEFAULTS.font),
     targetFont: oneOf(p.targetFont, Object.keys(FONTS), DEFAULTS.targetFont),
@@ -128,7 +131,7 @@ export function normalizePreferences(input = {}) {
     sort: oneOf(p.sort, ['dps', 'damage', 'name'], 'dps'), mode: oneOf(p.mode, ['all', 'boss', 'both'], 'all'), locked: Boolean(p.locked),
     damageScope: oneOf(p.damageScope, ['personal', 'party', 'observed'], 'personal'), characterName: str(p.characterName, 64).trim(),
     rosterScope: oneOf(p.rosterScope, ['personal', 'party', 'observed'], 'observed'),
-    rowColorMode: oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'performance'),
+    rowColorMode: toClassColors ? 'class' : oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'class'),
     layout: toClear ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: toClear && p.layout !== 'cupertino' ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
@@ -180,7 +183,7 @@ export function acceptsStateSnapshot(current, incoming) {
 export function importTheme(text) {
   const parsed = JSON.parse(text);
   if (!parsed || parsed.type !== 'luma-theme' || parsed.version !== 1 || !parsed.theme || typeof parsed.theme !== 'object') throw new Error('Invalid Luma theme');
-  const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 3 });
+  const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 4 });
   if (parsed.theme.background && !p.background) throw new Error('Invalid raster background');
   return Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
 }
