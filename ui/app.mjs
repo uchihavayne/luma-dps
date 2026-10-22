@@ -38,7 +38,7 @@ import { targetDemoState, rosterDemoState } from './target-demo.mjs';
 import { PET_CATALOG, PET_DATA_NOTICE } from './pet-catalog.mjs';
 import { petDiagnosticReport } from './pet-diagnostics.mjs';
 import { normalizeCaptureDiagnostics, captureDiagnosticText, renderCaptureDiagnostics, PACKET_MONITOR_EXPORTS } from './capture-diagnostics.mjs';
-import { normalizePetCatalog, petPlan, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, refreshPetGuidePanel, PET_PIN_LIMIT } from './pets.mjs';
+import { normalizePetCatalog, petPlan, defaultPetFilters, petAdvances, filteredPets, trackedPets, renderPetTracker, renderPetGuide, petLabels, petReferenceUrl, petMetadataTransition, petGuideFilterAction, petTargetMatches, petPinTransition, refreshPetGuidePanel, PET_PIN_LIMIT } from './pets.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -90,7 +90,7 @@ let historyClearPending = false;
 let warnedWindup = '';
 let assistTimeline = [], assistPending = false;
 const petCatalog = normalizePetCatalog(PET_CATALOG);
-let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null;
+let petFilters = { query: '', faction: 'all', genus: 'all', status: 'all', sort: 'name', page: 0 }, petSelectedId = null, petFiltersTouched = false;
 let petPinObservation = null, petDiagnosticsOpen = false, petDiagnosticPending = false, petDrawerRefreshPending = false;
 let characterData = characterSnapshot(), characterPending = false, selectedBuild = 'own', worldData = fieldBossSnapshot(), worldPending = false;
 let gameReport = null, gameCompareRecord = null, gameComparePending = false;
@@ -1561,6 +1561,8 @@ function petDiagnosticsContent() {
 
 function petsContent() {
   const plan = currentPetPlan();
+  // Once counters arrive, open on the pets that still need souls unless the user already chose a view.
+  if (!petFiltersTouched && plan.observedCount > 0) { petFiltersTouched = true; petFilters = { ...petFilters, ...defaultPetFilters(plan), page: 0 }; }
   petFilters.page = filteredPets(plan, { ...petFilters, pins: prefs.petPins }).page;
   return `${demo ? source(t('sourceDemo')) : ''}${renderPetGuide(plan, petCatalog, { locale: prefs.locale, filters: petFilters, pins: prefs.petPins, goal: prefs.petGoal, show: prefs.showPetTracker, automatic: prefs.petAutoTrack, selectedId: petSelectedId })}${petDiagnosticsContent()}<details class="pet-data-notice"><summary>${prefs.locale === 'tr' ? 'Pet verileri ve lisans bildirimi' : 'Pet data and license notice'}</summary><p>MetaBot.GG · ${esc(petCatalog.verified_at)} · ${esc(PET_CATALOG.source_client_build)}</p><pre>${esc(PET_DATA_NOTICE)}</pre></details>`;
 }
@@ -1570,9 +1572,22 @@ function refreshPetsDrawer() {
   petDrawerRefreshPending = !refreshPetGuidePanel($('#drawer-content'), () => refreshDrawer());
 }
 
+// Level memory per character, so switching characters never reads as a level-up.
+let petLevelMemory = { owner: '', levels: null };
+function notifyPetAdvances(plan) {
+  const owner = String(petCollectionOwner(state)?.actor_id ?? '');
+  const { notices, levels } = petAdvances(owner && petLevelMemory.owner === owner ? petLevelMemory.levels : null, plan);
+  petLevelMemory = { owner, levels };
+  if (!notices.length) return;
+  const tr = prefs.locale === 'tr';
+  toast(notices.map(notice => `${notice.name || `#${notice.id}`} · ${notice.complete ? (tr ? 'Lv.3 tamamlandı' : 'Lv.3 complete') : `Lv.${notice.to}`}`).join(' · '));
+  beep();
+}
+
 function renderPetTracking() {
   if ($('#pet-tracker').querySelector('button:active')) return;
   const plan = currentPetPlan(), rows = trackedPets(plan, prefs.petPins, { automatic: prefs.petAutoTrack });
+  notifyPetAdvances(plan);
   const host = $('#pet-tracker');
   const emptyPanelRequested = prefs.layout === 'cupertino' || !prefs.displayModules.dps;
   host.hidden = !hudPanelVisible(prefs, 'pets') || !prefs.showPetTracker || !rows.length && !emptyPanelRequested;
@@ -1599,7 +1614,7 @@ function renderModuleHome(plan, tracked) {
 
 function openPetGuide(id = null) {
   petSelectedId = Number.isSafeInteger(id) ? id : null;
-  if (petSelectedId !== null) { const row = currentPetPlan().rows.find(row => row.id === petSelectedId); petFilters = { ...petFilters, query: row?.name || String(petSelectedId), faction: 'all', genus: 'all', status: 'all', page: 0 }; }
+  if (petSelectedId !== null) { const row = currentPetPlan().rows.find(row => row.id === petSelectedId); petFiltersTouched = true; petFilters = { ...petFilters, query: row?.name || String(petSelectedId), faction: 'all', genus: 'all', status: 'all', page: 0 }; }
   openDrawer('analysis', 'pets');
 }
 
@@ -2254,7 +2269,7 @@ $('#drawer-content').addEventListener('change', async event => {
   }
   if (['petFaction', 'petGenus', 'petStatus', 'petSort'].includes(event.target.name)) {
     const values = Object.fromEntries(new FormData(event.target.form));
-    petFilters = { query: values.petQuery || '', faction: values.petFaction || 'all', genus: values.petGenus || 'all', status: values.petStatus || 'all', sort: values.petSort || 'name', page: 0 }; petSelectedId = null; refreshDrawer(event.target.name); return;
+    petFilters = { query: values.petQuery || '', faction: values.petFaction || 'all', genus: values.petGenus || 'all', status: values.petStatus || 'all', sort: values.petSort || 'name', page: 0 }; petSelectedId = null; petFiltersTouched = true; refreshDrawer(event.target.name); return;
   }
   const element = event.target, name = element.name;
   if (name === 'fullscreenOverlay') { await toggleFullscreenOverlay(element.checked, fullscreenLayout(prefs)); return; }
@@ -2422,7 +2437,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'modules-pets' || actionName === 'modules-all') { savePreferences({ displayModules: displayModulePreset(actionName === 'modules-pets' ? 'pets' : 'all') }); refreshDrawer(); }
   if (actionName === 'open-pet-guide') openPetGuide();
   if (actionName === 'pet-pin') togglePetPin(Number(id));
-  if (['pet-guide-reset', 'pet-guide-catalog'].includes(actionName)) { petSelectedId = null; petFilters = petGuideFilterAction(petFilters, actionName); refreshDrawer(); }
+  if (['pet-guide-reset', 'pet-guide-catalog'].includes(actionName)) { petSelectedId = null; petFiltersTouched = true; petFilters = petGuideFilterAction(petFilters, actionName); refreshDrawer(); }
   if (actionName === 'pet-guide-previous' || actionName === 'pet-guide-next') { petSelectedId = null; petFilters.page = Math.max(0, petFilters.page + (actionName === 'pet-guide-next' ? 1 : -1)); refreshDrawer(); }
   if (actionName === 'refresh-world') await readWorldData();
   if (actionName === 'refresh-comparison') await readComparisonRecord();

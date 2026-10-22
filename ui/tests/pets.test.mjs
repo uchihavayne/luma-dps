@@ -485,3 +485,57 @@ test('a fresh soul event can auto-track a cached pet without pretending its olde
     assert.deepEqual(trackedPets(oldOnly, [], { now }), []);
   }
 });
+
+import { defaultPetFilters } from '../pets.mjs';
+
+test('the guide opens on unfinished pets, fewest souls left first, only when there is something to work on', () => {
+  const unfinished = plan([pet({ pet_id: 1002, level: 1, progress: 20 }), pet({ pet_id: 1003, level: 3, progress: 0 })]);
+  assert.deepEqual(defaultPetFilters(unfinished), { status: 'incomplete', sort: 'remaining' });
+  // The default view really lists the unfinished pet first and keeps the finished one out.
+  const view = filteredPets(unfinished, { ...defaultPetFilters(unfinished) });
+  assert.equal(view.rows[0].id, 1002);
+  assert.equal(view.rows.some(row => row.id === 1003), false);
+  assert.equal(defaultPetFilters(plan([pet({ pet_id: 1004, level: 3, progress: 0 })])), null, 'every received pet is complete');
+  assert.equal(defaultPetFilters(petPlan(null, catalog, { localPlayerId: '7', now })), null, 'no counters received yet');
+  assert.equal(defaultPetFilters(null), null);
+});
+
+test('the guide keeps search first and folds filters and tracking settings without losing a control', () => {
+  const value = plan([pet({ pet_id: 1002, level: 1, progress: 20 })]);
+  const guide = renderPetGuide(value, catalog, { filters: { status: 'incomplete', sort: 'remaining' }, pins: [1002] });
+  assert.ok(guide.indexOf('name="petQuery"') < guide.indexOf('data-state-key="pet-filters"'), 'search comes before the folded filters');
+  assert.ok(guide.includes('<summary>Filtreler · 2</summary>'), 'the summary counts the active filters');
+  assert.ok(guide.includes('data-state-key="pet-settings"'));
+  for (const name of ['petFaction', 'petGenus', 'petStatus', 'petSort', 'petGoal', 'showPetTracker', 'petAutoTrack']) assert.ok(guide.includes(`name="${name}"`), name);
+  assert.ok(guide.includes('data-action="pet-guide-reset"'));
+  assert.ok(guide.includes('data-action="pet-pin"'));
+  assert.equal(guide.match(/type="submit"/g)?.length, 1, 'one apply button for the whole form');
+  assert.ok(renderPetGuide(value, catalog, { locale: 'en', filters: {} }).includes('<summary>Filters</summary>'));
+  // An incomplete inventory is a quiet note, not an alert.
+  const partial = renderPetGuide(petPlan(inventory([pet()], { inventory_complete: false }), catalog, { localPlayerId: '7', now }), catalog, {});
+  assert.ok(partial.includes('class="help pet-partial"') && !partial.includes('quality-warning'));
+});
+
+import { petAdvances } from '../pets.mjs';
+
+test('a live level rise is announced once, and nothing else is', () => {
+  const before = plan([pet({ pet_id: 1002, level: 1, progress: 24 }), pet({ pet_id: 1003, level: 2, progress: 10 })]);
+  const first = petAdvances(null, before);
+  assert.deepEqual(first.notices, [], 'the first list is a baseline');
+  assert.deepEqual([...first.levels], [[1002, 1], [1003, 2]]);
+  const after = plan([pet({ pet_id: 1002, level: 2, progress: 0, progress_source: 'server-level-reset' }), pet({ pet_id: 1003, level: 3, progress: 0, progress_source: 'server-level-reset' })]);
+  const rise = petAdvances(first.levels, after);
+  assert.deepEqual(rise.notices.map(notice => [notice.id, notice.from, notice.to, notice.complete]), [[1002, 1, 2, false], [1003, 2, 3, true]]);
+  assert.equal(petAdvances(rise.levels, after).notices.length, 0, 'the same levels do not repeat the notice');
+});
+
+test('a counter change, a lower level, a stale restore or a new pet never announces a level-up', () => {
+  const base = petAdvances(null, plan([pet({ pet_id: 1002, level: 2, progress: 10 })])).levels;
+  assert.equal(petAdvances(base, plan([pet({ pet_id: 1002, level: 2, progress: 40 })])).notices.length, 0, 'souls alone are not a level');
+  assert.equal(petAdvances(base, plan([pet({ pet_id: 1002, level: 1, progress: 3 })])).notices.length, 0, 'a lower level is not an advance');
+  assert.equal(petAdvances(base, plan([pet({ pet_id: 1003, level: 3, progress: 0 })])).notices.length, 0, 'a pet first seen later is not a level-up');
+  const stale = plan([pet({ pet_id: 1002, level: 3, progress: 0, progress_stale: true })]);
+  assert.equal(petAdvances(base, stale).notices.length, 0, 'a last-known value is not live');
+  assert.equal(petAdvances(base, petPlan(null, catalog, { localPlayerId: '7', now })).notices.length, 0);
+  assert.deepEqual(petAdvances(null, null), { notices: [], levels: new Map() });
+});

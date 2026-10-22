@@ -357,3 +357,29 @@ body.fullscreen-dashboard #meter[data-layout=cupertino][data-detail-rows=false] 
 .boss-fight strong, .boss-fight small { font-variant-numeric: tabular-nums; }
 .boss-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .boss-actions .action-button { min-height: 28px; padding: 3px 10px; font-size: 11px; }
+
+/* Pet guide: slim counters, the search bar first, settings and filters folded. */
+.pet-guide .pet-overview { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.pet-guide .pet-overview > span { flex-direction: row; align-items: baseline; gap: 6px; padding: 5px 11px; border-radius: 999px; font-size: 11px; }
+.pet-guide .pet-overview strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.pet-guide #pet-filter-form { margin: 0 0 8px; }
+.pet-guide .pet-partial { margin: 0 0 8px; font-size: 11px; }
+.pet-guide .pet-settings .pet-tracker-settings { padding: 0 0 6px; border: 0; background: none; }
+
+/* Pet tracker beside the DPS list: two short lines per pet so the roster keeps the room.
+   Pet-only mode keeps the large rows. */
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-heading button { min-height: 22px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-rows { max-height: 76px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-row { min-height: 36px; padding: 4px 8px; align-items: center; gap: 0; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-open { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; row-gap: 0; align-items: baseline; width: 100%; padding: 0 0 4px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-title { grid-column: 1; grid-row: 1; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-values { grid-column: 2; grid-row: 1; gap: 6px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-meta { grid-column: 1 / -1; grid-row: 2; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-title strong { font-size: 12px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-counter { font-size: 11px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-progress-track { height: 3px; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-row { min-height: 0; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-title strong,
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-counter { line-height: 1.25; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-meta small { font-size: 10px; line-height: 1.2; }
+#meter[data-layout=cupertino]:not(.pet-only) #pet-tracker .pet-tracker-rows { max-height: 80px; }
