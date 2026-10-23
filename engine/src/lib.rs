@@ -1605,7 +1605,8 @@ impl MeterEngine {
                     self.finish(self.last_hit.saturating_add(IDLE_MS))
                 }
                 if self.started.is_none() {
-                    self.completed = None;
+                    // The finished encounter stays on screen: damage taken or a heal tick right
+                    // after a kill must not wipe its result. Only a hit dealt to a target does.
                     self.damage_samples.clear();
                     self.healing_samples.clear();
                     self.healing_sample_complete = true;
@@ -1618,6 +1619,9 @@ impl MeterEngine {
                     self.started = Some(now);
                     self.paused_ms = 0;
                     self.diagnostics.truncated_encounter = false;
+                }
+                if self.completed.is_some() && self.deals_damage(&hit) {
+                    self.completed = None;
                 }
                 self.last_hit = now;
                 if !self.encounter_build_taken
@@ -1811,6 +1815,17 @@ impl MeterEngine {
         std::mem::take(&mut self.record_observations)
     }
 
+    /// A hit dealt to a target (player or owned summon onto a non-player), as opposed to damage
+    /// taken, an unclassified amount or a heal.
+    fn deals_damage(&self, hit: &packets::Hit) -> bool {
+        sample_metric(
+            &self.identities,
+            hit.source,
+            hit.target,
+            self.own_id.or(self.manual_own_id),
+        ) == "damage"
+    }
+
     fn observe_healing(&mut self, hit: packets::Hit, now: u64) {
         if self.paused
             || hit.source == 0
@@ -1834,7 +1849,6 @@ impl MeterEngine {
             self.finish(self.last_hit.saturating_add(IDLE_MS));
         }
         if self.started.is_none() {
-            self.completed = None;
             self.damage_samples.clear();
             self.sample_complete = true;
             self.healing_samples.clear();
@@ -3219,6 +3233,11 @@ impl MeterEngine {
         if self.started.is_none() || self.hit_count == 0 {
             return;
         }
+        // A finished encounter that is still on screen belongs to the past: build this record
+        // from the current one only.
+        let previous = self.completed.take();
+        // The cached totals were built for the shown result; rebuild them for this encounter.
+        self.dirty();
         let mut record = self.snapshot(now, "all");
         record.ended_ms = now;
         record.network_latency = self.latency.snapshot(record.started_ms, now);
@@ -3273,7 +3292,13 @@ impl MeterEngine {
                     .map(|identity| (id, identity))
             })
             .collect();
-        self.completed = Some(Completed {
+        // An encounter that dealt no damage (only damage taken or heals) must not replace the
+        // shown result of one that did.
+        let keep_previous = record.total_damage == 0
+            && previous
+                .as_ref()
+                .is_some_and(|previous| previous.record.total_damage > 0);
+        let finished = Completed {
             aggregates: std::mem::take(&mut self.aggregates),
             identities,
             bosses: self.bosses.clone(),
@@ -3283,7 +3308,12 @@ impl MeterEngine {
             generation: self.generation,
             capture_complete: self.diagnostics.stream_gaps == self.encounter_gaps_at_start
                 && !self.diagnostics.truncated_encounter,
-        });
+        };
+        self.completed = if keep_previous {
+            previous
+        } else {
+            Some(finished)
+        };
         self.started = None;
         self.damage_samples.clear();
         self.healing_samples.clear();
@@ -3451,6 +3481,7 @@ impl MeterEngine {
             history_revision: self.history_revision,
             history_count: self.history.len(),
             encounter_active: self.started.is_some()
+                && self.completed.is_none()
                 && !self.paused
                 && now.saturating_sub(self.last_hit) < IDLE_MS,
             local_player_id: current.local_player_id,
