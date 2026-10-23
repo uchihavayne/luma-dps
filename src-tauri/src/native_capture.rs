@@ -1939,23 +1939,24 @@ mod windows {
             }
             engine.set_party_members(&[1480]).unwrap();
             let state = engine.live_state(TEST_CLOCK_MS + 3_000);
+            // The damage clock runs from the first hit (offset 0) to the last (offset 2000).
             assert_eq!(state.total_damage, 318);
-            assert_eq!(state.elapsed_ms, 3_000);
-            assert_eq!(state.dps, 106.0);
+            assert_eq!(state.elapsed_ms, 2_000);
+            assert_eq!(state.dps, 159.0);
             assert_eq!(state.personal_total_damage, Some(318));
-            assert_eq!(state.personal_elapsed_ms, 3_000);
-            assert_eq!(state.personal_dps, Some(106.0));
+            assert_eq!(state.personal_elapsed_ms, 2_000);
+            assert_eq!(state.personal_dps, Some(159.0));
             assert_eq!(state.party_total_damage, Some(318));
-            assert_eq!(state.party_elapsed_ms, 3_000);
-            assert_eq!(state.party_dps, Some(106.0));
+            assert_eq!(state.party_elapsed_ms, 2_000);
+            assert_eq!(state.party_dps, Some(159.0));
             let record = engine.current_record(TEST_CLOCK_MS + 3_000);
             assert_eq!(record.damage_samples[0].timestamp_ms, TEST_CLOCK_MS);
             assert_eq!(record.damage_samples[2].timestamp_ms, TEST_CLOCK_MS + 2_000);
             engine.tick(TEST_CLOCK_MS + 12_000);
             let completed = engine.history_snapshot().1.remove(0);
-            assert_eq!(completed.elapsed_ms, 12_000);
-            assert_eq!(completed.personal_elapsed_ms, 12_000);
-            assert_eq!(completed.personal_dps, Some(26.5));
+            assert_eq!(completed.elapsed_ms, 2_000);
+            assert_eq!(completed.personal_elapsed_ms, 2_000);
+            assert_eq!(completed.personal_dps, Some(159.0));
         }
 
         #[test]

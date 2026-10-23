@@ -79,7 +79,7 @@ fn unfiltered_summary_distinguishes_accepted_tcp_damage_from_a_boss_filtered_zer
     let unfiltered = &state.all_targets_summary;
     assert_eq!(unfiltered.total_damage, 106);
     assert_eq!(unfiltered.dps, 106.0);
-    assert_eq!(unfiltered.elapsed_ms, 1000);
+    assert_eq!(unfiltered.elapsed_ms, 0);
     assert_eq!(unfiltered.personal_total_damage, None);
     assert_eq!(unfiltered.personal_dps, None);
     assert_eq!(unfiltered.personal_elapsed_ms, None);
@@ -274,12 +274,12 @@ fn nearby_ungrouped_rows_keep_received_names_and_rates_when_self_is_unresolved()
     assert_eq!(state.personal_total_damage, None);
     assert_eq!(state.party_total_damage, None);
     assert_eq!(state.total_damage, 500);
-    assert_eq!(state.dps, 250.0);
+    assert_eq!(state.dps, 500.0);
     assert_eq!(state.players.len(), 2);
     assert_eq!(state.players[0].name, "弓手");
-    assert_eq!(state.players[0].dps, 150.0);
+    assert_eq!(state.players[0].dps, 300.0);
     assert_eq!(state.players[1].name, "Yakın");
-    assert_eq!(state.players[1].dps, 100.0);
+    assert_eq!(state.players[1].dps, 200.0);
     assert!(state.players.iter().all(|row| row.identity_confirmed));
     assert!(state.players.iter().all(|row| !row.in_party));
     assert_eq!(state.diagnostics.rejected_frames, 0);
@@ -332,16 +332,17 @@ fn a_late_party_roster_preserves_nearby_rows_and_only_sums_its_named_members() {
     assert_eq!(state.party_membership_source, "server");
     assert_eq!(state.party_member_ids, vec![1, 2]);
     assert_eq!(state.party_total_damage, Some(300));
-    assert_eq!(state.party_dps, Some(150.0));
+    assert_eq!(state.party_dps, Some(300.0));
     assert_eq!(state.players.len(), 3);
     let friend = state.players.iter().find(|row| row.id == 2).unwrap();
     assert_eq!(friend.name, "Friend");
     assert_eq!(friend.class_name, "Ranger");
-    assert_eq!(friend.dps, 100.0);
+    // All three hits arrived at the same instant: no span, so the one-second minimum divisor.
+    assert_eq!(friend.dps, 200.0);
     assert!(friend.in_party);
     let nearby = state.players.iter().find(|row| row.id == 3).unwrap();
     assert_eq!(nearby.name, "Nearby");
-    assert_eq!(nearby.dps, 450.0);
+    assert_eq!(nearby.dps, 900.0);
     assert!(!nearby.in_party);
     assert_eq!(state.diagnostics.rejected_frames, 0);
 }

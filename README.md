@@ -59,6 +59,10 @@ Use the four-square **Modules** header control for **Pet only**, **All modules**
 
 **Analysis → Sharing and rankings** remains in the same app drawer. Copying an encounter text or exporting a local file works without a server. The free [Luma Community service](https://luma-dps-community.uchihavayne.chatgpt.site) is publicly available without an account. Online sharing is an explicit action with anonymous names by default and a separate ranking opt-in. See [sharing, privacy and eligibility](docs/community-sharing.md).
 
+## How DPS is timed
+
+DPS is damage divided by the time from the first hit to the last hit, per player or target window; the quiet time that ends an encounter (ten seconds without a hit, or thirty for a boss that is still alive) is not counted, and neither is healing that keeps an encounter open. A single hit has no span, so the one-second minimum divisor applies. The number shown while you fight is the number saved when the encounter closes: it does not fall during a pause between hits. Damage taken, summon attribution and pauses use the same clock, with pauses subtracted.
+
 ## Your character and measurement scope
 
 The default player list is **Nearby**, independent of the header summary, which defaults to **Personal**. Received player names, total damage, per-second DPS and shares remain visible even when local identity is unresolved. The footer shows separate personal, party and nearby rates. Settings can change the player list, header/report scope and row values independently. Relative-DPS bar colors are the default; class colors or the theme accent remain available.

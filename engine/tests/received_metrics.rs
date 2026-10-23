@@ -52,8 +52,8 @@ fn known_npc_damage_taken_does_not_become_outgoing_damage_and_keeps_exact_body_t
     assert_eq!(state.total_damage, 0);
     assert_eq!(state.personal_damage_taken, Some(500));
     assert_eq!(state.personal_damage_taken_started_ms, Some(1000));
-    assert_eq!(state.personal_damage_taken_elapsed_ms, 2000);
-    assert_eq!(state.personal_damage_taken_per_second, Some(250.0));
+    assert_eq!(state.personal_damage_taken_elapsed_ms, 1000);
+    assert_eq!(state.personal_damage_taken_per_second, Some(500.0));
     assert!(state.personal_damage_taken_complete);
     assert_eq!(state.players.len(), 1);
     assert_eq!(state.players[0].id, 1);
@@ -88,7 +88,7 @@ fn player_to_player_heal_or_pvp_stays_unclassified_and_cannot_inflate_pve_or_tak
     assert_eq!(state.unclassified_player_target_amount, 1300);
     assert_eq!(state.unclassified_player_target_events, 2);
     assert_eq!(state.personal_started_ms, Some(4000));
-    assert_eq!(state.personal_elapsed_ms, 1000);
+    assert_eq!(state.personal_elapsed_ms, 0);
     assert_eq!(state.personal_healing, None);
     assert_eq!(state.personal_hps, None);
     let record = engine.current_record(5000);
@@ -108,7 +108,7 @@ fn late_player_identity_reclassifies_amount_duration_and_damage_samples_together
     player(&mut engine, 2, false);
     let state = engine.live_state(4000);
     assert_eq!(state.total_damage, 100);
-    assert_eq!(state.elapsed_ms, 1000);
+    assert_eq!(state.elapsed_ms, 0);
     assert_eq!(state.personal_started_ms, Some(3000));
     assert_eq!(state.personal_dps, Some(100.0));
     let record = engine.current_record(4000);

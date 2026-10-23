@@ -93,7 +93,8 @@ fn completed_combat_stays_visible_and_history_is_fetched_separately() {
     );
     let state = engine.live_state(5000);
     assert_eq!(state.total_damage, 300);
-    assert_eq!(state.elapsed_ms, 1500);
+    // The damage clock stops at the last hit, not at the target's death.
+    assert_eq!(state.elapsed_ms, 1000);
     assert!(!state.encounter_active);
     assert!(state.history.is_empty());
     assert_eq!(state.history_count, 1);

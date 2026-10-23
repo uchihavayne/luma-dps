@@ -48,8 +48,9 @@ fn strangers_on_the_same_target_are_not_personal_or_party_damage() {
     let state = engine.live_state(4000);
     assert_eq!(state.total_damage, 1200);
     assert_eq!(state.personal_total_damage, Some(100));
-    assert_eq!(state.personal_elapsed_ms, 2000);
-    assert_eq!(state.personal_dps, Some(50.0));
+    // One personal hit has no span: the rate uses the one-second minimum divisor.
+    assert_eq!(state.personal_elapsed_ms, 0);
+    assert_eq!(state.personal_dps, Some(100.0));
     assert_eq!(state.party_total_damage, Some(300));
     assert_eq!(state.personal_targets[0].damage, 100);
     assert_eq!(state.party_targets[0].damage, 300);
@@ -499,8 +500,9 @@ fn reset_keeps_a_current_session_binding_and_completed_personal_time_stays_froze
         },
         7000,
     );
-    assert_eq!(engine.live_state(12000).personal_elapsed_ms, 3000);
-    assert_eq!(engine.history_snapshot().1[0].personal_elapsed_ms, 3000);
+    // First hit at 1000, last at 6000, less the 3000 ms spent paused in between.
+    assert_eq!(engine.live_state(12000).personal_elapsed_ms, 2000);
+    assert_eq!(engine.history_snapshot().1[0].personal_elapsed_ms, 2000);
     engine.reset();
     assert_eq!(engine.live_state(12000).local_player_id, Some(1));
     assert_eq!(engine.live_state(12000).personal_total_damage, Some(0));

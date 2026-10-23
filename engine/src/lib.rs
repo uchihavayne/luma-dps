@@ -436,9 +436,10 @@ impl SourceActivity {
             .last
             .saturating_sub(self.first)
             .saturating_sub(self.paused_at_last.saturating_sub(self.paused_at_start));
-        // Cap inactivity in the same active clock as the elapsed interval.
-        // A pause after the cap must not shorten an already observed window.
-        elapsed.min(at_last_hit.saturating_add(IDLE_MS))
+        // The damage clock stops at the last hit: the quiet time that ends an encounter is not
+        // combat time, so it must not dilute DPS. The cap is in the same active clock as the
+        // elapsed interval, so a pause after the last hit does not shorten the observed window.
+        elapsed.min(at_last_hit)
     }
 }
 #[derive(Default)]
@@ -2594,7 +2595,7 @@ impl MeterEngine {
         let end = if self.paused {
             self.pause_at.unwrap_or(self.last_hit).min(now)
         } else {
-            now.min(self.last_hit.saturating_add(IDLE_MS))
+            now.min(self.last_hit)
         };
         end.saturating_sub(start).saturating_sub(self.paused_ms)
     }
@@ -3805,7 +3806,7 @@ fn build_timeline(record: &Encounter) -> DamageTimeline {
         return DamageTimeline::default();
     };
     let start = record.started_ms.min(first);
-    let span = record.ended_ms.max(last).saturating_sub(start).max(1);
+    let span = last.saturating_sub(start).max(1);
     let interval_ms = span.div_ceil(TIMELINE_BUCKETS).div_ceil(1000).max(1) * 1000;
     let buckets = (span / interval_ms + 1) as usize;
     let mut total = vec![0u64; buckets];
@@ -4294,8 +4295,9 @@ mod tests {
         engine.ingest_event(hit(2, 10, 100, false), 3000);
         let state = engine.state(5000);
         assert_eq!(state.total_damage, 500);
-        assert_eq!(state.elapsed_ms, 4000);
-        assert_eq!(state.dps, 125.0);
+        // The damage clock runs from the first hit to the last, not to the moment of the poll.
+        assert_eq!(state.elapsed_ms, 2000);
+        assert_eq!(state.dps, 250.0);
         assert_eq!(state.players[0].share, 80.0);
         assert_eq!(state.players[0].skills[0].crit_hits, 1);
         assert_eq!(
@@ -4342,13 +4344,15 @@ mod tests {
     fn pause_excludes_damage_and_paused_duration() {
         let mut engine = MeterEngine::default();
         engine.ingest_event(hit(1, 10, 100, false), 1000);
-        engine.set_paused_at(true, 2000);
+        engine.ingest_event(hit(1, 10, 100, false), 2000);
+        engine.set_paused_at(true, 2500);
         engine.ingest_event(hit(1, 10, 1000, false), 3000);
-        assert_eq!(engine.state(4000).total_damage, 100);
+        assert_eq!(engine.state(4000).total_damage, 200);
         assert_eq!(engine.state(4000).elapsed_ms, 1000);
         engine.set_paused_at(false, 5000);
         engine.ingest_event(hit(1, 10, 100, false), 6000);
-        assert_eq!(engine.state(7000).elapsed_ms, 3000);
+        // First hit at 1000, last at 6000, less the 2500 ms spent paused in between.
+        assert_eq!(engine.state(7000).elapsed_ms, 2500);
     }
     #[test]
     fn reset_saves_a_bounded_encounter_and_clears_the_current_meter() {

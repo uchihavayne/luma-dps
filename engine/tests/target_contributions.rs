@@ -73,11 +73,12 @@ fn unpartied_target_top_ten_excludes_other_mobs_and_keeps_own_rank_below_ten() {
     );
     assert!(boss.participants.iter().all(|row| !row.in_party));
     assert_eq!(boss.started_ms, Some(1000));
-    assert_eq!(boss.elapsed_ms, 10_000);
-    assert_eq!(boss.participants[0].dps, 120.0);
+    // The target's damage clock runs from its first hit (1000) to its last (3000).
+    assert_eq!(boss.elapsed_ms, 2000);
+    assert_eq!(boss.participants[0].dps, 600.0);
     assert_eq!(boss.own_rank, Some(13));
     assert_eq!(boss.own_participant.as_ref().unwrap().damage, 50);
-    assert_eq!(boss.own_participant.as_ref().unwrap().dps, 5.0);
+    assert_eq!(boss.own_participant.as_ref().unwrap().dps, 25.0);
     assert_eq!(boss.party_total_damage, None);
     assert_eq!(state.focused_target_id, Some(900));
     assert_eq!(state.encounter_started_ms, Some(1000));
@@ -117,10 +118,10 @@ fn party_summary_uses_all_target_contributors_and_confirmed_pet_damage_merges_wi
     assert!(target.participants.iter().all(|row| row.id != 90));
     assert_eq!(target.own_participant.as_ref().unwrap().damage, 150);
     assert_eq!(target.party_total_damage, Some(250));
-    assert_eq!(target.party_dps, Some(25.0));
+    assert_eq!(target.party_dps, Some(125.0));
     assert_eq!(state.all_targets_summary.party_total_damage, Some(250));
-    assert_eq!(state.all_targets_summary.party_dps, Some(25.0));
-    assert_eq!(state.all_targets_summary.party_elapsed_ms, Some(10_000));
+    assert_eq!(state.all_targets_summary.party_dps, Some(125.0));
+    assert_eq!(state.all_targets_summary.party_elapsed_ms, Some(2000));
     assert_eq!(state.focused_target_observed_at_ms, Some(3000));
 }
 
@@ -292,11 +293,11 @@ fn boss_filter_keeps_unmarked_live_target_separate_from_filtered_totals_and_repo
     assert!(state.targets.is_empty());
     assert!(state.players.iter().all(|player| player.damage == 0));
     assert_eq!(state.all_targets_summary.total_damage, 600);
-    assert_eq!(state.all_targets_summary.dps, 400.0);
-    assert_eq!(state.all_targets_summary.elapsed_ms, 1500);
+    assert_eq!(state.all_targets_summary.dps, 600.0);
+    assert_eq!(state.all_targets_summary.elapsed_ms, 1000);
     assert_eq!(state.all_targets_summary.personal_total_damage, Some(100));
     assert_eq!(state.all_targets_summary.personal_dps, Some(100.0));
-    assert_eq!(state.all_targets_summary.personal_elapsed_ms, Some(500));
+    assert_eq!(state.all_targets_summary.personal_elapsed_ms, Some(0));
     assert_eq!(state.all_targets_summary.party_total_damage, None);
     assert_eq!(state.all_targets_summary.party_dps, None);
     assert_eq!(state.all_targets_summary.party_elapsed_ms, None);
@@ -316,8 +317,8 @@ fn boss_filter_keeps_unmarked_live_target_separate_from_filtered_totals_and_repo
     assert_eq!(report.total_damage, 0);
     assert!(report.targets.is_empty());
 
-    // Repeated mode snapshots update elapsed values; a new hit invalidates
-    // both cache slots while preserving the selected filter's totals.
+    // Repeated mode snapshots keep the same elapsed value (the clock stops at the last hit); a
+    // new hit invalidates both cache slots while preserving the selected filter's totals.
     assert_eq!(
         engine
             .live_state(2600)
@@ -325,12 +326,13 @@ fn boss_filter_keeps_unmarked_live_target_separate_from_filtered_totals_and_repo
             .as_ref()
             .unwrap()
             .elapsed_ms,
-        1600
+        1000
     );
     hit(&mut engine, 1, 900, 20, 2700);
     let boss_mode = engine.live_state(2800);
     assert_eq!(boss_mode.total_damage, 0);
     assert_eq!(boss_mode.live_target.as_ref().unwrap().damage, 620);
+    assert_eq!(boss_mode.live_target.as_ref().unwrap().elapsed_ms, 1700);
     engine.set_target_mode("all");
     let all_mode = engine.live_state(2900);
     assert_eq!(all_mode.total_damage, 620);
@@ -374,8 +376,10 @@ fn pausing_after_an_idle_personal_target_does_not_rewrite_its_elapsed_time_or_dp
     hit(&mut engine, 1, 900, 100, 1000);
     hit(&mut engine, 2, 901, 200, 9000);
     let before = engine.live_state(11_000);
-    assert_eq!(before.personal_elapsed_ms, 10_000);
-    assert_eq!(before.personal_dps, Some(10.0));
+    // One personal hit has no span; the rate uses the one-second minimum divisor, and neither
+    // the quiet time after it nor a later pause changes it.
+    assert_eq!(before.personal_elapsed_ms, 0);
+    assert_eq!(before.personal_dps, Some(100.0));
 
     engine.set_paused_at(true, 12_000);
     engine.set_paused_at(false, 22_000);
@@ -386,19 +390,20 @@ fn pausing_after_an_idle_personal_target_does_not_rewrite_its_elapsed_time_or_dp
         .iter()
         .find(|target| target.id == 900)
         .unwrap();
-    assert_eq!(after.personal_elapsed_ms, 10_000);
-    assert_eq!(after.party_elapsed_ms, 10_000);
-    assert_eq!(after.personal_dps, Some(10.0));
-    assert_eq!(after.party_dps, Some(10.0));
-    assert_eq!(original.elapsed_ms, 10_000);
-    assert_eq!(original.own_participant.as_ref().unwrap().dps, 10.0);
+    assert_eq!(after.personal_elapsed_ms, 0);
+    assert_eq!(after.party_elapsed_ms, 0);
+    assert_eq!(after.personal_dps, Some(100.0));
+    assert_eq!(after.party_dps, Some(100.0));
+    assert_eq!(original.elapsed_ms, 0);
+    assert_eq!(original.own_participant.as_ref().unwrap().dps, 100.0);
     let other = after
         .targets
         .iter()
         .find(|target| target.id == 901)
         .unwrap();
-    assert_eq!(other.elapsed_ms, 5000);
-    assert_eq!(other.participants[0].dps, 80.0);
+    // 9000 to 23_000 less the 10_000 ms pause.
+    assert_eq!(other.elapsed_ms, 4000);
+    assert_eq!(other.participants[0].dps, 100.0);
 }
 
 #[test]
@@ -407,20 +412,21 @@ fn pausing_inside_a_personal_target_window_does_not_spend_its_idle_time() {
     identity(&mut engine, 1, "Local", true);
     identity(&mut engine, 2, "Other", false);
     hit(&mut engine, 1, 900, 100, 1000);
+    hit(&mut engine, 1, 900, 100, 2000);
     hit(&mut engine, 2, 901, 100, 1500);
-    engine.set_paused_at(true, 2000);
-    engine.set_paused_at(false, 12_000);
-    hit(&mut engine, 2, 901, 100, 12_500);
-    let state = engine.live_state(13_000);
-    assert_eq!(state.personal_elapsed_ms, 2000);
-    assert_eq!(state.personal_dps, Some(50.0));
+    engine.set_paused_at(true, 2500);
+    engine.set_paused_at(false, 12_500);
+    hit(&mut engine, 2, 901, 100, 13_000);
+    let state = engine.live_state(13_500);
+    assert_eq!(state.personal_elapsed_ms, 1000);
+    assert_eq!(state.personal_dps, Some(200.0));
     let target = state
         .targets
         .iter()
         .find(|target| target.id == 900)
         .unwrap();
-    assert_eq!(target.elapsed_ms, 2000);
-    assert_eq!(target.own_participant.as_ref().unwrap().dps, 50.0);
+    assert_eq!(target.elapsed_ms, 1000);
+    assert_eq!(target.own_participant.as_ref().unwrap().dps, 200.0);
 }
 
 #[test]
@@ -478,7 +484,7 @@ fn a_shared_observed_board_without_a_personal_hit_is_selectable_but_not_an_autom
     assert_eq!(target.own_last_hit_ms, None);
     assert_eq!(target.party_total_damage, None);
     assert_eq!(target.participants[0].id, 3);
-    assert_eq!(target.participants[0].dps, 200.0);
+    assert_eq!(target.participants[0].dps, 300.0);
 }
 
 #[test]
@@ -518,7 +524,8 @@ fn finishing_a_paused_session_keeps_saved_rates_within_the_declared_end_time() {
     hit(&mut engine, 1, 900, 100, 1000);
     hit(&mut engine, 1, 900, 200, 3000);
     engine.set_paused_at(true, 4000);
-    assert_eq!(engine.live_state(8000).personal_elapsed_ms, 3000);
+    // Paused at 4000, but the last hit was at 3000.
+    assert_eq!(engine.live_state(8000).personal_elapsed_ms, 2000);
 
     // A connection end closes at its last received hit, before the pause.
     engine.connection_changed();
