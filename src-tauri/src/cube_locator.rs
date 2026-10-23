@@ -1,4 +1,4 @@
-use crate::{audio_capture, audio_decode, cube_network, cube_signal};
+use crate::{audio_capture, audio_decode, cube_signal};
 use serde::Serialize;
 use std::{
     fs,
@@ -18,6 +18,37 @@ const MAX_TEMPLATE_BYTES: u64 = 512 * 1024;
 pub struct ReferenceInfo {
     name: String,
     seconds: f32,
+}
+
+/// What the game's own Hidden Cube notices say about the nearest Cube, from the engine.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct NetworkCube {
+    /// Cubes announced within the server's send radius, about 100 m.
+    pub cubes: u32,
+    pub distance_m: Option<u32>,
+    /// Positive when the Cube is above the player.
+    pub vertical_m: Option<i32>,
+    /// Against the direction of the player's last walk, positive to the right.
+    pub direction_deg: Option<i32>,
+    /// Age of the player's last received position, in 5-second steps.
+    pub fix_age_s: Option<u32>,
+    pub opening: bool,
+}
+
+impl NetworkCube {
+    pub fn from_radar(radar: &luma_engine::cube::Radar) -> Self {
+        let Some(nearest) = radar.cubes.first() else {
+            return Self::default();
+        };
+        Self {
+            cubes: radar.cubes.len().min(99) as u32,
+            distance_m: nearest.distance_m,
+            vertical_m: nearest.vertical_m,
+            direction_deg: nearest.direction_deg,
+            fix_age_s: radar.fix_age_ms.map(|age| (age / 5_000 * 5) as u32),
+            opening: radar.cubes.iter().any(|cube| cube.opening),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -47,7 +78,7 @@ pub struct CubeState {
     last_detection_ms: Option<u64>,
     audio_channels: u16,
     sample_rate: u32,
-    network: cube_network::NetworkCube,
+    network: NetworkCube,
     #[serde(skip)]
     last_audio_at: Option<Instant>,
 }
@@ -80,13 +111,9 @@ impl CubeState {
             last_detection_ms: None,
             audio_channels: 0,
             sample_rate: 0,
-            network: cube_network::NetworkCube::default(),
+            network: NetworkCube::default(),
             last_audio_at: None,
         }
-    }
-
-    pub fn last_detection_ms(&self) -> Option<u64> {
-        self.last_detection_ms
     }
 
     fn clear_signal(&mut self) {
@@ -188,9 +215,9 @@ impl Service {
         Ok(state.clone())
     }
 
-    /// The network notice runs whether or not the audio listener does, so it has no worker
+    /// The notices come from game data and need no audio worker, so there is no worker
     /// generation to check; an unchanged reading does not bump the revision.
-    pub fn set_network(&self, network: cube_network::NetworkCube) {
+    pub fn set_network(&self, network: NetworkCube) {
         if let Ok(mut state) = self.state.lock() {
             if state.network != network {
                 state.network = network;

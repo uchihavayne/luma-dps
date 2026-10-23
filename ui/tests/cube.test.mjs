@@ -171,33 +171,47 @@ test('quiet audio diagnostics require received frames and never become a Cube ma
   assert.equal(state.input_level_db, null); assert.equal(state.received_audio_frames, 0); assert.equal(state.stream_discontinuities, 0); assert.equal(state.timestamp_uncertain_packets, 0); assert.equal(state.audio_present, false);
 });
 
-test('the network notice shows the learned Cube distance with or without the audio match', () => {
-  const near = { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' };
+test('the game-data notice shows the nearest Cube with or without the audio match', () => {
+  const near = { cubes: 1, distance_m: 72, vertical_m: 8, direction_deg: 30, fix_age_s: 5, opening: false };
   const quiet = cubePresentation({ enabled: false, network: near }, { now });
-  assert.equal(quiet.matched, false); assert.equal(quiet.network.near, true); assert.equal(quiet.network.distance, '18 m');
-  assert.equal(quiet.network.summary, '18 m · yaklaşıyorsun · önünde'); assert.equal(quiet.network.detail, 'yaklaşıyorsun · önünde'); assert.equal(quiet.network.nearLabel, 'Küp yakında');
+  assert.equal(quiet.matched, false); assert.equal(quiet.network.near, true); assert.equal(quiet.network.distance, '72 m');
+  assert.equal(quiet.network.detail, '8 m yukarıda'); assert.equal(quiet.network.summary, '72 m · 8 m yukarıda · önünde');
+  assert.equal(quiet.network.angle, 30); assert.equal(quiet.network.side, 'önünde'); assert.equal(quiet.network.nearLabel, 'Küp yakında');
+  assert.equal(quiet.network.label, 'Küp yakında · 72 m · 8 m yukarıda · önünde');
   assert.equal(cubeDockVisible(quiet, {}), true); assert.equal(cubeDockVisible(quiet, { showCubeLocator: false }), false);
-  const english = cubePresentation({ network: { ...near, trend: 'receding', facing: 'behind' } }, { now, locale: 'en' });
-  assert.equal(english.network.summary, '18 m · moving away · behind you'); assert.equal(english.network.label, 'Cube 18 m away');
-  // A failed read never keeps a stale distance on screen, and an unknown reading adds no words.
+  const english = cubePresentation({ network: { ...near, vertical_m: -12, direction_deg: -90, cubes: 3, opening: true } }, { now, locale: 'en' });
+  assert.equal(english.network.summary, '72 m · 12 m below · to your left · being opened · +2');
+  // A failed read never keeps a stale distance on screen.
   assert.equal(cubePresentation({ network: near }, { now, readError: 'offline' }).network.near, false);
-  assert.equal(cubePresentation({ network: { ...near, trend: 'unknown', facing: 'unknown' } }, { now }).network.summary, '18 m');
+  assert.equal(cubePresentation({ network: near }, { now, readError: 'offline' }).network.angle, null);
 });
 
-test('the network notice says what it is still waiting for and rejects malformed readings', () => {
-  assert.equal(cubePresentation({}, { now }).network.label, 'Ağ eşleşmesi öğreniyor · 0/3 ses eşleşmesi');
-  assert.equal(cubePresentation({ network: { phase: 'learning', matches: 2, needed: 3 } }, { now, locale: 'en' }).network.label, 'Learning the network match · 2/3 sound matches');
-  const ready = cubePresentation({ network: { phase: 'ready' } }, { now });
-  assert.equal(ready.network.near, false); assert.equal(ready.network.label, 'Ağ eşleşmesi hazır · yakında Küp yok'); assert.equal(cubeDockVisible(ready, {}), false);
-  for (const bad of [{ distance_m: -1 }, { distance_m: 501 }, { distance_m: 1.5 }, { distance_m: '18' }, { distance_m: NaN }, {}]) assert.equal(normalizeCubeNetwork({ phase: 'near', ...bad }).phase, 'ready');
-  assert.equal(normalizeCubeNetwork({ phase: 'near', distance_m: 5, trend: 'sideways', facing: 'up' }).trend, 'unknown');
-  assert.equal(normalizeCubeNetwork({ phase: 'near', distance_m: 5, trend: 'sideways', facing: 'up' }).facing, 'unknown');
-  for (const value of [null, [], 'near', 7]) assert.equal(normalizeCubeNetwork(value).phase, 'learning');
-  assert.equal(normalizeCubeNetwork({ matches: 99, needed: 0 }).matches, 10); assert.equal(normalizeCubeNetwork({ matches: 99, needed: 0 }).needed, 1);
+test('direction words, height words and an old position are worded carefully', () => {
+  const view = overrides => cubePresentation({ network: { cubes: 1, distance_m: 40, vertical_m: 0, direction_deg: 0, fix_age_s: 0, ...overrides } }, { now }).network;
+  for (const [degrees, word] of [[0, 'önünde'], [30, 'önünde'], [31, 'sağında'], [150, 'sağında'], [151, 'arkanda'], [180, 'arkanda'], [-151, 'arkanda'], [-31, 'solunda'], [-30, 'önünde']]) assert.equal(view({ direction_deg: degrees }).side, word, `${degrees}`);
+  assert.match(view({ vertical_m: 2 }).detail, /aynı yükseklikte/); assert.match(view({ vertical_m: -2 }).detail, /aynı yükseklikte/);
+  assert.match(view({ vertical_m: 3 }).detail, /3 m yukarıda/); assert.match(view({ vertical_m: -3 }).detail, /3 m aşağıda/);
+  assert.equal(view({ fix_age_s: 10 }).distance, '40 m'); assert.equal(view({ fix_age_s: 15 }).distance, '~40 m');
+  // No position of the player yet: the Cube is known to be in range, nothing more.
+  const unknown = view({ distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null });
+  assert.equal(unknown.near, true); assert.equal(unknown.side, null); assert.equal(unknown.distance, 'Menzilde'); assert.equal(unknown.detail, 'konumun bekleniyor'); assert.equal(unknown.angle, null);
+});
+
+test('without a Cube announcement the notice says so, and malformed readings are rejected', () => {
+  assert.equal(cubePresentation({}, { now }).network.near, false);
+  assert.equal(cubePresentation({}, { now }).network.label, 'Oyun verisi: yaklaşık 100 m içinde Küp bildirimi yok');
+  assert.equal(cubeDockVisible(cubePresentation({}, { now }), {}), false);
+  for (const bad of [{ distance_m: -1 }, { distance_m: 501 }, { distance_m: 1.5 }, { distance_m: '18' }, { distance_m: NaN }]) assert.equal(normalizeCubeNetwork({ cubes: 1, ...bad }).distance_m, null);
+  assert.equal(normalizeCubeNetwork({ cubes: 1, direction_deg: 181 }).direction_deg, null); assert.equal(normalizeCubeNetwork({ cubes: 1, vertical_m: -501 }).vertical_m, null);
+  assert.equal(normalizeCubeNetwork({ cubes: 1, fix_age_s: 61 }).fix_age_s, null); assert.equal(normalizeCubeNetwork({ cubes: 1, opening: 1 }).opening, false);
+  // Nothing about a Cube is kept when none is announced.
+  assert.deepEqual(normalizeCubeNetwork({ cubes: 0, distance_m: 5, vertical_m: 1, direction_deg: 2, fix_age_s: 3, opening: true }), { cubes: 0, distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null, opening: false });
+  for (const value of [null, [], 'near', 7]) assert.equal(normalizeCubeNetwork(value).cubes, 0);
+  assert.equal(normalizeCubeNetwork({ cubes: 500 }).cubes, 99);
 });
 
 test('a stored Cube state keeps its network reading when it is normalized again for display', () => {
-  const stored = normalizeCubeState({ network: { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' } });
+  const stored = normalizeCubeState({ network: { cubes: 2, distance_m: 72, vertical_m: -8, direction_deg: -30, fix_age_s: 5, opening: true } });
   assert.deepEqual(normalizeCubeState(stored).network, stored.network);
-  assert.equal(cubePresentation(stored, { now }).network.summary, '18 m · yaklaşıyorsun · önünde');
+  assert.equal(cubePresentation(stored, { now }).network.summary, '72 m · 8 m aşağıda · önünde · biri açıyor · +1');
 });

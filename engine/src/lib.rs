@@ -1,6 +1,7 @@
 pub mod assistance;
 pub mod character;
 pub mod cooldowns;
+pub mod cube;
 pub mod field_boss;
 pub mod framing;
 pub mod latency;
@@ -449,6 +450,7 @@ struct StreamPrefix {
 
 pub struct MeterEngine {
     spatial: spatial::Store,
+    cubes: cube::Tracker,
     pending_spawn_position: Option<(spatial::Observation, u64)>,
     record_observations: Vec<records::Observation>,
     encounter_gaps_at_start: u64,
@@ -518,6 +520,7 @@ impl Default for MeterEngine {
     fn default() -> Self {
         Self {
             spatial: spatial::Store::default(),
+            cubes: cube::Tracker::default(),
             pending_spawn_position: None,
             record_observations: Vec::new(),
             encounter_gaps_at_start: 0,
@@ -686,6 +689,7 @@ impl MeterEngine {
             self.party_snapshot_complete = false;
             self.assistance.clear();
             self.spatial.clear();
+            self.cubes.clear();
             self.pending_spawn_position = None;
             self.character.invalidate_capture(
                 now,
@@ -892,6 +896,7 @@ impl MeterEngine {
                     self.cooldowns.bind_self(self.own_id);
                     self.assistance.clear();
                     self.spatial.clear();
+                    self.cubes.clear();
                     self.pending_spawn_position = None;
                     self.bosses.clear();
                     self.current_context = EncounterContext {
@@ -916,10 +921,14 @@ impl MeterEngine {
                     }
                 }
                 if !position.local_only || self.own_id == Some(position.actor_id) {
+                    if let (true, Some(z)) = (self.own_id == Some(position.actor_id), position.z) {
+                        self.cubes.apply(cube::Event::Fix { pos: [position.x, position.y, z] }, now);
+                    }
                     self.spatial.observe(position, now);
                     self.dirty();
                 }
             }
+            Event::Cube(event) => self.cubes.apply(event, now),
             Event::Resource(event) => {
                 self.resources.ingest(event, now);
                 self.character_revision = self.character_revision.wrapping_add(1);
@@ -936,7 +945,18 @@ impl MeterEngine {
             Event::Assistance(event) => {
                 match &event {
                     assistance::AssistEvent::Windup(value)
-                    | assistance::AssistEvent::Cast(value) => self.spatial.aim(value, now),
+                    | assistance::AssistEvent::Cast(value) => {
+                        self.spatial.aim(value, now);
+                        // The coordinates of a cast are its target's: when that is the local
+                        // player they are the player's own position. A few skills carry small
+                        // values instead of coordinates, which stay near the world origin.
+                        if let Some(pos) = value
+                            .position
+                            .filter(|pos| self.own_id == Some(value.target_id) && pos[0].hypot(pos[1]) > 2000.0)
+                        {
+                            self.cubes.apply(cube::Event::Fix { pos }, now);
+                        }
+                    }
                     _ => (),
                 }
                 if let assistance::AssistEvent::Cast(value) = &event {
@@ -1112,6 +1132,7 @@ impl MeterEngine {
                     self.completed = None;
                     self.assistance.clear();
                     self.spatial.clear();
+                    self.cubes.clear();
                     self.pending_spawn_position = None;
                     self.field_bosses.clear();
                     self.field_boss_available = false;
@@ -1315,20 +1336,6 @@ impl MeterEngine {
                 }
                 self.dirty();
             }
-            Event::Object {
-                id,
-                kind,
-                model,
-                x,
-                y,
-            } => self.spatial.spawn_object(spatial::Object {
-                id,
-                kind,
-                model,
-                x,
-                y,
-                seen_ms: now,
-            }),
             Event::Owner { id, owner } => {
                 if id == 0 || owner == 0 || id == owner {
                     return;
@@ -1987,6 +1994,7 @@ impl MeterEngine {
         self.bosses.clear();
         self.assistance.clear();
         self.spatial.clear();
+        self.cubes.clear();
         self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
@@ -2044,6 +2052,7 @@ impl MeterEngine {
         self.character_revision = self.character_revision.wrapping_add(1);
         self.assistance.clear();
         self.spatial.gap(self.last_seen);
+        self.cubes.clear();
         self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
@@ -3489,16 +3498,16 @@ impl MeterEngine {
             self.history.iter().cloned().collect(),
         )
     }
-    /// Spawned, non-pet entities within `radius_m` of the local player, nearest first. `None`
-    /// until the local player's own position has been received.
-    pub fn nearby_objects(
-        &self,
-        now: u64,
-        radius_m: f32,
-        limit: usize,
-    ) -> Option<Vec<spatial::Nearby>> {
-        self.spatial
-            .nearby(self.own_id?, now, radius_m * 100.0, limit)
+    /// Hidden Cubes the game has announced within its send radius, nearest first.
+    pub fn cube_radar(&self, now: u64) -> cube::Radar {
+        self.cubes.radar(now)
+    }
+    /// Cube templates learned from opening one with a key; the desktop keeps them between runs.
+    pub fn cube_templates(&self) -> Vec<u32> {
+        self.cubes.learned()
+    }
+    pub fn learn_cube_templates(&mut self, templates: impl IntoIterator<Item = u32>) {
+        self.cubes.learn(templates)
     }
     pub fn history_revision(&self) -> u64 {
         self.history_revision

@@ -6,18 +6,17 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 const bounded = (value, minimum, maximum, fallback) => finite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
 const text = (value, maximum = 240) => typeof value === 'string' ? value.replace(/[\u0000-\u001f]/g, '').slice(0, maximum) : '';
 
-// The desktop learns which spawned entity is the Cube from the audio match, then reports the
-// nearest one it can see in the received game data. Distances are whole metres; the output keeps
-// the input's field names so a stored state can be normalized again.
+// The game announces a Hidden Cube once it is within about 100 m. The desktop reports the nearest
+// one, with its distance, height and direction when a recent position of the player is known.
+// The output keeps the input's field names so a stored state can be normalized again.
 export function normalizeCubeNetwork(value) {
   const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  const distance = Number.isSafeInteger(input.distance_m) && input.distance_m >= 0 && input.distance_m <= 500 ? input.distance_m : null;
-  const phase = ['ready', 'near'].includes(input.phase) ? input.phase : 'learning';
+  const whole = (number, minimum, maximum) => Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : null;
+  const cubes = Math.round(bounded(input.cubes, 0, 99, 0)), any = cubes > 0;
   return {
-    phase: phase === 'near' && distance === null ? 'ready' : phase,
-    matches: Math.round(bounded(input.matches, 0, 10, 0)), needed: Math.round(bounded(input.needed, 1, 10, 3)),
-    distance_m: distance, trend: ['approaching', 'receding', 'steady'].includes(input.trend) ? input.trend : 'unknown',
-    facing: ['ahead', 'side', 'behind'].includes(input.facing) ? input.facing : 'unknown',
+    cubes, distance_m: any ? whole(input.distance_m, 0, 500) : null, vertical_m: any ? whole(input.vertical_m, -500, 500) : null,
+    direction_deg: any ? whole(input.direction_deg, -180, 180) : null, fix_age_s: any ? whole(input.fix_age_s, 0, 60) : null,
+    opening: any && input.opening === true,
   };
 }
 
@@ -82,18 +81,24 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
     ? { approaching: 'Sinyal güçleniyor', receding: 'Sinyal zayıflıyor', steady: 'Sinyal dengeli', unknown: 'Değişim için dinleniyor' }
     : { approaching: 'Signal getting stronger', receding: 'Signal getting weaker', steady: 'Signal steady', unknown: 'Listening for a change' };
   const prefix = tr ? 'Küp' : 'Cube';
-  const net = state.network, netNear = !readError && net.phase === 'near';
-  const trendWords = tr ? { approaching: 'yaklaşıyorsun', receding: 'uzaklaşıyorsun', steady: 'yan geçiyorsun' } : { approaching: 'getting closer', receding: 'moving away', steady: 'passing by' };
-  const facingWords = tr ? { ahead: 'önünde', side: 'yanında', behind: 'arkanda' } : { ahead: 'ahead', side: 'to the side', behind: 'behind you' };
-  const netParts = netNear ? [`${net.distance_m} m`, trendWords[net.trend], facingWords[net.facing]].filter(Boolean) : [];
-  const netLabel = net.phase === 'learning'
-    ? tr ? `Ağ eşleşmesi öğreniyor · ${net.matches}/${net.needed} ses eşleşmesi` : `Learning the network match · ${net.matches}/${net.needed} sound matches`
-    : netNear ? tr ? `Küp ${net.distance_m} m yakında` : `Cube ${net.distance_m} m away`
-    : tr ? 'Ağ eşleşmesi hazır · yakında Küp yok' : 'Network match ready · no Cube nearby';
+  const net = state.network, netNear = !readError && net.cubes > 0;
+  const old = net.fix_age_s !== null && net.fix_age_s > 10;
+  const height = net.vertical_m === null ? null : Math.abs(net.vertical_m) < 3 ? tr ? 'aynı yükseklikte' : 'same height'
+    : `${Math.abs(net.vertical_m)} m ${net.vertical_m > 0 ? tr ? 'yukarıda' : 'above' : tr ? 'aşağıda' : 'below'}`;
+  const degrees = net.direction_deg;
+  const walkSide = degrees === null ? null : Math.abs(degrees) <= 30 ? tr ? 'önünde' : 'ahead' : Math.abs(degrees) > 150 ? tr ? 'arkanda' : 'behind you'
+    : degrees > 0 ? tr ? 'sağında' : 'to your right' : tr ? 'solunda' : 'to your left';
+  const metres = net.distance_m === null ? null : `${old ? '~' : ''}${net.distance_m} m`;
+  const extras = netNear ? [metres === null && (tr ? 'konumun bekleniyor' : 'waiting for your position'), net.opening && (tr ? 'biri açıyor' : 'being opened'), net.cubes > 1 && `+${net.cubes - 1}`] : [];
+  const detail = netNear ? [height, ...extras].filter(Boolean).join(' · ') : '';
+  const summary = netNear ? [metres, height, walkSide, ...extras].filter(Boolean).join(' · ') : '';
+  const nearLabel = tr ? 'Küp yakında' : 'Cube nearby';
+  const netLabel = netNear ? `${nearLabel} · ${summary || (tr ? 'menzilde' : 'in range')}`
+    : tr ? 'Oyun verisi: yaklaşık 100 m içinde Küp bildirimi yok' : 'Game data: no Cube announced within about 100 m';
   const quietInput = !readError && state.enabled && status === 'listening' && !state.audio_present && state.sample_rate > 0 && state.received_audio_frames >= state.sample_rate * 2;
   const short = matched ? `${{ left: '←', right: '→', center: '↔', unknown: '◇' }[direction]} ${prefix}` : `${prefix} · ${tr ? { off: 'kapalı', waiting_game: 'bekliyor', listening: 'ara', error: 'hata' }[status] : { off: 'off', waiting_game: 'wait', listening: 'listen', error: 'error' }[status]}`;
   return {
-    network: { phase: net.phase, near: netNear, distance: netNear ? `${net.distance_m} m` : '—', summary: netParts.join(' · '), detail: netParts.slice(1).join(' · '), label: netLabel, nearLabel: tr ? 'Küp yakında' : 'Cube nearby' },
+    network: { near: netNear, distance: netNear ? metres ?? (tr ? 'Menzilde' : 'In range') : '—', detail, summary, label: netLabel, nearLabel, angle: netNear ? degrees : null, side: netNear ? walkSide : null },
     status, matched, direction, label: labels[status], short, quietInput, sensitive: matched && state.analysis_window_ms >= 1024,
     // A stereo balance establishes a side, not a calibrated world bearing.
     // Balanced audio cannot prove that a Cube is in front of the player.

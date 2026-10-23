@@ -196,7 +196,7 @@ if (telemetryDemo && targetPetDemo) {
     live_target: oneShot ? null : target, targets: oneShot ? [] : [target],
     recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
-if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000, network: { phase: 'near', matches: 3, needed: 3, distance_m: 18, trend: 'approaching', facing: 'ahead' } });
+if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000, network: { cubes: 2, distance_m: 72, vertical_m: 8, direction_deg: 30, fix_age_s: 5, opening: false } });
 const rosterDemoCount = demo ? Number(new URLSearchParams(location.search).get('rosterDemo')) : 0;
 if ([5, 6, 12].includes(rosterDemoCount)) {
   state = normalizeState(rosterDemoState(state, rosterDemoCount));
@@ -290,6 +290,8 @@ Object.assign(words.tr, { rateCaption: 'SANİYELİK DPS', totalCaption: 'TOPLAM 
 Object.assign(words.en, { rateCaption: 'DAMAGE / SECOND', totalCaption: 'TOTAL DAMAGE', rowBoth: 'Total damage and DPS (K/s)' });
 Object.assign(words.tr, { cubeCompass: 'Ses pusulası', cubeOpen: 'Hidden Cube ses pusulasını aç', cubeDps: 'DPS görünümüne dön', cubeExpand: 'Ayrıntılı pusula', cubeCompact: 'Küçük pusula', cubeAudioSettings: 'Küp ses ayarları', cubeHide: 'Pusula göstergesini gizle', cubeHideListening: 'Pusula göstergesini gizle · dinleme sürer', cubeStereoAmbiguity: 'Ses pusulası · ön/arka belirsiz', cubeTurn: 'Kamerayı döndürerek karşılaştır', cubeRelativeStrength: 'Göreli sinyal', cubeSnr: 'Sinyal / gürültü', cubeLeft: 'SOL', cubeRight: 'SAĞ', cubeIndicator: 'Küp algılanınca DPS yanında pusulayı göster', cubeShow: 'Pusulayı göster', cubeSize: 'Pusula düzeni', cubeCompactLabel: 'Küçük', cubeFullLabel: 'Ayrıntılı' });
 Object.assign(words.en, { cubeCompass: 'Audio compass', cubeOpen: 'Open Hidden Cube audio compass', cubeDps: 'Return to DPS view', cubeExpand: 'Detailed compass', cubeCompact: 'Compact compass', cubeAudioSettings: 'Cube audio settings', cubeHide: 'Hide compass indicator', cubeHideListening: 'Hide compass indicator · listening continues', cubeStereoAmbiguity: 'Audio compass · front/back ambiguous', cubeTurn: 'Turn the camera to compare', cubeRelativeStrength: 'Relative signal', cubeSnr: 'Signal / noise', cubeLeft: 'LEFT', cubeRight: 'RIGHT', cubeIndicator: 'Show a compass beside DPS when a Cube is detected', cubeShow: 'Show compass', cubeSize: 'Compass layout', cubeCompactLabel: 'Compact', cubeFullLabel: 'Detailed' });
+Object.assign(words.tr, { cubeWalkRelative: 'Yürüdüğün yöne göre' });
+Object.assign(words.en, { cubeWalkRelative: 'Relative to your walking direction' });
 Object.assign(words.tr, { cubeAutoListen: 'Küp sesini arka planda otomatik dinle', cubeAutoHelp: 'Luma açıkken yalnızca AION2 sesi dinlenir. Küp sesi eşleştiğinde pusula DPS listesinin yanında açılır. İstersen dinlemeyi kapatabilirsin.', cubeCueLeft: 'Sola dön', cubeCueRight: 'Sağa dön', cubeCueBalanced: 'Stereo dengeli', cubeCueUnknown: 'Dönerek ara' });
 Object.assign(words.en, { cubeAutoListen: 'Automatically listen for Cube audio in the background', cubeAutoHelp: 'Only AION2 audio is monitored while Luma is open. A matching Cube sound opens the compass beside the DPS list. You can turn listening off.', cubeCueLeft: 'Turn left', cubeCueRight: 'Turn right', cubeCueBalanced: 'Stereo balanced', cubeCueUnknown: 'Turn to locate' });
 Object.assign(words.tr, { cubeQuiet: 'Oyun sesi çok düşük; oyunu öne getir ve ses çıkışını kontrol et.', cubeQuietSystem: 'Ses çıkışı çok düşük; çalan sesi ve çıkış cihazını kontrol et.', cubeInput: 'Seçilen ses kaynağının düzeyi', cubeDiagnostics: 'Ses tanılama', cubeFrames: 'Alınan ses kareleri', cubeUncertain: 'Zaman damgası belirsiz paketler', cubeGaps: 'Akış kesintileri' });
@@ -1168,9 +1170,10 @@ function renderCubeLive() {
   setText($('#cube-nav-source'), view.sourceLabel);
   $('#cube-nav-source').hidden = native;
   const net = view.network;
-  setText($('#cube-nav-direction'), view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : net.near ? `${net.nearLabel} · ${net.distance}` : view.label);
+  // The game's own position data outranks stereo balance once the walking direction is known.
+  setText($('#cube-nav-direction'), net.side ? `${net.side[0].toUpperCase()}${net.side.slice(1)}` : view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : net.near ? `${net.nearLabel} · ${net.distance}` : view.label);
   $('#cube-nav-network').hidden = !net.near; $('#cube-nav-network').title = net.summary; setText($('#cube-nav-network-distance'), net.distance); setText($('#cube-nav-network-detail'), net.detail);
-  setText($('#cube-nav-guidance'), view.sensitive && view.direction === 'unknown' ? (prefs.locale === 'tr' ? 'Zayıf sinyal · yön dinleniyor' : 'Faint signal · checking direction') : t('cubeStereoAmbiguity'));
+  setText($('#cube-nav-guidance'), net.side ? t('cubeWalkRelative') : view.sensitive && view.direction === 'unknown' ? (prefs.locale === 'tr' ? 'Zayıf sinyal · yön dinleniyor' : 'Faint signal · checking direction') : t('cubeStereoAmbiguity'));
   setText($('#cube-nav-trend'), view.matched ? view.trendLabel : net.near ? '' : t('cubeTurn'));
   setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
   setText($('#cube-nav-similarity-label'), t('cubeSimilarity')); setText($('#cube-nav-strength-label'), t('cubeRelativeStrength'));
@@ -1179,9 +1182,11 @@ function renderCubeLive() {
   $('#cube-navigator').title = `${view.label} · ${view.directionLabel} · ${t('cubeStereoAmbiguity')} · ${t('cubeSimilarity')}: ${view.similarity} · ${t('cubeRelativeStrength')}: ${view.relativeStrength}`;
   $('#cube-nav-guidance').title = t('cubeTurn');
   for (const compass of $$('[data-cube-compass]')) {
-    compass.dataset.known = String(view.steerDegrees !== null); compass.dataset.status = view.status;
+    // Walking direction is the compass's top; a Cube announced by the game outranks stereo balance.
+    const steer = net.angle ?? view.steerDegrees;
+    compass.dataset.known = String(steer !== null); compass.dataset.status = view.status;
     compass.dataset.ambiguous = String(view.rearDegrees !== null);
-    compass.style.setProperty('--cube-steer', `${view.steerDegrees ?? 0}deg`);
+    compass.style.setProperty('--cube-steer', `${steer ?? 0}deg`);
     compass.style.setProperty('--cube-rear', `${view.rearDegrees ?? 180}deg`);
     compass.style.setProperty('--cube-signal', `${(view.signalStrength ?? 0) * 100}`);
     setAttribute(compass, 'aria-label', `${t('cubeCompass')} · ${view.label}${view.matched ? ` · ${view.directionLabel}` : ''} · ${t('cubeStereoAmbiguity')}`);
