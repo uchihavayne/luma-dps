@@ -452,6 +452,10 @@ struct StreamPrefix {
 pub struct MeterEngine {
     spatial: spatial::Store,
     cubes: cube::Tracker,
+    /// Power scalars seen per attacker, and the unannounced summons bound to a player by them.
+    power: HashMap<u64, Vec<u32>>,
+    orphan_bound: std::collections::HashSet<u64>,
+    orphans_checked_ms: u64,
     pending_spawn_position: Option<(spatial::Observation, u64)>,
     record_observations: Vec<records::Observation>,
     encounter_gaps_at_start: u64,
@@ -522,6 +526,9 @@ impl Default for MeterEngine {
         Self {
             spatial: spatial::Store::default(),
             cubes: cube::Tracker::default(),
+            power: HashMap::new(),
+            orphan_bound: std::collections::HashSet::new(),
+            orphans_checked_ms: 0,
             pending_spawn_position: None,
             record_observations: Vec::new(),
             encounter_gaps_at_start: 0,
@@ -691,6 +698,8 @@ impl MeterEngine {
             self.assistance.clear();
             self.spatial.clear();
             self.cubes.clear();
+            self.power.clear();
+            self.orphan_bound.clear();
             self.pending_spawn_position = None;
             self.character.invalidate_capture(
                 now,
@@ -768,6 +777,9 @@ impl MeterEngine {
             }
             for payload in expanded {
                 self.diagnostics.frames += 1;
+                if let Some((source, scalar)) = packets::power_scalar(&payload) {
+                    self.observe_power(source, scalar);
+                }
                 match packets::decode(&payload) {
                     Ok(Some(event)) => {
                         if event_contains_pet_observation(&event)
@@ -898,6 +910,8 @@ impl MeterEngine {
                     self.assistance.clear();
                     self.spatial.clear();
                     self.cubes.clear();
+                    self.power.clear();
+                    self.orphan_bound.clear();
                     self.pending_spawn_position = None;
                     self.bosses.clear();
                     self.current_context = EncounterContext {
@@ -1134,6 +1148,8 @@ impl MeterEngine {
                     self.assistance.clear();
                     self.spatial.clear();
                     self.cubes.clear();
+                    self.power.clear();
+                    self.orphan_bound.clear();
                     self.pending_spawn_position = None;
                     self.field_bosses.clear();
                     self.field_boss_available = false;
@@ -1986,6 +2002,10 @@ impl MeterEngine {
             self.training.status = "complete".into();
         }
         self.streams.expire(now);
+        if now.saturating_sub(self.orphans_checked_ms) >= 1000 {
+            self.orphans_checked_ms = now;
+            self.bind_orphans();
+        }
         if !self.paused && self.started.is_some() && self.idle_for(now) {
             self.finish(self.last_hit.saturating_add(IDLE_MS))
         }
@@ -2013,6 +2033,8 @@ impl MeterEngine {
         self.assistance.clear();
         self.spatial.clear();
         self.cubes.clear();
+        self.power.clear();
+        self.orphan_bound.clear();
         self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
@@ -2071,6 +2093,8 @@ impl MeterEngine {
         self.assistance.clear();
         self.spatial.gap(self.last_seen);
         self.cubes.clear();
+        self.power.clear();
+        self.orphan_bound.clear();
         self.pending_spawn_position = None;
         self.field_bosses.clear();
         self.field_boss_available = false;
@@ -2262,6 +2286,85 @@ impl MeterEngine {
             hit_at_ms: hit.hit_at_ms,
             source: "server-self-hit".into(),
         })
+    }
+
+    /// Remember the power scalars an attacker has hit with. A summon inherits its owner's, so the
+    /// set is the evidence that ties an unannounced summon to the one player it can belong to.
+    pub fn observe_power(&mut self, source: u64, scalar: u32) {
+        if self.power.len() >= 2048 && !self.power.contains_key(&source) {
+            self.power.clear();
+        }
+        let set = self.power.entry(source).or_default();
+        if set.len() < 8 && !set.contains(&scalar) {
+            set.push(scalar);
+        }
+    }
+
+    /// Bind unannounced summons and spell entities to their player. Some are never spawned or
+    /// named, so only their damage records show them. The rule is conservative, like the one the
+    /// A2Tools meter measured with no false merge: the same class (the class band of the skill
+    /// ids), a power scalar in common, at least three times as many distinct skills on the player
+    /// as on the summon, and exactly one such player. It is recomputed each time, so a binding
+    /// that stops holding is released.
+    fn bind_orphans(&mut self) {
+        let mut changed = false;
+        for id in std::mem::take(&mut self.orphan_bound) {
+            if let Some(row) = self.identities.get_mut(&id) {
+                row.owner = None;
+                changed = true;
+            }
+        }
+        if !self.power.is_empty() && !self.aggregates.is_empty() {
+            let mut skills: HashMap<u64, std::collections::BTreeSet<u32>> = HashMap::new();
+            for ((source, _), per_skill) in &self.aggregates {
+                skills
+                    .entry(*source)
+                    .or_default()
+                    .extend(per_skill.keys().copied());
+            }
+            let players: Vec<(u64, u8, usize)> = skills
+                .iter()
+                .filter_map(|(id, set)| {
+                    let row = self.identities.get(id)?;
+                    let class = class_band(row.class.as_deref()?)?;
+                    (row.player && !row.npc && !row.pet && !row.removed && row.owner.is_none())
+                        .then_some((*id, class, set.len()))
+                })
+                .collect();
+            let mut bound = Vec::new();
+            for (orphan, set) in &skills {
+                let unannounced = self.identities.get(orphan).is_none_or(|row| {
+                    !row.player && !row.npc && !row.pet && row.owner.is_none() && !row.removed
+                });
+                let Some(scalars) = self.power.get(orphan).filter(|_| unannounced) else {
+                    continue;
+                };
+                let mut bands = set.iter().filter_map(|skill| skill_band(*skill));
+                let Some(band) = bands.next().filter(|band| bands.all(|other| other == *band))
+                else {
+                    continue;
+                };
+                let mut owners = players.iter().filter(|(id, class, count)| {
+                    *class == band
+                        && *count >= set.len() * 3
+                        && self
+                            .power
+                            .get(id)
+                            .is_some_and(|theirs| theirs.iter().any(|value| scalars.contains(value)))
+                });
+                if let (Some((owner, _, _)), None) = (owners.next(), owners.next()) {
+                    bound.push((*orphan, *owner));
+                }
+            }
+            for (orphan, owner) in bound {
+                self.identities.entry(orphan).or_default().owner = Some(owner);
+                self.orphan_bound.insert(orphan);
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty();
+        }
     }
 
     /// Effect entities such as a Cleric's auras are announced by an appearance record under their
@@ -3304,6 +3407,7 @@ impl MeterEngine {
         // A finished encounter that is still on screen belongs to the past: build this record
         // from the current one only.
         let previous = self.completed.take();
+        self.bind_orphans();
         // The cached totals were built for the shown result; rebuild them for this encounter.
         self.dirty();
         let mut record = self.snapshot(now, "all");
@@ -4203,6 +4307,24 @@ fn record_details_bounded(record: &Encounter) -> bool {
             })
 }
 
+/// The class band of a player skill id (the first two digits of its eight), as the skills of every
+/// identified player in the saved history confirm. The shared band 10 is not a class.
+fn skill_band(skill: u32) -> Option<u8> {
+    ((11..=18).contains(&(skill / 1_000_000))).then_some((skill / 1_000_000) as u8)
+}
+fn class_band(class: &str) -> Option<u8> {
+    Some(match class {
+        "Gladiator" => 11,
+        "Templar" => 12,
+        "Assassin" => 13,
+        "Ranger" => 14,
+        "Sorcerer" => 15,
+        "Spiritmaster" => 16,
+        "Cleric" => 17,
+        "Chanter" => 18,
+        _ => return None,
+    })
+}
 fn class_name(code: u32) -> Option<&'static str> {
     match code {
         5..=8 => Some("Gladiator"),

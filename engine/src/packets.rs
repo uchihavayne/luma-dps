@@ -597,6 +597,63 @@ fn member_profiles(frame: &[u8]) -> Result<Vec<MemberProfile>, ReadError> {
     Ok(result)
 }
 
+/// A direct damage record and the attacker's power scalar (1/100 %, which an owned summon shares
+/// with its owner), read before the damage amount.
+fn damage_record(frame: &[u8]) -> Result<Option<(Hit, u32)>, ReadError> {
+    let mut bytes = Bytes::new(frame);
+    let target = u64::from(bytes.variable()?);
+    let switch = bytes.variable()?;
+    bytes.variable()?;
+    let source = u64::from(bytes.variable()?);
+    let skill = bytes.word()?;
+    bytes.byte()?;
+    let kind = bytes.variable()?;
+    if kind == 1 || kind == 6 || switch & 4 == 0 {
+        return Ok(None);
+    }
+    let (flags, angle) = match switch & 15 {
+        4 => {
+            bytes.skip(8)?;
+            (0, 0)
+        }
+        5..=7 => {
+            let flags = bytes.byte()?;
+            bytes.byte()?;
+            let angle = bytes.byte()?;
+            bytes.skip(8)?;
+            (flags, angle)
+        }
+        _ => return Ok(None),
+    };
+    let scalar = bytes.variable()?;
+    let amount = u64::from(bytes.variable()?);
+    if source == 0 || target == 0 || skill == 0 || kind > 8 || amount > 2_000_000_000 {
+        return Err(ReadError::Invalid);
+    }
+    Ok(Some((
+        Hit {
+            source,
+            target,
+            skill,
+            amount,
+            critical: kind == 3,
+            tick: false,
+            flags,
+            angle,
+        },
+        scalar,
+    )))
+}
+
+/// The attacker and power scalar of a direct damage frame, when it has one.
+pub fn power_scalar(frame: &[u8]) -> Option<(u64, u32)> {
+    if frame.get(..2) != Some(&[4, 0x38]) {
+        return None;
+    }
+    let (hit, scalar) = damage_record(frame).ok()??;
+    (1..=1_000_000).contains(&scalar).then_some((hit.source, scalar))
+}
+
 pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
     let Some(opcode) = frame.get(..2) else {
         return Err(ReadError::Short);
@@ -705,47 +762,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             }
             Ok(Some(zone))
         }
-        [4, 0x38] => {
-            let target = u64::from(bytes.variable()?);
-            let switch = bytes.variable()?;
-            bytes.variable()?;
-            let source = u64::from(bytes.variable()?);
-            let skill = bytes.word()?;
-            bytes.byte()?;
-            let kind = bytes.variable()?;
-            if kind == 1 || kind == 6 || switch & 4 == 0 {
-                return Ok(None);
-            }
-            let (flags, angle) = match switch & 15 {
-                4 => {
-                    bytes.skip(8)?;
-                    (0, 0)
-                }
-                5..=7 => {
-                    let flags = bytes.byte()?;
-                    bytes.byte()?;
-                    let angle = bytes.byte()?;
-                    bytes.skip(8)?;
-                    (flags, angle)
-                }
-                _ => return Ok(None),
-            };
-            bytes.variable()?;
-            let amount = u64::from(bytes.variable()?);
-            if source == 0 || target == 0 || skill == 0 || kind > 8 || amount > 2_000_000_000 {
-                return Err(ReadError::Invalid);
-            }
-            Ok(Some(Event::Damage(Hit {
-                source,
-                target,
-                skill,
-                amount,
-                critical: kind == 3,
-                tick: false,
-                flags,
-                angle,
-            })))
-        }
+        [4, 0x38] => Ok(damage_record(frame)?.map(|(hit, _)| Event::Damage(hit))),
         [5, 0x38] => {
             let target = u64::from(bytes.variable()?);
             let kind = bytes.byte()?;
