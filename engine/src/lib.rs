@@ -1238,6 +1238,7 @@ impl MeterEngine {
                         completed.identities.insert(id, identity.clone());
                     }
                 }
+                self.bind_named_effects(id);
                 self.dirty();
             }
             Event::Npc {
@@ -1475,6 +1476,8 @@ impl MeterEngine {
                     }) {
                         identity.home_server = Some(profile.server);
                     }
+                    // The server can tell two same-named players apart.
+                    self.bind_named_effects(profile.id);
                     if self.own_id == Some(profile.id)
                         && self
                             .character
@@ -2261,6 +2264,71 @@ impl MeterEngine {
         })
     }
 
+    /// Effect entities such as a Cleric's auras are announced by an appearance record under their
+    /// caster's name, with no class, and nothing else says whose they are. An identity without a
+    /// class whose name matches exactly one identified player (the same home server when both are
+    /// known) belongs to that player, so its damage joins the player's row. A real player who is
+    /// later identified with a class is released again by the identity record itself.
+    fn bind_named_effects(&mut self, id: u64) {
+        let Some(me) = self
+            .identities
+            .get(&id)
+            .filter(|row| row.player && !row.npc && !row.pet && !row.removed)
+        else {
+            return;
+        };
+        let Some(name) = me.name.clone() else {
+            return;
+        };
+        let same_server = |a: Option<u16>, b: Option<u16>| a.is_none() || b.is_none() || a == b;
+        let identified = |row: &Identity| {
+            row.player
+                && !row.npc
+                && !row.pet
+                && !row.removed
+                && row.owner.is_none()
+                && row.class.is_some()
+                && row.name.as_deref() == Some(name.as_str())
+        };
+        if me.class.is_none() {
+            let server = me.home_server;
+            let mut owners = self
+                .identities
+                .iter()
+                .filter(|(other, row)| **other != id && identified(row) && same_server(server, row.home_server))
+                .map(|(other, _)| *other);
+            let owner = match (owners.next(), owners.next()) {
+                (Some(owner), None) => Some(owner),
+                _ => None,
+            };
+            if let Some(row) = self.identities.get_mut(&id) {
+                row.owner = owner;
+            }
+        } else if identified(me) {
+            let server = me.home_server;
+            let effects: Vec<u64> = self
+                .identities
+                .iter()
+                .filter(|(other, row)| {
+                    **other != id
+                        && row.player
+                        && !row.npc
+                        && !row.pet
+                        && !row.removed
+                        && row.owner.is_none()
+                        && row.class.is_none()
+                        && row.name.as_deref() == Some(name.as_str())
+                        && same_server(server, row.home_server)
+                })
+                .map(|(other, _)| *other)
+                .collect();
+            for effect in effects {
+                if let Some(row) = self.identities.get_mut(&effect) {
+                    row.owner = Some(id);
+                }
+            }
+        }
+    }
     fn owner_in(identities: &HashMap<u64, Identity>, id: u64) -> u64 {
         let mut result = id;
         for _ in 0..8 {

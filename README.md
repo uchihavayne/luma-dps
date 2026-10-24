@@ -63,6 +63,8 @@ Use the four-square **Modules** header control for **Pet only**, **All modules**
 
 DPS is damage divided by the time from the first hit to the last hit, per player or target window; the quiet time that ends an encounter (ten seconds without a hit, or thirty for a boss that is still alive) is not counted, and neither is healing that keeps an encounter open. A single hit has no span, so the one-second minimum divisor applies. The number shown while you fight is the number saved when the encounter closes: it does not fall during a pause between hits. Damage taken, summon attribution and pauses use the same clock, with pauses subtracted.
 
+Effect entities such as a Cleric's auras are announced under their caster's name but without a class. When exactly one identified player carries that name (and the same home server when both are known), the entity's damage is credited to that player's row, in the analysis and the saved samples alike; with two candidates it stays a separate row. A player who is later identified with a class of their own is released. Summons and spell entities that are never named stay in the unnamed-sources notice under the list.
+
 A finished encounter, a boss kill above all, stays on screen until a new one actually deals damage to a target. Damage taken or a heal tick right after a kill is still measured and saved to history, but it does not replace the result you are looking at.
 
 ## Your character and measurement scope

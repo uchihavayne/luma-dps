@@ -31,7 +31,7 @@ test('custom training duration validation refuses partial, exponential, fraction
 
 test('personal curve includes credited summon damage but excludes strangers, with measured zero buckets', () => {
   const curve = damageCurve(record());
-  assert.equal(curve.complete, true); assert.equal(curve.totalDamage, 600); assert.equal(curve.points.length, 10);
+  assert.equal(curve.complete, true); assert.equal(curve.totalDamage, 600); assert.equal(curve.points.length, 8); // ends at the last own hit (7 s)
   assert.equal(curve.points[0].dps, 100); assert.equal(curve.points[1].dps, 0); assert.equal(curve.points[2].dps, 200);
   assert.equal(curve.points[4].dps, 0); assert.equal(curve.bestBurst, 300);
 });
@@ -40,7 +40,13 @@ test('curve bucket duration changes burst measurement and counts only observed h
   const curve = damageCurve(record(), { intervalMs: 5000 });
   assert.equal(curve.points.length, 2); assert.equal(curve.points[0].dps, 60);
   assert.equal(curve.activityMs, 8000); // [0,5] and [7,10], overlapping windows count once.
-  assert.equal(curve.bestBurst, 60);
+  // The last bucket is measured over the 2 s that were fought in it, not over its full 5 s.
+  assert.ok(Math.abs(curve.bestBurst - 300000 / 2001) < 1e-9);
+});
+
+test('the curve ends at the last hit even when the record closed ten seconds later', () => {
+  const curve = damageCurve({ ...record(), ended_ms: 117000, elapsed_ms: 17000 }, { scope: 'observed' });
+  assert.equal(curve.points.length, 8); assert.equal(curve.points.at(-1).dps, 300); assert.equal(curve.totalDamage, 1400);
 });
 
 test('party curve requires explicit membership while observed scope consciously includes all actors', () => {
@@ -60,7 +66,7 @@ test('partial sampling never yields a claimed complete burst or activity and bou
 test('empty, malformed, unknown identity or overlong records cannot synthesize a curve', () => {
   assert.equal(damageCurve(null).available, false);
   assert.equal(damageCurve({ ...record(), local_identity_source: 'unresolved' }).available, false);
-  assert.equal(damageCurve({ ...record(), elapsed_ms: 2000000 }, { scope: 'observed' }).available, false);
+  assert.equal(damageCurve({ ...record(), elapsed_ms: 2000000, damage_samples: [...record().damage_samples, { timestamp_ms: 2100000, source: 1, player_id: 1, amount: 1 }] }, { scope: 'observed' }).available, false);
   const path = curvePath([{ dps: NaN }, { dps: -10 }, { dps: 30 }]);
   assert.equal(path.includes('NaN'), false); assert.equal(path.includes('Infinity'), false);
 });
@@ -81,7 +87,7 @@ test('personal and party history trends report the same scope clock as their DPS
 
 test('personal chart begins at the first own hit and keeps late hits across a paused wall-clock span', () => {
   const curve = damageCurve({ ...record(), elapsed_ms: 6000, ended_ms: 110000, damage_samples: [{ timestamp_ms: 100000, player_id: 2, amount: 900 }, { timestamp_ms: 102000, player_id: 1, amount: 100 }, { timestamp_ms: 109000, player_id: 1, amount: 200 }] });
-  assert.equal(curve.started_ms, 102000); assert.equal(curve.elapsed_ms, 8000);
+  assert.equal(curve.started_ms, 102000); assert.equal(curve.elapsed_ms, 7001);
   assert.equal(curve.totalDamage, 300); assert.equal(curve.points[7].damage, 200);
 });
 

@@ -54,7 +54,8 @@ export function damageCurve(record, { scope = 'personal', intervalMs = 1000 } = 
     return time !== null && amount !== null && time >= started && time <= observedEnd && (!members || members.has(id(sample.player_id ?? sample.source)));
   }).sort((a, b) => a.timestamp_ms - b.timestamp_ms);
   if (members && samples.length) started = samples[0].timestamp_ms;
-  elapsed = Math.max(1, (members && samples.length ? Math.min(observedEnd, samples.at(-1).timestamp_ms + 10000) : observedEnd) - started);
+  // The damage clock stops at the last hit: the quiet time that closes an encounter is not part of the curve.
+  elapsed = Math.max(1, (samples.length ? Math.min(observedEnd, samples.at(-1).timestamp_ms + 1) : observedEnd) - started);
   const bucketCount = Math.min(1200, Math.ceil(elapsed / interval));
   if (Math.ceil(elapsed / interval) > 1200) return { available: false, complete: false, points: [], bestBurst: null, activityMs: null, totalDamage: null };
   const points = Array.from({ length: bucketCount }, (_, index) => ({ at_ms: index * interval, damage: 0, dps: 0 }));
@@ -62,12 +63,13 @@ export function damageCurve(record, { scope = 'personal', intervalMs = 1000 } = 
     const bucket = Math.min(bucketCount - 1, Math.floor((sample.timestamp_ms - started) / interval));
     points[bucket].damage += sample.amount;
   }
-  for (const point of points) point.dps = point.damage * 1000 / Math.min(interval, elapsed - point.at_ms);
+  // A bucket is at least the engine's one-second minimum, so a hit in the last millisecond is not a spike.
+  for (const point of points) point.dps = point.damage * 1000 / Math.min(interval, Math.max(1000, elapsed - point.at_ms));
   const complete = record.sample_complete === true && raw.length <= 20000;
   // This activity measure is an explicit 3 s union of observed hit windows, not cast time.
   let activity = 0, activeEnd = started;
   for (const sample of samples) {
-    const end = Math.min(started + elapsed, sample.timestamp_ms + 3000);
+    const end = Math.min(observedEnd, sample.timestamp_ms + 3000);
     activity += Math.max(0, end - Math.max(sample.timestamp_ms, activeEnd));
     activeEnd = Math.max(activeEnd, end);
   }
