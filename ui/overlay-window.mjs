@@ -2,6 +2,7 @@
 // arrive the same way the meter gets them, and nothing here saves a preference.
 import { normalizePreferences, normalizeState, withSystemLocale } from './model.mjs';
 import { allEvents } from './events.mjs';
+import { applyTheme } from './overlay-theme.mjs';
 import { cubePresentation } from './cube.mjs';
 import { skillLabel } from './skill-names.mjs';
 import { DEMO_STATE } from './demo.mjs';
@@ -118,7 +119,8 @@ async function pullPreferences() {
     if (options !== optionsSent) { optionsSent = options; invoke('overlay_options', { snap: prefs.overlaySnap ? 20 : 0, scale }).catch(() => { optionsSent = ''; }); }
     markerPrefs = { enabled: prefs.showCubeLocator, needKeys: prefs.cubeNeedKeys };
     if (!holding) controlsOptions = { scale: prefs.overlayScale, opacity: prefs.opacity, rate: prefs.overlayRate, snap: prefs.overlaySnap, source: prefs.combatDetection.source, seconds: prefs.combatDetection.seconds };
-    document.documentElement.style.setProperty('--alpha', String(Math.min(1, Math.max(0.4, prefs.opacity))));
+    // The theme, the font and the opacity the player chose: every window wears them, not only the meter.
+    applyTheme(prefs);
     applyTitle();
   } catch {}
 }
@@ -183,6 +185,8 @@ if (native) {
   // A hidden window's timer runs about once a second, so a marker that is waiting looks as soon as the state arrives.
   listen('luma-state', event => { raw = event.payload; fresh = true; lastEvent = Date.now(); if (marker && markerShown === false) render(); });
   listen('luma-cube-state', event => { cubeRaw = event.payload; });
+  // A theme or an opacity changes every window at once, not when each next asks.
+  listen('luma-preferences', () => pullPreferences());
   listen('luma-overlay-lock', event => setLocked(event.payload));
   invoke('overlay_locked').then(setLocked).catch(() => {});
   if (panel === 'controls') { readOpen(); setInterval(readOpen, 1500); }

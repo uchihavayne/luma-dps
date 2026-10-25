@@ -1432,6 +1432,22 @@ fn resized_meter_dimensions(
     ))
 }
 
+/// Luma closes with the game: once the game has been seen running and its process has been gone for a
+/// few seconds (not for a blink of the process list), unless the player switched that off.
+const GAME_GONE_GRACE_MS: u64 = 8_000;
+
+fn should_close_with_game(game_seen: bool, gone_for_ms: Option<u64>, enabled: bool) -> bool {
+    enabled && game_seen && gone_for_ms.is_some_and(|gone| gone >= GAME_GONE_GRACE_MS)
+}
+
+fn close_with_game_enabled(shared: &Shared) -> bool {
+    shared
+        .preferences
+        .lock()
+        .ok()
+        .is_none_or(|preferences| preferences.extra.get("closeWithGame").and_then(Value::as_bool) != Some(false))
+}
+
 /// How often the state may be sent to the windows: the player's update rate (250, 500 or 1000 ms).
 fn state_period_ms(shared: &Shared) -> u64 {
     shared
@@ -3660,8 +3676,17 @@ mod roster_height_tests {
 
 #[cfg(test)]
 mod state_emission_tests {
-    use super::state_fingerprint;
+    use super::{should_close_with_game, state_fingerprint, GAME_GONE_GRACE_MS};
     use serde_json::json;
+
+    #[test]
+    fn luma_closes_only_after_the_game_was_seen_and_has_been_gone_a_while() {
+        assert!(!should_close_with_game(false, Some(60_000), true), "Luma may start before the game");
+        assert!(!should_close_with_game(true, None, true), "the game is running");
+        assert!(!should_close_with_game(true, Some(GAME_GONE_GRACE_MS - 1), true), "a blink of the process list is not a close");
+        assert!(should_close_with_game(true, Some(GAME_GONE_GRACE_MS), true));
+        assert!(!should_close_with_game(true, Some(60_000), false), "switched off");
+    }
 
     #[test]
     fn an_unchanged_state_has_the_same_fingerprint_whatever_its_revision() {
@@ -4383,6 +4408,7 @@ fn main() {
                 let mut calendar_revision = None;
                 let mut cube_revision = None;
                 let (mut last_emit_at, mut last_fingerprint) = (0u64, 0u64);
+                let (mut game_seen, mut game_gone_since): (bool, Option<u64>) = (false, None);
                 let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
                     if now_ms()>=z_order_checked_at {
@@ -4406,6 +4432,20 @@ fn main() {
                                 shared
                                     .geometry_save_due
                                     .store(now_ms() + 1000, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    // The game closing closes Luma (only after it was seen running, so Luma may start first).
+                    if let Some((processes, watching)) = shared.capture.lock().ok().map(|capture| {
+                        (capture.game_processes, !matches!(capture.status.as_str(), "error" | "stopped"))
+                    }) {
+                        if processes > 0 {
+                            game_seen = true;
+                            game_gone_since = None;
+                        } else if game_seen && watching {
+                            let since = *game_gone_since.get_or_insert_with(now_ms);
+                            if should_close_with_game(game_seen, Some(now_ms().saturating_sub(since)), close_with_game_enabled(&shared)) {
+                                handle.exit(0);
                             }
                         }
                     }

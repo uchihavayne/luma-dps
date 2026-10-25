@@ -515,7 +515,7 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 .cube-nav-kind[data-look=''] > .cube-nav-art, .cube-nav-art:not([src]) { display: none; }
 .roster-more { margin: 2px 6px 4px; padding: 3px 8px; border-radius: 8px; text-align: center; font-size: 10px; color: var(--muted); }
 .roster-more[hidden] { display: none; }
-#meter[data-clean=true][data-look=bare] .roster-more { background: color-mix(in srgb, #0b0f14 68%, transparent); text-shadow: 0 1px 3px #000d; }
+#meter[data-clean=true][data-look=bare] .roster-more { background: color-mix(in srgb, var(--bg) 68%, transparent); text-shadow: 0 1px 3px #000d; }
 
 /* The old sound compass and its button in the header are gone. */
 #cube-entry, .cube-navigator { display: none !important; }
@@ -523,7 +523,7 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 /* Clean look: one flat, tidy card, the same whether or not the pointer is on it. No frame line, no
    notice cards (what the "!" says is one click away in the tools menu); a slim header, your damage per
    second large under the target, the list, your skills, and a footer with only what is used. */
-#meter[data-clean=true] { border: 0; border-radius: 12px; box-shadow: none; background: color-mix(in srgb, #0c1016 calc(var(--opacity) * 100%), transparent); }
+#meter[data-clean=true] { border: 0; border-radius: 12px; box-shadow: none; background: color-mix(in srgb, var(--bg) calc(var(--opacity) * 100%), transparent); }
 #meter[data-clean=true]::before, #meter[data-clean=true]::after { display: none; }
 #meter[data-clean=true] #roster-unnamed, #meter[data-clean=true] #target-pet-pin:not([data-status=matched]) { display: none; }
 #meter[data-clean=true] > .topbar { height: 34px; flex: 0 0 34px; padding: 0 8px 0 12px; border-bottom: 1px solid rgba(255, 255, 255, .06); }
@@ -547,7 +547,7 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #meter[data-clean=true][data-look=bare]:has(#players .empty) > .encounter-header, #meter[data-clean=true][data-look=bare]:has(#players .empty) > .roster-controls { display: none; }
 #meter[data-clean=true][data-look=bare] > .encounter-header { padding-top: 6px; text-shadow: 0 1px 3px #000d; }
 #meter[data-clean=true][data-look=bare] > .roster-controls { justify-content: flex-end; text-shadow: 0 1px 3px #000d; }
-#meter[data-clean=true][data-look=bare] #players .player, #meter[data-clean=true][data-look=bare] .skill-board { background: color-mix(in srgb, #0b0f14 68%, transparent); border-radius: 10px; border-color: transparent; }
+#meter[data-clean=true][data-look=bare] #players .player, #meter[data-clean=true][data-look=bare] .skill-board { background: color-mix(in srgb, var(--bg) 68%, transparent); border-radius: 10px; border-color: transparent; }
 #meter[data-clean=true][data-look=bare] #players .player { margin-bottom: 4px; }
 #meter[data-clean=true][data-look=bare] .player-bar { opacity: .5; }
 #meter[data-clean=true][data-look=frame] { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -3px; }
@@ -560,3 +560,4 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 .support-button { flex: none; padding: 7px 12px; border: 0; border-radius: 9px; background: #ffdd00; color: #1a1500; font-weight: 700; cursor: pointer; }
 .support-button:hover, .support-button:focus-visible { filter: brightness(1.08); outline: none; }
 .tools-more > .tools-support { color: #ffdd00; }
+#meter[data-clean=true][data-look=bare] { opacity: max(.3, var(--opacity)); }

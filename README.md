@@ -140,6 +140,10 @@ The **Map** keeps your last known position on the map while the game sends the n
 
 **Player list limit:** a crowd, such as a world boss, is cut to the players who did the most damage per second (and you, with your true rank, when you are not among them), with a line saying how many more there are. Settings > Controls > Player list takes any number you type, 1, 3, 10, up to 50; 0 shows everyone, and the default is 10. A fight with fewer players than the number is not touched.
 
+**Theme and opacity** (Settings > Appearance) apply to every window, not only the meter: each detached window wears the theme's colours (or your custom ones) and font, and the opacity fades the whole window, including the bare meter. A change reaches the windows at once. The Hidden Cube, flight and ping markers keep light text over the game whatever the theme and take only its accent.
+
+**Close with the game:** once Luma has seen AION2 running and its process has been gone for eight seconds, Luma closes too (Settings > Controls can switch that off). Luma may be started before the game; it never closes before the game was seen.
+
 **Clicks:** while the meter is bare (locked, with the clean look) it lets every click through to the game, so it never blocks one; it takes clicks back for its card (Alt+E), the update question or a drawer.
 
 **Load on the game:** Luma sends its state to the windows only when it changed (and not faster than the update rate), with a heartbeat every two seconds, so idle windows are sent nothing and a window parses nothing it has already seen. The Hidden Cube and flight markers hide themselves while they have nothing to draw, so no transparent window is composed over the game for nothing. The windows use no blur (there is nothing behind them to blur but the game) and one soft text shadow. The update rate (250, 500 or 1000 ms) in Settings or Overlay controls sets how often a changed state is sent; a slower rate costs less. Measured only by reading the code and the tests, not by the game's frame rate: check it in the game.
