@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.26.0 · 25 October 2026
+
+- The skill table sits inside the main window with the game's own skill icons, and the meter is not a window while Luma is locked: no header, footer, card or frame, only the target, the player rows and your skills over the game, with every click passing through to it. Alt+E opens Overlay controls, which unlock the windows for moving, set scale, opacity, update rate, grid snapping and combat detection, and refresh a stuck window.
+- New detachable windows: Target health, Flight, Timers, Action bar, Opponent cooldowns, Map (the game's open-world maps with your heading), Ping, and a Hidden Cube marker that uses the game's own cube picture. Ping, Flight and the Cube are drawn straight on the screen. Every window scales its content to its size instead of cutting it, tickets show their names and counts, and a member's Odyle cap shows as 840.
+- Hidden Cube is read from the game's own notices; the sound locator and its compass are removed and nothing listens to audio.
+- PvP shows the Abyss Points that came as the reward for beating players (never monsters), with the last rises and their reasons to trace a wrong count.
+- The player list is cut to the players with the most DPS in a crowd such as a world boss (any number from 0 to 50, default 10), and you stay in it with your true rank.
+- Less load on the game: the state is sent to the windows only when it changed, markers with nothing to draw hide themselves and the windows use no blur.
+- The game's own icons, item and ticket names, servers, party finder room, currencies, loot and flight points are read; a creature's health is read from the moment it appears.
+- When a newer signed version is published, Luma asks whether to download it and then whether to install and restart. A Buy me a coffee button is in Settings > About, the tools menu and Overlay controls. A first start speaks the system language.
+- Desktop 0.26.0; encounter engine 0.11.0. These automated and browser checks do not replace live EU encounter validation; the windows, Alt+E, click-through and the update flow were not run on a real desktop or game.
+
 ## 0.25.0 — 2026-10-21
 
 - Replaced representative class drawings with nine bundled game class images. Chanter, Ranger, Spiritmaster and Brawler have explicit mappings, with safe aliases and a neutral unknown-class fallback.

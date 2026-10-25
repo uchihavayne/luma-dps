@@ -1,6 +1,6 @@
 # Feature coverage and comparison
 
-Publisher feature pages rechecked on **21 October 2026**; the pet reference sources were reviewed on the same date. Luma coverage describes the independent **0.25.0 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier. The default Clear interface keeps additional tools behind its overflow menu, with separately saved panel visibility.
+Publisher feature pages rechecked on **21 October 2026**; the pet reference sources were reviewed on the same date. Luma coverage describes the independent **0.26.0 preview source**, including features whose production deployment or targeted live checks are still pending. A present button or passing replay is not evidence of complete protocol coverage. Luma has no paid feature tier. The default Clear interface keeps additional tools behind its overflow menu, with separately saved panel visibility.
 
 ## What the published products describe
 
