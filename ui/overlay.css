@@ -21,7 +21,7 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 .hint { padding: 10px 0; }
 
 /* PvP */
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; text-align: center; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 6px; text-align: center; }
 .stats > div { padding: 5px 0; border-radius: 8px; background: rgba(255, 255, 255, .05); }
 .stats b { display: block; font-size: 24px; line-height: 28px; font-variant-numeric: tabular-nums; }
 .stats small { display: block; font-size: 9px; letter-spacing: .1em; color: var(--muted); }
@@ -236,7 +236,7 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 body.marker .panel { overflow: visible; border: 0; background: none; box-shadow: none; }
 body.marker .panel::before, body.marker .panel-head, body.marker .panel-resize { display: none; }
 body.marker .panel-body { padding: 0; overflow: visible; }
-.marker { --tone: #ffc24d; --glow: rgba(245, 158, 11, .55); display: flex; align-items: center; gap: 12px; padding: 4px 6px; color: #fff; text-shadow: 0 1px 3px #000d, 0 0 9px #000a; }
+.marker { --tone: #ffc24d; --glow: rgba(245, 158, 11, .55); display: flex; align-items: center; gap: 12px; padding: 4px 6px; color: #fff; text-shadow: 0 1px 3px #000d; }
 .marker[data-look=red] { --tone: #ff7b7b; --glow: rgba(245, 101, 101, .55); }
 .marker-art { position: relative; display: grid; flex: none; width: 76px; height: 76px; place-items: center; }
 .marker-art .glow { position: absolute; inset: -8px; border-radius: 50%; background: radial-gradient(circle, var(--glow) 0%, transparent 68%); }
@@ -295,7 +295,7 @@ body[data-panel=ping] .panel-body { padding: 8px 12px; justify-content: center; 
 .ctl-foot button.primary { background: var(--accent); border-color: transparent; color: #0b1410; font-weight: 700; font-size: 12px; }
 
 /* Ping and flight time are drawn on the screen like the Cube marker: no card, only the numbers. */
-body.marker .ping, body.marker .flyer { text-shadow: 0 1px 3px #000d, 0 0 9px #000a; }
+body.marker .ping, body.marker .flyer { text-shadow: 0 1px 3px #000d; }
 body[data-panel=ping] .panel-body, body[data-panel=flight] .panel-body { justify-content: center; align-items: center; }
 body[data-panel=flight] .panel-body { align-items: stretch; padding: 0 8px; }
 .flyer { display: grid; justify-items: center; gap: 5px; color: #fff; }
@@ -316,6 +316,6 @@ body.editing .edit-bar { top: 4px; right: 6px; bottom: auto; }
    the empty-state messages (which would be a lone box) are not drawn. */
 body.locked .panel { background: none; border-color: transparent; box-shadow: none; }
 body.locked .hint { display: none; }
-body.locked .panel-content { text-shadow: 0 1px 3px #000d, 0 0 8px #000a; }
-body.locked .panel-content :is(.hero, .tile, .time-row, .line, .timer, .cd, .effect, .member, .seat, .skill, .target, .slot, .recap, .group, .alert, .stats > div, .map-view) { background-color: color-mix(in srgb, #0b0f14 72%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+body.locked .panel-content { text-shadow: 0 1px 3px #000d; }
+body.locked .panel-content :is(.hero, .tile, .time-row, .line, .timer, .cd, .effect, .member, .seat, .skill, .target, .slot, .recap, .group, .alert, .stats > div, .map-view) { background-color: color-mix(in srgb, #0b0f14 72%, transparent); }
 body.locked[data-panel=map] .map-foot { text-shadow: 0 1px 3px #000, 0 0 8px #000; }

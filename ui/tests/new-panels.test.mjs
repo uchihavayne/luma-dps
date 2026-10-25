@@ -241,3 +241,36 @@ test('a count above the plain Odyle cap shows the member cap: 840 is never "/ 56
   const plain = resources(undefined); plain.odyle.base = 105; plain.odyle.total = 145; plain.tickets[0].count = 105;
   assert.match(renderPanel('tickets', { state: normalizeState({ resources: plain }), now: NOW, locale: 'en' }), /<small>\/ 560<\/small>/);
 });
+
+test('the PvP numbers carry the Abyss Points the game gave for beating players', () => {
+  const state = normalizeState({ pvp: { kills: 3, deaths: 1, assists: 5, points: 12_340 } });
+  assert.equal(state.pvp.points, 12_340);
+  const html = renderPanel('pvp', { state, now: NOW, locale: 'en', label });
+  assert.match(html, /<b>\+12,?340<\/b><small>ABYSS PTS<\/small>/);
+  assert.match(html, /points from monsters are not counted/);
+  assert.match(renderPanel('pvp', { state: normalizeState({}), now: NOW, locale: 'tr', label }), /<b>\+0<\/b><small>ABYSS PUANI<\/small>/);
+  for (const junk of [-5, 'x', null, NaN, 1.5, undefined]) assert.equal(normalizeState({ pvp: { points: junk } }).pvp.points, 0);
+  assert.equal(normalizeState(normalizeState({ pvp: { points: 99 } })).pvp.points, 99);
+});
+
+test('a crowd at a world boss is cut to the ten with the most DPS, and you stay in it with your true rank', async () => {
+  const { capRoster } = await import('../hud.mjs');
+  const crowd = Array.from({ length: 16 }, (_, index) => ({ id: String(index + 1), name: `P${index + 1}`, dps: (index + 1) * 100, is_local: index === 2 }));
+  const result = capRoster(crowd, { limit: 10, isOwn: row => row.is_local });
+  assert.equal(result.rows.length, 10); assert.equal(result.hidden, 6);
+  // The ten with the most DPS, plus you (the third weakest) in place of the tenth: the rows keep their order.
+  const names = result.rows.map(row => row.name);
+  assert.ok(names.includes('P3'), 'you are kept');
+  assert.deepEqual(names, ['P3', 'P8', 'P9', 'P10', 'P11', 'P12', 'P13', 'P14', 'P15', 'P16'].sort((a, b) => crowd.findIndex(row => row.name === a) - crowd.findIndex(row => row.name === b)));
+  assert.equal(result.ranks.get(crowd[2]), 14, 'your true rank by DPS');
+  // When you are among the strongest nobody is swapped out, and a small crowd is untouched.
+  const strong = capRoster(crowd.map((row, index) => ({ ...row, is_local: index === 15 })), { limit: 10, isOwn: row => row.is_local });
+  assert.deepEqual(strong.rows.map(row => row.name), ['P7', 'P8', 'P9', 'P10', 'P11', 'P12', 'P13', 'P14', 'P15', 'P16']);
+  assert.equal(capRoster(crowd.slice(0, 10), { limit: 10 }).hidden, 0);
+  assert.equal(capRoster(crowd, { limit: 0 }).rows.length, 16, '0 shows everyone');
+  for (const junk of [undefined, null, 'x', {}]) assert.deepEqual(capRoster(junk).rows, []);
+  assert.equal(capRoster([{ id: '1' }, { id: '2', dps: null }, { id: '3', dps: 5 }], { limit: 1 }).rows[0].id, '3', 'a row with no DPS yet is the weakest');
+  // The preference is a closed list that falls back to ten.
+  assert.equal(normalizePreferences({}).rosterLimit, 10);
+  for (const [input, expected] of [[0, 0], [5, 5], [20, 20], [7, 10], ['15', 15], ['x', 10], [-3, 10]]) assert.equal(normalizePreferences({ rosterLimit: input }).rosterLimit, expected, String(input));
+});

@@ -13,7 +13,7 @@ import { bossLog } from './boss-log.mjs';
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
 import { GAME_REFERENCE_NOTICE } from './reference-notices.mjs';
-import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, rosterFit, unnamedSourcesNotice } from './hud.mjs';
+import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, capRoster, rosterFit, unnamedSourcesNotice } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
@@ -941,7 +941,12 @@ function renderPlayers(status, scoped) {
   }
   const maxDps = Math.max(...scoped.players.map(player => player.dps), 1), minimumDps = Math.min(...scoped.players.map(player => player.dps));
   const occurrences = new Map();
-  const players = (scoped.ranked ? scoped.players : sortedPlayers(scoped.players, prefs.sort)).map(player => {
+  // At a world boss the list is the ten who did the most per second (and you), not everyone who swung once.
+  const capped = capRoster(scoped.ranked ? scoped.players : sortedPlayers(scoped.players, prefs.sort), { limit: prefs.rosterLimit, isOwn: player => player.is_local === true || player.id === state.local_player_id });
+  const more = $('#roster-more');
+  more.hidden = capped.hidden === 0;
+  if (capped.hidden) setText(more, prefs.locale === 'tr' ? `+${capped.hidden} oyuncu daha · en çok DPS yapan ${prefs.rosterLimit} kişi gösteriliyor` : `+${capped.hidden} more players · showing the ${prefs.rosterLimit} with the most DPS`);
+  const players = capped.rows.map(player => {
     const base = player.id || `${player.name}:${player.class_name}`;
     const occurrence = occurrences.get(base) || 0; occurrences.set(base, occurrence + 1);
     return { player, key: `player:${base}:${occurrence}` };
@@ -970,10 +975,10 @@ function renderPlayers(status, scoped) {
       const icon = row.querySelector('.player-class-icon'), symbol = classIcon(player.class_name);
       if (icon._symbol !== symbol) { icon.innerHTML = symbol; icon._symbol = symbol; }
       icon.title = classLabel;
-      row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true);
+      row.classList.toggle('identity-pending', pendingName); row.classList.toggle('beyond-top-ten', player.beyondTopTen === true || own && capped.hidden > 0 && capped.ranks.get(player) > prefs.rosterLimit);
       row.querySelector('.player-name').title = prefs.hidePlayerNames && !own ? visibleName : pendingName ? (prefs.locale === 'tr' ? 'Oyuncu adı kaydı bekleniyor; alındığında otomatik güncellenir.' : 'Waiting for a player-name record; updates automatically when received.') : player.name;
       setAttribute(row, 'aria-label', player.pending_combat ? `${visibleName}, ${classLabel}, ${prefs.locale === 'tr' ? 'Savaş verisi bekleniyor; DPS henüz alınmadı.' : 'Waiting for combat data; DPS not received yet.'}` : `${visibleName}, ${classLabel}, ${playerMetricLabel(player, prefs.rowMetric, prefs.locale, prefs.numberPrecision)}, ${t('analysis')}`);
-      setText(row.querySelector('.rank'), scoped.ranked ? player.rank : index + 1); setText(row.querySelector('.player-name'), visibleName);
+      setText(row.querySelector('.rank'), scoped.ranked ? player.rank : own && capped.hidden && capped.ranks.get(player) > prefs.rosterLimit ? capped.ranks.get(player) : index + 1); setText(row.querySelector('.player-name'), visibleName);
       setText(row.querySelector('.player-class-name'), classLabel);
       const member = cooldownMembers.get(String(player.id)), cooling = member?.cooldowns.find(value => value.remaining_ms > 0 || value.recharge_remaining_ms > 0);
       const cooldownNode = row.querySelector('.player-cooldown'); cooldownNode.hidden = !prefs.displayModules.team || !prefs.showTeamCooldowns || !member?.cooldowns.length;
@@ -1179,8 +1184,9 @@ function captureSaveContent(tr) {
 // Look and feel of the separate windows: how big they are, how often they redraw, whether they
 // settle on a grid once let go. Every window reads these on its own.
 function overlayOptionsContent(tr) {
-  const scales = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6], rates = [250, 500, 1000];
-  return `<h3 class="section-title">${tr ? 'Ayrı pencereler' : 'Separate windows'}</h3><label class="field"><span>${tr ? 'Pencere ölçeği' : 'Window scale'}</span><select name="overlayScale">${scales.map(value => `<option value="${value}" ${Math.abs(prefs.overlayScale - value) < 0.03 ? 'selected' : ''}>${Math.round(value * 100)}%</option>`).join('')}</select></label><label class="field"><span>${tr ? 'Yenileme hızı' : 'Update rate'}</span><select name="overlayRate">${rates.map(value => `<option value="${value}" ${prefs.overlayRate === value ? 'selected' : ''}>${value} ms</option>`).join('')}</select></label><label class="check-field"><input type="checkbox" name="overlaySnap" ${prefs.overlaySnap ? 'checked' : ''}>${tr ? 'Bırakınca pencereleri ızgaraya oturt' : 'Snap windows to a grid when let go'}</label>`;
+  const scales = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6], rates = [250, 500, 1000], limits = [0, 5, 8, 10, 15, 20];
+  return `<h3 class="section-title">${tr ? 'Oyuncu listesi' : 'Player list'}</h3><label class="field"><span>${tr ? 'Listede en çok kişi (kalabalıkta en çok DPS yapanlar, bir de sen)' : 'Most players listed (the ones with the most DPS in a crowd, and you)'}</span><select name="rosterLimit">${limits.map(value => `<option value="${value}" ${prefs.rosterLimit === value ? 'selected' : ''}>${value === 0 ? (tr ? 'Hepsi' : 'Everyone') : value}</option>`).join('')}</select></label>`
+    + `<h3 class="section-title">${tr ? 'Ayrı pencereler' : 'Separate windows'}</h3><label class="field"><span>${tr ? 'Pencere ölçeği' : 'Window scale'}</span><select name="overlayScale">${scales.map(value => `<option value="${value}" ${Math.abs(prefs.overlayScale - value) < 0.03 ? 'selected' : ''}>${Math.round(value * 100)}%</option>`).join('')}</select></label><label class="field"><span>${tr ? 'Yenileme hızı' : 'Update rate'}</span><select name="overlayRate">${rates.map(value => `<option value="${value}" ${prefs.overlayRate === value ? 'selected' : ''}>${value} ms</option>`).join('')}</select></label><label class="check-field"><input type="checkbox" name="overlaySnap" ${prefs.overlaySnap ? 'checked' : ''}>${tr ? 'Bırakınca pencereleri ızgaraya oturt' : 'Snap windows to a grid when let go'}</label>`;
 }
 
 function controlsContent() {
@@ -1678,7 +1684,7 @@ function renderPvp() {
   const stat = (value, label, title = '') => `<div${title ? ` title="${esc(title)}"` : ''}><b>${value}</b><small>${label}</small></div>`;
   const rows = recap ? recap.skills.map(row => `<div class="skill-row" style="--share:${row.share.toFixed(3)}"><span class="skill-name" title="${esc(row.name)}">${esc(row.name)}</span><span class="skill-rate">${row.hits}×</span><span class="skill-share">${(row.share * 100).toFixed(0)}%</span><span class="skill-total">${esc(num(row.damage))}</span></div>`).join('') : '';
   const html = `<div class="skill-head"><strong>PvP</strong><span>${tr ? 'bu oturum' : 'this session'}</span><button type="button" class="icon-button" data-pvp-popover="close" aria-label="${tr ? 'Kapat' : 'Close'}">×</button></div>
-    <div class="pvp-grid">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? (tr ? 'Asist, oyunun skor bildirimi ve parti listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party list.') : '')}</div>
+    <div class="pvp-grid">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? (tr ? 'Asist, oyunun skor bildirimi ve parti listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party list.') : '')}${stat(`+${num(pvp.points)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', tr ? 'Oyuncu öldürmenin ödülü olarak oyunun verdiği Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points the game gave as the reward for beating players; points from monsters are not counted.')}</div>
     ${recap ? `<div class="pvp-recap"><strong>${esc(recap.kind)}</strong><span>${esc(recap.line)}</span><small>${tr ? 'Son 10 sn alınan hasar' : 'Damage taken in the last 10 s'}: ${esc(num(recap.taken))}</small></div>${rows}` : `<p class="help">${tr ? 'Henüz bir oyuncuyla savaşmadın.' : 'No player fought yet.'}</p>`}`;
   if (host._html !== html) { host.innerHTML = html; host._html = html; }
 }
@@ -2561,6 +2567,7 @@ $('#drawer-content').addEventListener('change', async event => {
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
   if (name === 'cubeNeedKeys') { savePreferences({ cubeNeedKeys: element.checked }); return; }
+  if (name === 'rosterLimit') { savePreferences({ rosterLimit: Number(element.value) }); return; }
   if (name === 'overlayScale') { savePreferences({ overlayScale: Number(element.value) }); return; }
   if (name === 'overlayRate') { savePreferences({ overlayRate: Number(element.value) }); return; }
   if (name === 'overlaySnap') { savePreferences({ overlaySnap: element.checked }); return; }

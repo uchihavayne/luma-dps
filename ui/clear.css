@@ -483,7 +483,7 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #pvp-chip { font-size: 11px; font-variant-numeric: tabular-nums; }
 #meter[data-layout=cupertino] #pvp-chip { display: inline-flex; }
 #pvp-chip[hidden] { display: none !important; }
-.pvp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 2px 0 6px; text-align: center; }
+.pvp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 2px 0 6px; text-align: center; }
 .pvp-grid > div { padding: 4px 0; border-radius: 6px; background: color-mix(in srgb, var(--text) 6%, transparent); }
 .pvp-grid b { display: block; font-size: 22px; line-height: 26px; font-weight: 700; }
 .pvp-grid small { display: block; font-size: 9px; letter-spacing: .08em; color: var(--muted); }
@@ -513,6 +513,10 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 /* The dock's Cube is the game's picture. */
 .cube-nav-art { display: block; width: 22px; height: 22px; flex: 0 0 auto; object-fit: contain; filter: drop-shadow(0 1px 3px #000a); }
 .cube-nav-kind[data-look=''] > .cube-nav-art, .cube-nav-art:not([src]) { display: none; }
+.roster-more { margin: 2px 6px 4px; padding: 3px 8px; border-radius: 8px; text-align: center; font-size: 10px; color: var(--muted); }
+.roster-more[hidden] { display: none; }
+#meter[data-clean=true][data-look=bare] .roster-more { background: color-mix(in srgb, #0b0f14 68%, transparent); text-shadow: 0 1px 3px #000d; }
+
 /* The old sound compass and its button in the header are gone. */
 #cube-entry, .cube-navigator { display: none !important; }
 
@@ -541,9 +545,9 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #meter[data-clean=true][data-look=bare] #pet-tracker, #meter[data-clean=true][data-look=bare] #players .empty { display: none; }
 /* With nothing to show it shows nothing at all. */
 #meter[data-clean=true][data-look=bare]:has(#players .empty) > .encounter-header, #meter[data-clean=true][data-look=bare]:has(#players .empty) > .roster-controls { display: none; }
-#meter[data-clean=true][data-look=bare] > .encounter-header { padding-top: 6px; text-shadow: 0 1px 3px #000d, 0 0 8px #000a; }
+#meter[data-clean=true][data-look=bare] > .encounter-header { padding-top: 6px; text-shadow: 0 1px 3px #000d; }
 #meter[data-clean=true][data-look=bare] > .roster-controls { justify-content: flex-end; text-shadow: 0 1px 3px #000d; }
-#meter[data-clean=true][data-look=bare] #players .player, #meter[data-clean=true][data-look=bare] .skill-board { background: color-mix(in srgb, #0b0f14 68%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-radius: 10px; border-color: transparent; }
+#meter[data-clean=true][data-look=bare] #players .player, #meter[data-clean=true][data-look=bare] .skill-board { background: color-mix(in srgb, #0b0f14 68%, transparent); border-radius: 10px; border-color: transparent; }
 #meter[data-clean=true][data-look=bare] #players .player { margin-bottom: 4px; }
 #meter[data-clean=true][data-look=bare] .player-bar { opacity: .5; }
 #meter[data-clean=true][data-look=frame] { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -3px; }

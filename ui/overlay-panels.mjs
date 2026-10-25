@@ -50,7 +50,7 @@ function pvpPanel({ state, locale, label }) {
   const stat = (value, caption, title = '') => `<div${title ? ` title="${esc(title)}"` : ''}><b>${esc(value)}</b><small>${caption}</small></div>`;
   const rows = recap ? recap.skills.map(row => `<div class="skill" style="--share:${row.share.toFixed(3)}"><span class="name">${esc(row.name)}</span><span>${row.hits}×</span><span>${Math.round(row.share * 100)}%</span><span>${esc(short(row.damage))}</span></div>`).join('') : '';
   const assists = tr ? 'Asist, oyunun skor bildirimi ve parti ya da oda listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party or room list.';
-  return `<div class="stats">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? assists : '')}</div>`
+  return `<div class="stats">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? assists : '')}${stat(`+${groupedNumber(pvp.points, locale)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', tr ? 'Oyuncu öldürmenin ödülü olarak oyunun verdiği Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points the game gave as the reward for beating players; points from monsters are not counted.')}</div>`
     + (recap ? `<div class="recap"><strong>${esc(recap.kind)}</strong><span>${esc(recap.line)}</span><small>${tr ? 'Son 10 sn alınan hasar' : 'Damage taken in the last 10 s'}: ${esc(short(recap.taken))}</small></div>${rows}`
       : `<p class="hint">${tr ? 'Henüz bir oyuncuyla savaşmadın.' : 'No player fought yet.'}</p>`);
 }

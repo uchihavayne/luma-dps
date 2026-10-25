@@ -479,6 +479,20 @@ pub async fn overlay_controls(app: AppHandle, open: bool) -> Result<(), String> 
     set_controls(&app, open)
 }
 
+/// A marker with nothing to draw (the Cube with none near, the flight time on the ground) is hidden, so
+/// no transparent window is composed over the game for nothing; it is shown again the moment it has.
+#[tauri::command]
+pub fn overlay_visible(window: WebviewWindow, visible: bool) -> Result<(), String> {
+    require_panel(&window)?;
+    if !is_marker(panel_of(window.label()).unwrap_or("")) {
+        return Err("Only a marker can hide itself".into());
+    }
+    if window.is_visible().unwrap_or(true) == visible {
+        return Ok(());
+    }
+    if visible { window.show() } else { window.hide() }.map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn overlay_lock(app: AppHandle, locked: bool) {
     set_locked(&app, locked);

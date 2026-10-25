@@ -1432,6 +1432,36 @@ fn resized_meter_dimensions(
     ))
 }
 
+/// How often the state may be sent to the windows: the player's update rate (250, 500 or 1000 ms).
+fn state_period_ms(shared: &Shared) -> u64 {
+    shared
+        .preferences
+        .lock()
+        .ok()
+        .and_then(|preferences| preferences.extra.get("overlayRate").and_then(Value::as_u64))
+        .filter(|rate| [250, 500, 1000].contains(rate))
+        .unwrap_or(250)
+}
+
+/// The state without its running revision number, as a number, so an unchanged state can be told from
+/// a changed one without a window having to parse it.
+fn state_fingerprint(state: &mut Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let revision = state.as_object_mut().and_then(|object| object.remove("state_revision"));
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(text) = serde_json::to_string(state) {
+        text.hash(&mut hasher);
+    }
+    if let (Some(object), Some(revision)) = (state.as_object_mut(), revision) {
+        object.insert("state_revision".into(), revision);
+    }
+    hasher.finish()
+}
+
+/// A window that heard nothing for three seconds asks for the state itself, so an unchanged state is
+/// still sent now and then.
+const STATE_HEARTBEAT_MS: u64 = 2000;
+
 fn snapshot(shared: &Shared) -> Result<Value, String> {
     // Read the disk-backed ledger before holding the live engine lock.
     let record_status = shared
@@ -3628,6 +3658,22 @@ mod roster_height_tests {
     }
 }
 
+#[cfg(test)]
+mod state_emission_tests {
+    use super::state_fingerprint;
+    use serde_json::json;
+
+    #[test]
+    fn an_unchanged_state_has_the_same_fingerprint_whatever_its_revision() {
+        let mut first = json!({ "players": [1, 2], "state_revision": 1 });
+        let mut later = json!({ "players": [1, 2], "state_revision": 99 });
+        let mut changed = json!({ "players": [1, 3], "state_revision": 1 });
+        assert_eq!(state_fingerprint(&mut first), state_fingerprint(&mut later));
+        assert_ne!(state_fingerprint(&mut first), state_fingerprint(&mut changed));
+        assert_eq!(first["state_revision"], 1, "the revision is put back for the window that gets it");
+    }
+}
+
 /// The meter is as tall as what it holds (header, list, skill table, footer), so no invisible window is
 /// left over the game. Not in the compact strip, in full screen or while a panel is open.
 #[tauri::command]
@@ -4130,6 +4176,7 @@ fn main() {
             overlays::overlay_options,
             overlays::overlay_controls,
             overlays::overlay_lock,
+            overlays::overlay_visible,
             overlays::overlay_locked,
             overlays::overlay_reload,
             overlays::overlay_preference,
@@ -4334,6 +4381,7 @@ fn main() {
                 let mut history_retry_at = 0;
                 let mut calendar_revision = None;
                 let mut cube_revision = None;
+                let (mut last_emit_at, mut last_fingerprint) = (0u64, 0u64);
                 let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
                     if now_ms()>=z_order_checked_at {
@@ -4381,12 +4429,22 @@ fn main() {
                     if let Some(panels) = handle.try_state::<Arc<overlays::Store>>() {
                         panels.flush(false);
                     }
-                    if let Ok(state) = snapshot(&shared) {
+                    if let Ok(mut state) = snapshot(&shared) {
                         overlays::sync_combat(
                             &handle,
                             state.get("encounter_active").and_then(Value::as_bool) == Some(true),
                         );
-                        let _ = handle.emit("luma-state", state);
+                        // Every window parses what is sent, so send a state only when it changed (and not
+                        // faster than the update rate), or as a heartbeat: nothing is sent to idle windows.
+                        let now = now_ms();
+                        let fingerprint = state_fingerprint(&mut state);
+                        if now >= last_emit_at + state_period_ms(&shared)
+                            && (fingerprint != last_fingerprint || now >= last_emit_at + STATE_HEARTBEAT_MS)
+                        {
+                            last_emit_at = now;
+                            last_fingerprint = fingerprint;
+                            let _ = handle.emit("luma-state", state);
+                        }
                     }
                     let calendar_update = shared.calendar.lock().ok().and_then(|calendar| {
                         calendar.as_ref().and_then(|calendar| {

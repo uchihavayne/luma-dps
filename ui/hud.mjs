@@ -64,6 +64,21 @@ export function mainRoster(players = [], state = {}, { scope = 'observed', ranke
   return { players: retained, unclassifiedCount: hidden.length, unclassifiedDamage: hidden.reduce((sum, row) => sum + (row.damage || 0), 0) };
 }
 
+// A crowd (a world boss) is cut to the players who did the most damage per second, so the list stays
+// readable; you stay in it even when you are not among them, with your true rank. The rows keep the
+// order they were given. A limit of 0 shows everyone.
+export function capRoster(rows, { limit = 10, isOwn = () => false } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const ranks = new Map();
+  if (!(Number.isSafeInteger(limit) && limit > 0) || list.length <= limit) return { rows: list, hidden: 0, ranks };
+  const byRate = [...list].sort((a, b) => (Number(b?.dps) || 0) - (Number(a?.dps) || 0));
+  byRate.forEach((row, index) => ranks.set(row, index + 1));
+  const keep = new Set(byRate.slice(0, limit));
+  const own = list.find(row => isOwn(row));
+  if (own && !keep.has(own)) { keep.delete(byRate[limit - 1]); keep.add(own); }
+  return { rows: list.filter(row => keep.has(row)), hidden: list.length - keep.size, ranks };
+}
+
 /**
  * One line that says who is missing from the roster. Sources whose player identity has not been
  * received stay out of the named list, but their damage is real, so say so instead of showing an

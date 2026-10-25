@@ -136,6 +136,12 @@ The **Map** keeps your last known position on the map while the game sends the n
 
 **Updates:** when the release feed has a newer, publisher-signed version, the main window asks "Do you want to download it?" and, once it is downloaded, "Install it now and restart?". **Later** keeps quiet about that version and step for a day. Luma asks the feed at start and every six hours while it stays open; Settings can switch that off. A version has to be published first (see RELEASING.md).
 
+**Player list limit:** a crowd, such as a world boss, is cut to the ten players who did the most damage per second (and you, with your true rank, when you are not among them), with a line saying how many more there are. Settings > Controls > Player list sets the number (5, 8, 10, 15, 20 or everyone); a fight with ten or fewer players is not touched.
+
+**Load on the game:** Luma sends its state to the windows only when it changed (and not faster than the update rate), with a heartbeat every two seconds, so idle windows are sent nothing and a window parses nothing it has already seen. The Hidden Cube and flight markers hide themselves while they have nothing to draw, so no transparent window is composed over the game for nothing. The windows use no blur (there is nothing behind them to blur but the game) and one soft text shadow. The update rate (250, 500 or 1000 ms) in Settings or Overlay controls sets how often a changed state is sent; a slower rate costs less. Measured only by reading the code and the tests, not by the game's frame rate: check it in the game.
+
+**Abyss Points from PvP:** the PvP numbers show the Abyss Points the game gave as the reward for beating players this session. The game tags every item gain with a reason, and a player's reward (reason 62) is a different one from a monster kill (82), so killing monsters in the Abyss never adds to it; the count is by how much the Abyss Points stack grew, after the game has sent the item list.
+
 In Settings, **Window scale** (80 to 160 %), **Update rate** (250, 500 or 1000 ms) and **Snap windows to a grid when let go** apply to every separate window. The scale is a page zoom, the windows follow their content, and a window settles on the 20-pixel grid half a second after it stops moving. These were exercised in a browser preview and in the Rust code's tests, never on a running desktop or game.
 
 ## Hidden Cube game-data notice

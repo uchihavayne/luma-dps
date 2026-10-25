@@ -8,6 +8,8 @@ export function normalizePvp(value) {
   const recap = input.last_death && typeof input.last_death === 'object' && !Array.isArray(input.last_death) ? input.last_death : null;
   return {
     kills: Math.min(count(input.kills), 99_999), deaths: Math.min(count(input.deaths), 99_999),
+    // Abyss Points from beating players this session (never from monsters).
+    points: Math.min(count(input.points), 999_999_999),
     // Null until the game's score has been matched to the local character.
     assists: Number.isSafeInteger(input.assists) && input.assists >= 0 ? Math.min(input.assists, 255) : null,
     last_death: recap ? {

@@ -12,6 +12,10 @@ const LOOT_REASONS: [u8; 20] = [
     5, 12, 24, 25, 31, 35, 41, 43, 55, 56, 57, 58, 74, 75, 76, 77, 82, 85, 86, 93,
 ];
 const REMOVE: u8 = 2;
+/// The increase reason the game gives a reward for beating a player (the monster kill is another: 82).
+const PVP_REWARD: u8 = 62;
+/// The item that is Abyss Points.
+pub const ABYSS_POINTS: u32 = 930_100_003;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stack {
@@ -27,6 +31,8 @@ pub struct Change {
     /// What the stack holds after the change; zero when it was removed.
     pub count: u64,
     pub loot: bool,
+    /// The game said this increase is the reward for beating a player.
+    pub pvp: bool,
 }
 
 pub fn is_currency(item: u32) -> bool {
@@ -135,6 +141,7 @@ pub fn changes(frame: &[u8]) -> Vec<Change> {
             item: stack.item,
             count: if kind == REMOVE { 0 } else { stack.count },
             loot: LOOT_REASONS.contains(&increase),
+            pvp: increase == PVP_REWARD,
         });
     }
     rows

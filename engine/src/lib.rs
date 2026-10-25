@@ -222,6 +222,8 @@ pub struct PvpState {
     /// The assists of the game's battle score, once the local character id is known (it is, as
     /// soon as the local player appears in a party list).
     pub assists: Option<u32>,
+    /// Abyss Points this session from rewards the game gives for beating players: never from monsters.
+    pub points: u64,
     pub last_death: Option<DeathRecap>,
 }
 /// One member of the party finder room.
@@ -635,6 +637,7 @@ pub struct MeterEngine {
     server_offset: Option<i64>,
     incoming_max: HashMap<u32, u64>,
     pvp_kills: u32,
+    pvp_points: u64,
     pvp_deaths: u32,
     last_death: Option<DeathRecap>,
     /// Damage the local player took lately: when, which skill, how much.
@@ -735,6 +738,7 @@ impl Default for MeterEngine {
             server_offset: None,
             incoming_max: HashMap::new(),
             pvp_kills: 0,
+            pvp_points: 0,
             pvp_deaths: 0,
             last_death: None,
             recent_taken: std::collections::VecDeque::new(),
@@ -2500,6 +2504,7 @@ impl MeterEngine {
     }
     pub fn reset(&mut self) {
         self.pvp_kills = 0;
+        self.pvp_points = 0;
         self.pvp_deaths = 0;
         self.berserk.clear();
         self.kills.clear();
@@ -2669,11 +2674,11 @@ impl MeterEngine {
             self.currencies.clear();
             self.stacks_known = true;
             for stack in stacks {
-                self.remember_stack(stack.key, stack.item, stack.count, false);
+                self.remember_stack(stack.key, stack.item, stack.count, false, false);
             }
         }
         for change in items::changes(payload) {
-            self.remember_stack(change.key, change.item, change.count, change.loot);
+            self.remember_stack(change.key, change.item, change.count, change.loot, change.pvp);
         }
         for member in packets::party_vitals(payload) {
             if self.party.len() >= 24 && !self.party.contains_key(&member.key) {
@@ -2707,8 +2712,13 @@ impl MeterEngine {
 
     /// A stack of items changed. Loot is counted only as the growth of a stack the full list
     /// already showed, so a reconnect or a move between bags never counts as loot.
-    fn remember_stack(&mut self, key: u64, item: u32, count: u64, loot: bool) {
+    fn remember_stack(&mut self, key: u64, item: u32, count: u64, loot: bool, pvp: bool) {
         let before = self.stacks.get(&key).map_or(0, |(_, held)| *held);
+        // Abyss Points the game itself marks as the reward for beating a player. A monster's are marked as
+        // loot (a different reason), so killing monsters in the Abyss never adds to this.
+        if pvp && item == items::ABYSS_POINTS && self.stacks_known && count > before {
+            self.pvp_points = self.pvp_points.saturating_add(count - before);
+        }
         if loot && self.stacks_known && count > before {
             if self.looted.len() < 512 || self.looted.contains_key(&item) {
                 let total = self.looted.entry(item).or_default();
@@ -4335,6 +4345,7 @@ impl MeterEngine {
             tracker: self.tracker(),
             pvp: PvpState {
                 kills: self.pvp_kills,
+                points: self.pvp_points,
                 deaths: self.pvp_deaths,
                 assists: self.own_assists(),
                 last_death: self.last_death.clone(),

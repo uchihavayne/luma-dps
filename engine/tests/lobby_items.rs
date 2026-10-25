@@ -291,10 +291,10 @@ fn the_item_list_reads_through_equipment_details_and_changes_say_what_grew() {
     assert_eq!(
         changes,
         vec![
-            Change { key: 4, item: 530_000_001, count: 14, loot: true },
-            Change { key: 3, item: 930_100_003, count: 0, loot: false },
-            Change { key: 9, item: 531_900_001, count: 2, loot: true },
-            Change { key: 4, item: 530_000_001, count: 15, loot: false },
+            Change { key: 4, item: 530_000_001, count: 14, loot: true, pvp: false },
+            Change { key: 3, item: 930_100_003, count: 0, loot: false, pvp: false },
+            Change { key: 9, item: 531_900_001, count: 2, loot: true, pvp: false },
+            Change { key: 4, item: 530_000_001, count: 15, loot: false, pvp: false },
         ]
     );
     // What was read before a broken entry is kept.
@@ -341,4 +341,29 @@ fn the_hidden_cube_keys_are_counted_from_the_item_list_and_unknown_before_it() {
     assert_eq!(engine.live_state(1300).cube_keys, Some(4));
     engine.connection_changed();
     assert_eq!(engine.live_state(1400).cube_keys, None);
+}
+
+#[test]
+fn abyss_points_from_beating_players_are_counted_and_a_monster_kill_is_not() {
+    let mut engine = MeterEngine::default();
+    engine.observe_game_frame(&inventory(&[(3, 930_100_003, 6000, false), (4, 930_100_001, 100, false)]), 1000);
+    // A monster's reward (reason 82) is loot: it never counts as the reward for beating a player.
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6100, false, 82)]), 1100);
+    assert_eq!(engine.live_state(1200).pvp.points, 0);
+    // A player's (reason 62) is counted by how much the stack grew.
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6250, false, 62)]), 1300);
+    assert_eq!(engine.live_state(1400).pvp.points, 150);
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6400, false, 62)]), 1450);
+    assert_eq!(engine.live_state(1500).pvp.points, 300);
+    // Another currency with that reason is not Abyss Points, and a stack that fell adds nothing.
+    engine.observe_game_frame(&modification(&[(1, 4, 930_100_001, 500, false, 62)]), 1600);
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6300, false, 62)]), 1700);
+    assert_eq!(engine.live_state(1800).pvp.points, 300);
+    // Before the full item list there is no telling growth from a reconnect.
+    let mut fresh = MeterEngine::default();
+    fresh.observe_game_frame(&modification(&[(1, 3, 930_100_003, 500, false, 62)]), 100);
+    assert_eq!(fresh.live_state(200).pvp.points, 0);
+    // The session reset clears it.
+    engine.reset();
+    assert_eq!(engine.live_state(1900).pvp.points, 0);
 }

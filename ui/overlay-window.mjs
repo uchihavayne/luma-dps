@@ -53,6 +53,11 @@ function render() {
   // A slider that is being dragged is not redrawn under the hand.
   if (holding && panel === 'controls') return;
   if (content._html !== html) { content.innerHTML = html; content._html = html; contentRevision += 1; }
+  // A marker with nothing to draw is hidden (and shown again when it has), and is never composed over the game for nothing.
+  if (native && marker && panel !== 'ping') {
+    const wanted = editing || html !== '';
+    if (wanted !== markerShown) { markerShown = wanted; invoke('overlay_visible', { visible: wanted }).catch(() => { markerShown = null; }); }
+  }
   requestAnimationFrame(scaleToFit);
 }
 
@@ -60,7 +65,7 @@ function render() {
 // the room it has, so made smaller it shrinks and still shows every row, made bigger it grows. Nothing
 // is cut, scrolled away or pulled back.
 const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map: 300, cooldowns: 300, actions: 300, rivals: 300 };
-let contentRevision = 0, fittedKey = '', grewAt = 0;
+let contentRevision = 0, fittedKey = '', grewAt = 0, markerShown = null;
 // The content is laid out as wide as the window allows and scaled as large as still shows all of it:
 // a wide window gets more columns, a narrow one a smaller scale, and neither leaves an empty margin.
 function scaleToFit() {
@@ -174,7 +179,8 @@ $('#panel-resize').addEventListener('pointerdown', event => { if (native && even
 
 applyTitle();
 if (native) {
-  listen('luma-state', event => { raw = event.payload; fresh = true; lastEvent = Date.now(); });
+  // A hidden window's timer runs about once a second, so a marker that is waiting looks as soon as the state arrives.
+  listen('luma-state', event => { raw = event.payload; fresh = true; lastEvent = Date.now(); if (marker && markerShown === false) render(); });
   listen('luma-cube-state', event => { cubeRaw = event.payload; });
   listen('luma-overlay-lock', event => setLocked(event.payload));
   invoke('overlay_locked').then(setLocked).catch(() => {});
