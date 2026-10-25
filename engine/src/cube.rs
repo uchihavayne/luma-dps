@@ -4,10 +4,15 @@
 //! self-buff records, teleports and map loads, so every distance carries the age of the last fix.
 //!
 //! Frame layouts, bodies after the two opcode bytes (documented from live captures by
-//! aion2-cube-radar, docs/FINDINGS.md; this is an independent implementation of those facts):
+//! aion2-cube-radar and checked against the way a second meter reads the same messages; this is an
+//! independent implementation of those facts):
 //!
 //! ```text
-//! 34 36  object in range:  id varint, kind u16, template u32, x y z f32
+//! 00 36  map frame:        server time i64 (ms), sent every 50 ms
+//! 34 36  object in range:  id varint, flags u8, desc flags u8 [nickname str if 1] template u32
+//!                          [race u8 if 2] [gender u8 if 4] [u8+i32 if 8] [u8 if 16],
+//!                          x y z f32, origin key i32, direction f32, state u8, can-interact u8,
+//!                          reason u8 (1 seen on approach, 6 spawned in view), created i64 (ms)
 //! 35 36  object gone:      id varint, reason u8 (4 opened, 1 out of range)
 //! 38 36  opening started:  object varint, actor varint, 01
 //! 3a 36  opening done:     object varint, actor varint, count u32, item u32
@@ -15,9 +20,34 @@
 //! ```
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Cube templates seen in captures: Verteron's two and Altgard's (unconfirmed). Another one is
-/// learned the first time an object of that template is opened with a Hidden Cube Key.
-pub const TEMPLATES: [u32; 3] = [1_200_039, 1_200_041, 1_301_199];
+/// The two looks of a Cube. A template of either look is a Cube; another one is learned the first
+/// time an object of that template is opened with a Hidden Cube Key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Red,
+    Gold,
+}
+
+impl Look {
+    pub fn name(self) -> &'static str {
+        match self {
+            Look::Red => "red",
+            Look::Gold => "gold",
+        }
+    }
+}
+
+/// Object templates that are Cubes, with their look.
+pub fn known_look(template: u32) -> Option<Look> {
+    match template {
+        1_200_039 | 1_200_040 | 1_200_041 | 1_201_503 | 1_201_504 | 1_301_199 | 1_301_200
+        | 1_301_244 | 1_301_245 => Some(Look::Red),
+        1_200_036 | 1_200_037 | 1_200_667 | 1_201_502 | 1_201_505 | 1_300_081 | 1_300_082
+        | 1_300_754 | 1_301_242 | 1_301_243 => Some(Look::Gold),
+        _ => None,
+    }
+}
+
 const KEY_ITEM: u32 = 630_900_003;
 const MAX_OBJECTS: usize = 256;
 const MAX_LEARNED: usize = 32;
@@ -28,6 +58,9 @@ const STALE_CM: f32 = 25_000.0;
 /// Heading comes from the last stretch walked between two fixes, and fades once it is old.
 const MOVED_CM: f32 = 300.0;
 const HEADING_MAX_AGE_MS: u64 = 30_000;
+/// An opened Cube stays listed this long, marked as taken.
+const TAKEN_SHOWN_MS: u64 = 8_000;
+const LIVE_SPAWN: u8 = 6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -35,6 +68,8 @@ pub enum Event {
         id: u64,
         template: u32,
         pos: [f32; 3],
+        reason: u8,
+        created_ms: Option<u64>,
     },
     Gone {
         id: u64,
@@ -52,6 +87,10 @@ pub enum Event {
     },
     /// A map load: everything in range is sent again.
     Reset,
+    /// The server's clock, which dates a Cube's creation.
+    Clock {
+        server_ms: u64,
+    },
 }
 
 fn varint(frame: &[u8], at: &mut usize) -> Option<u64> {
@@ -71,6 +110,10 @@ fn word(frame: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(frame.get(at..at + 4)?.try_into().ok()?))
 }
 
+fn long(frame: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(frame.get(at..at + 8)?.try_into().ok()?))
+}
+
 /// Three f32 world coordinates at `at`, when they can be a position.
 pub fn position(frame: &[u8], at: usize) -> Option<[f32; 3]> {
     let read = |offset| Some(f32::from_le_bytes(frame.get(offset..offset + 4)?.try_into().ok()?));
@@ -80,19 +123,43 @@ pub fn position(frame: &[u8], at: usize) -> Option<[f32; 3]> {
         .then_some(pos)
 }
 
+fn spawn(frame: &[u8]) -> Option<Event> {
+    let mut at = 2;
+    let id = varint(frame, &mut at).filter(|id| *id > 0)?;
+    at += 1; // flags, which only mark optional trailing fields of other objects
+    let desc = *frame.get(at)?;
+    at += 1;
+    if desc & 1 != 0 {
+        let length = usize::try_from(varint(frame, &mut at)?).ok()?;
+        frame.get(at..at.checked_add(length)?)?;
+        at += length;
+    }
+    let template = word(frame, at).filter(|t| (100_000..=9_999_999).contains(t))?;
+    at += 4;
+    at += usize::from(desc & 2 != 0) + usize::from(desc & 4 != 0) + 5 * usize::from(desc & 8 != 0)
+        + usize::from(desc & 16 != 0);
+    let pos = position(frame, at)?;
+    at += 12;
+    // Origin key (4), direction (4), state (1), can-interact (1), then the reason and the time.
+    let reason = *frame.get(at + 10)?;
+    let created_ms = long(frame, at + 11).filter(|ms| (1.0e12 as u64..4.0e12 as u64).contains(ms));
+    Some(Event::Spawn {
+        id,
+        template,
+        pos,
+        reason,
+        created_ms,
+    })
+}
+
 /// A whole frame: two opcode bytes, then the body.
 pub fn decode(frame: &[u8]) -> Option<Event> {
     let mut at = 2;
     match frame.get(..2)? {
-        [0x34, 0x36] => {
-            let id = varint(frame, &mut at).filter(|id| *id > 0)?;
-            let template = word(frame, at + 2).filter(|t| (100_000..=9_999_999).contains(t))?;
-            Some(Event::Spawn {
-                id,
-                template,
-                pos: position(frame, at + 6)?,
-            })
-        }
+        [0x00, 0x36] => long(frame, 2)
+            .filter(|ms| (1.0e12 as u64..4.0e12 as u64).contains(ms))
+            .map(|server_ms| Event::Clock { server_ms }),
+        [0x34, 0x36] => spawn(frame),
         [0x35, 0x36] => {
             let id = varint(frame, &mut at).filter(|id| *id > 0)?;
             Some(Event::Gone {
@@ -120,8 +187,12 @@ pub fn decode(frame: &[u8]) -> Option<Event> {
 
 struct Object {
     template: u32,
+    look: Look,
     pos: [f32; 3],
     opening: bool,
+    live: bool,
+    created_ms: Option<u64>,
+    taken_at: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -136,19 +207,30 @@ pub struct Tracker {
     objects: BTreeMap<u64, Object>,
     me: Option<Fix>,
     heading: Option<([f32; 2], u64)>,
+    /// Local clock minus the server clock, from the latest map frame.
+    clock_offset: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CubeView {
     pub id: u64,
     pub template: u32,
+    pub look: Look,
     /// Planar distance, as the server measures its send radius.
     pub distance_m: Option<u32>,
     /// Positive when the Cube is above the player.
     pub vertical_m: Option<i32>,
     /// Against the direction of the last walk, positive to the right; unknown while standing.
     pub direction_deg: Option<i32>,
+    /// On the map: 0 is east, 90 north, 180 west, -90 south (north is world -y).
+    pub bearing_deg: Option<i32>,
     pub opening: bool,
+    /// It appeared while in view, rather than being there already when it came into range.
+    pub live: bool,
+    /// Seconds since the server created it.
+    pub age_s: Option<u32>,
+    /// Someone opened it, a moment ago.
+    pub taken: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,6 +244,7 @@ impl Tracker {
         self.objects.clear();
         self.me = None;
         self.heading = None;
+        self.clock_offset = None;
     }
 
     pub fn learned(&self) -> Vec<u32> {
@@ -176,18 +259,24 @@ impl Tracker {
         }
     }
 
-    fn is_cube(&self, template: u32) -> bool {
-        TEMPLATES.contains(&template) || self.learned.contains(&template)
+    fn look_of(&self, template: u32) -> Option<Look> {
+        known_look(template).or_else(|| self.learned.contains(&template).then_some(Look::Red))
     }
 
     pub fn apply(&mut self, event: Event, now: u64) {
         match event {
-            Event::Spawn { id, template, pos } => {
+            Event::Spawn {
+                id,
+                template,
+                pos,
+                reason,
+                created_ms,
+            } => {
                 if self.objects.len() >= MAX_OBJECTS && !self.objects.contains_key(&id) {
                     // Crowded areas announce many ordinary objects: drop those before any Cube.
                     let learned = &self.learned;
                     self.objects.retain(|_, object| {
-                        TEMPLATES.contains(&object.template) || learned.contains(&object.template)
+                        known_look(object.template).is_some() || learned.contains(&object.template)
                     });
                     if self.objects.len() >= MAX_OBJECTS {
                         self.objects.clear();
@@ -197,13 +286,29 @@ impl Tracker {
                     id,
                     Object {
                         template,
+                        look: known_look(template).unwrap_or(Look::Red),
                         pos,
                         opening: false,
+                        live: reason == LIVE_SPAWN,
+                        created_ms,
+                        taken_at: None,
                     },
                 );
             }
-            Event::Gone { id, .. } => {
-                self.objects.remove(&id);
+            Event::Gone { id, reason } => {
+                // Opened: keep it listed for a moment as taken. Out of range: forget it.
+                let cube = self
+                    .objects
+                    .get(&id)
+                    .is_some_and(|object| self.look_of(object.template).is_some());
+                if cube && reason == 4 {
+                    if let Some(object) = self.objects.get_mut(&id) {
+                        object.taken_at = Some(now);
+                        object.opening = false;
+                    }
+                } else {
+                    self.objects.remove(&id);
+                }
             }
             Event::Opening {
                 id,
@@ -214,7 +319,7 @@ impl Tracker {
                 let Some(object) = self.objects.get_mut(&id) else {
                     return;
                 };
-                if key && !TEMPLATES.contains(&object.template) {
+                if key && known_look(object.template).is_none() {
                     let template = object.template;
                     self.learn([template]);
                 }
@@ -224,7 +329,13 @@ impl Tracker {
             }
             Event::Fix { pos } => self.fix(pos, now),
             Event::Reset => self.objects.clear(),
+            Event::Clock { server_ms } => {
+                self.clock_offset = Some(now as i64 - server_ms as i64);
+            }
         }
+        // Opened Cubes are not kept long once nobody looks at them.
+        self.objects
+            .retain(|_, object| object.taken_at.is_none_or(|at| now.saturating_sub(at) < 60_000));
     }
 
     fn fix(&mut self, pos: [f32; 3], now: u64) {
@@ -249,8 +360,9 @@ impl Tracker {
         let mut cubes: Vec<_> = self
             .objects
             .iter()
-            .filter(|(_, object)| self.is_cube(object.template))
+            .filter(|(_, object)| object.taken_at.is_none_or(|at| now.saturating_sub(at) < TAKEN_SHOWN_MS))
             .filter_map(|(id, object)| {
+                self.look_of(object.template)?;
                 let relative = me.map(|fix| {
                     [
                         object.pos[0] - fix.pos[0],
@@ -269,17 +381,34 @@ impl Tracker {
                     let dot = h[0] * r[0] + h[1] * r[1];
                     cross.atan2(dot).to_degrees().round() as i32
                 });
+                // North is world -y and east is world +x, as the map shows it.
+                let bearing_deg = relative.map(|r| {
+                    // Due west is 180, never -180.
+                    match (-r[1]).atan2(r[0]).to_degrees().round() as i32 {
+                        -180 => 180,
+                        degrees => degrees,
+                    }
+                });
+                let age_s = object.created_ms.zip(self.clock_offset).and_then(|(created, offset)| {
+                    let server_now = now as i64 - offset;
+                    u32::try_from(((server_now - created as i64) / 1000).max(0)).ok()
+                });
                 Some(CubeView {
                     id: *id,
                     template: object.template,
+                    look: object.look,
                     distance_m: planar.map(|distance| (distance / 100.0).round() as u32),
                     vertical_m: relative.map(|r| (r[2] / 100.0).round() as i32),
                     direction_deg,
+                    bearing_deg,
                     opening: object.opening,
+                    live: object.live,
+                    age_s,
+                    taken: object.taken_at.is_some(),
                 })
             })
             .collect();
-        cubes.sort_by_key(|cube| (cube.distance_m.unwrap_or(u32::MAX), cube.id));
+        cubes.sort_by_key(|cube| (cube.taken, cube.distance_m.unwrap_or(u32::MAX), cube.id));
         Radar {
             cubes,
             fix_age_ms: me.map(|fix| now - fix.at_ms),

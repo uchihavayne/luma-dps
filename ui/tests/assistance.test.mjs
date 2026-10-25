@@ -35,3 +35,25 @@ test('on-demand timeline shows only known received event kinds and bounds the vi
   const timeline = assistanceTimeline({ timeline: events });
   assert.equal(timeline.length, 30); assert.equal(timeline[0].at_ms, 1049); assert.equal(timeline[0].actor_id, '2');
 });
+
+import { bossCasts } from '../assistance.mjs';
+
+test('boss casts list only hostile monsters, aimed-at-you first, then soonest, at most three', () => {
+  const now = 1000;
+  const cast = (actor, target, expires, hostile = true) => ({ actor_id: actor, skill_id: 5, target_id: target, started_ms: 0, expires_ms: expires, duration_ms: 3000, source: 'server-windup', hostile });
+  const state = { local_identity_source: 'server', local_player_id: 1, assist: { casts: [cast(9, 2, 3000), cast(10, 1, 9000), cast(11, 5, 2500), cast(12, 5, 2000, false), cast(13, 5, 500), cast(14, 5, 8000), cast(15, 5, 7000)] } };
+  const casts = bossCasts(state, now);
+  assert.deepEqual(casts.map(item => [item.actor_id, item.aimed]), [['10', true], ['11', false], ['9', false]]);
+  assert.equal(bossCasts(state, now, 5).length, 5); // the friendly one and the expired one never count
+  assert.ok(bossCasts(state, now, 5).every(item => item.hostile && item.expires_ms > now));
+  // Without a resolved local player nothing is aimed at you.
+  assert.ok(bossCasts({ ...state, local_identity_source: 'unresolved' }, now).every(item => item.aimed === false));
+  assert.deepEqual(bossCasts({}, now), []);
+});
+
+test('the boss cast setting defaults on and survives normalization', async () => {
+  const { normalizePreferences } = await import('../model.mjs');
+  assert.equal(normalizePreferences().alerts.bossCasts, true);
+  assert.equal(normalizePreferences({ alerts: { bossCasts: false } }).alerts.bossCasts, false);
+  assert.equal(normalizePreferences({ alerts: { bossCasts: 'no' } }).alerts.bossCasts, true);
+});

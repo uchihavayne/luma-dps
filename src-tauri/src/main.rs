@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_capture;
+mod capture_dump;
 mod audio_decode;
 mod community;
 mod cube_locator;
@@ -11,6 +12,7 @@ mod hotkeys;
 mod local_history;
 mod native_capture;
 mod obs_server;
+mod overlays;
 mod personal_bests;
 mod pet_cache;
 mod pet_reference;
@@ -1109,7 +1111,31 @@ impl Preferences {
         })
     }
 
+    /// How an encounter ends: "hits" or the game's own combat state, and the tail in seconds.
+    fn combat_detection(&self) -> (&str, u64) {
+        let setting = self.extra.get("combatDetection");
+        let source = match setting.and_then(|value| value.get("source")).and_then(Value::as_str) {
+            Some("game") => "game",
+            _ => "hits",
+        };
+        let seconds = setting
+            .and_then(|value| value.get("seconds"))
+            .and_then(Value::as_u64)
+            .filter(|seconds| (5..=300).contains(seconds))
+            .unwrap_or(10);
+        (source, seconds)
+    }
+
     fn validate(&self) -> Result<(), String> {
+        if let Some(setting) = self.extra.get("combatDetection") {
+            let source = setting.get("source").and_then(Value::as_str);
+            let seconds = setting.get("seconds").and_then(Value::as_u64);
+            if !matches!(source, Some("hits" | "game"))
+                || seconds.is_none_or(|seconds| !(5..=300).contains(&seconds))
+            {
+                return Err("Invalid combat detection".into());
+            }
+        }
         if self
             .extra
             .get("fullscreenLayout")
@@ -1599,6 +1625,31 @@ mod shell_tests {
             .extra
             .insert("overlayWidth".into(), serde_json::json!(5000));
         assert!(preferences.validate().is_err());
+    }
+
+    #[test]
+    fn combat_detection_defaults_to_hits_and_rejects_nonsense() {
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.combat_detection(), ("hits", 10));
+        preferences
+            .extra
+            .insert("combatDetection".into(), serde_json::json!({"source": "game", "seconds": 45}));
+        assert!(preferences.validate().is_ok());
+        assert_eq!(preferences.combat_detection(), ("game", 45));
+        for bad in [
+            serde_json::json!({"source": "party", "seconds": 10}),
+            serde_json::json!({"source": "game", "seconds": 4}),
+            serde_json::json!({"source": "game", "seconds": 301}),
+            serde_json::json!({"source": "game", "seconds": "10"}),
+            serde_json::json!({"seconds": 10}),
+            serde_json::json!("game"),
+        ] {
+            preferences.extra.insert("combatDetection".into(), bad);
+            assert!(preferences.validate().is_err());
+            // Whatever is stored, the engine is only ever handed a valid setting.
+            let (source, seconds) = preferences.combat_detection();
+            assert!(matches!(source, "hits" | "game") && (5..=300).contains(&seconds));
+        }
     }
 
     #[test]
@@ -3231,6 +3282,12 @@ fn change_preferences(
         .lock()
         .map_err(|_| "Meter state unavailable")?
         .set_target_mode(&preferences.target_mode);
+    let (combat_source, combat_seconds) = preferences.combat_detection();
+    shared
+        .engine
+        .lock()
+        .map_err(|_| "Meter state unavailable")?
+        .set_combat_detection(combat_source, combat_seconds)?;
     let character_name = preferences
         .extra
         .get("characterName")
@@ -3779,6 +3836,27 @@ fn export_encounter(shared: State<Arc<Shared>>) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Save the last `seconds` of received game frames to the app data folder, on request only.
+#[tauri::command]
+fn save_capture(
+    shared: State<Arc<Shared>>,
+    label: String,
+    seconds: u64,
+) -> Result<String, String> {
+    let seconds = seconds.clamp(10, 300);
+    let now = now_ms();
+    let frames = shared
+        .engine
+        .lock()
+        .map_err(|_| "Meter state is unavailable")?
+        .recent_frames(now.saturating_sub(seconds * 1000));
+    if frames.is_empty() {
+        return Err("No game traffic has been received in that time".into());
+    }
+    capture_dump::write(&shared.data_dir.join("captures"), &label, now, seconds, &frames)
+        .map(|path| path.display().to_string())
+}
+
 #[tauri::command]
 fn export_document(
     shared: State<Arc<Shared>>,
@@ -3977,6 +4055,10 @@ fn main() {
             reset_encounter,
             set_paused,
             set_target_mode,
+            overlays::set_overlay,
+            overlays::list_overlays,
+            overlays::overlay_drag,
+            overlays::overlay_resize,
             set_boss_targets,
             set_locked,
             start_resize,
@@ -3988,7 +4070,8 @@ fn main() {
             open_url,
             open_pet_reference,
             export_encounter,
-            export_document
+            export_document,
+            save_capture
         ])
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
@@ -4021,6 +4104,7 @@ fn main() {
                 engine.restore_history(records);
             }
             // Cube templates learned from opening one with a key, kept between runs.
+            app.manage(Arc::new(overlays::Store::load(&data_dir)));
             let cube_templates_path = data_dir.join("cube-templates.json");
             if let Some(saved) = fs::read(&cube_templates_path)
                 .ok()
@@ -4033,6 +4117,8 @@ fn main() {
             let history_revision = engine.history_revision();
             let history_error = restored_history.err().unwrap_or_default();
             engine.set_target_mode(&preferences.target_mode);
+            let (combat_source, combat_seconds) = preferences.combat_detection();
+            let _ = engine.set_combat_detection(combat_source, combat_seconds);
             engine.set_character_name(
                 preferences
                     .extra
@@ -4165,6 +4251,7 @@ fn main() {
                 .lock()
                 .map_err(|_| "Capture worker unavailable")? =
                 Some(native_capture::spawn(shared.clone()));
+            overlays::restore(app.handle());
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut history_retry_at = 0;
@@ -4214,6 +4301,9 @@ fn main() {
                     }
                     refresh_pet_cache(&shared, false);
                     refresh_personal_bests(&shared, false);
+                    if let Some(panels) = handle.try_state::<Arc<overlays::Store>>() {
+                        panels.flush(false);
+                    }
                     if let Ok(state) = snapshot(&shared) {
                         let _ = handle.emit("luma-state", state);
                     }
@@ -4259,10 +4349,15 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let Some(panel) = overlays::panel_of(window.label()) {
+                overlays::on_event(window, panel, event);
+                return;
+            }
             if let Some(shared) = window.try_state::<Arc<Shared>>() {
                 match event {
                     tauri::WindowEvent::Destroyed => {
                         shared.stopping.store(true, Ordering::Relaxed);
+                        overlays::shutdown(window.app_handle());
                     }
                     tauri::WindowEvent::Resized(size) => {
                         if shared.panel_open.load(Ordering::Relaxed)
@@ -4295,6 +4390,9 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let shared = handle.state::<Arc<Shared>>();
                 shared.stopping.store(true, Ordering::Relaxed);
+                if let Some(panels) = handle.try_state::<Arc<overlays::Store>>() {
+                    panels.flush(true);
+                }
                 if let Some(runtime) = handle.try_state::<Arc<TeamRuntime>>() {
                     if let Ok(service) = runtime.service() {
                         service.leave();

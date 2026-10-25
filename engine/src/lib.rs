@@ -209,6 +209,101 @@ pub struct TimelinePlayer {
     pub id: u64,
     pub damage: Vec<u64>,
 }
+/// The local player's PvP session: kills and deaths since the meter was last reset, and what the
+/// last death looked like.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PvpState {
+    pub kills: u32,
+    pub deaths: u32,
+    /// The assists of the game's battle score, once the local character id is known (it is, as
+    /// soon as the local player appears in a party list).
+    pub assists: Option<u32>,
+    pub last_death: Option<DeathRecap>,
+}
+/// One party member's health as the game lists it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PartyFrame {
+    pub id: u64,
+    pub name: String,
+    pub hp: u64,
+    pub hp_max: u64,
+    pub is_self: bool,
+    pub observed_at_ms: u64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct KillRow {
+    pub model: u32,
+    pub name: Option<String>,
+    pub count: u32,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GatheredRow {
+    pub item: u32,
+    pub count: u32,
+}
+/// What this session has killed (monsters you hit that died) and gathered.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Tracker {
+    pub kills: Vec<KillRow>,
+    pub kills_total: u32,
+    pub gathered: Vec<GatheredRow>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DeathRecap {
+    pub at_ms: u64,
+    pub killer_name: Option<String>,
+    pub killer_player: bool,
+    pub skill_id: Option<u32>,
+    pub npc_id: Option<u32>,
+    pub npc_name: Option<String>,
+    /// Damage taken in the ten seconds before the death.
+    pub damage_taken: u64,
+    pub top_skills: Vec<RecapSkill>,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RecapSkill {
+    pub skill_id: u32,
+    pub damage: u64,
+    pub hits: u32,
+}
+const RECAP_WINDOW_MS: u64 = 10_000;
+const MAX_BERSERK: usize = 64;
+const MAX_INCOMING_SKILLS: usize = 512;
+
+/// How the meter decides an encounter is over.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CombatInfo {
+    /// "hits" (a quiet spell after the last hit) or "game" (the game's own combat state).
+    pub source: String,
+    pub tail_ms: u64,
+    /// What the game last said about the local player; unknown until it says.
+    pub game_in_combat: Option<bool>,
+}
+/// A boss's frenzy: when it applies, on the local clock.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Frenzy {
+    pub target_id: u64,
+    pub target_name: Option<String>,
+    pub at_ms: u64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OwnHealth {
+    pub hp: u64,
+    pub max_hp: Option<u64>,
+    pub observed_at_ms: u64,
+}
+const MAX_RECENT_TAKEN: usize = 256;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Encounter {
@@ -345,6 +440,12 @@ pub struct MeterState {
     pub history_revision: u64,
     pub history_count: usize,
     pub encounter_active: bool,
+    pub pvp: PvpState,
+    pub party: Vec<PartyFrame>,
+    pub tracker: Tracker,
+    pub combat: CombatInfo,
+    pub frenzy: Option<Frenzy>,
+    pub own_health: Option<OwnHealth>,
     pub local_player_id: Option<u64>,
     pub local_player_name: String,
     pub local_identity_source: String,
@@ -452,8 +553,28 @@ struct StreamPrefix {
 pub struct MeterEngine {
     spatial: spatial::Store,
     cubes: cube::Tracker,
+    idle_ms: u64,
+    party: BTreeMap<u32, (packets::PartyVital, u64)>,
+    scores: BTreeMap<u64, packets::BattleScore>,
+    own_hit: std::collections::HashSet<u64>,
+    kills: BTreeMap<u32, u32>,
+    gathered: BTreeMap<u32, u32>,
+    combat_from_game: bool,
+    own_in_combat: Option<bool>,
+    own_left_combat_ms: u64,
+    berserk: HashMap<u64, u64>,
+    server_offset: Option<i64>,
+    incoming_max: HashMap<u32, u64>,
+    pvp_kills: u32,
+    pvp_deaths: u32,
+    last_death: Option<DeathRecap>,
+    /// Damage the local player took lately: when, which skill, how much.
+    recent_taken: std::collections::VecDeque<(u64, u32, u64)>,
     /// Power scalars seen per attacker, and the unannounced summons bound to a player by them.
     power: HashMap<u64, Vec<u32>>,
+    /// The most recent received frames, kept in memory only so a capture can be saved on request.
+    recent_frames: std::collections::VecDeque<(u64, Vec<u8>)>,
+    recent_frame_bytes: usize,
     orphan_bound: std::collections::HashSet<u64>,
     orphans_checked_ms: u64,
     pending_spawn_position: Option<(spatial::Observation, u64)>,
@@ -526,7 +647,25 @@ impl Default for MeterEngine {
         Self {
             spatial: spatial::Store::default(),
             cubes: cube::Tracker::default(),
+            idle_ms: IDLE_MS,
+            party: BTreeMap::new(),
+            scores: BTreeMap::new(),
+            own_hit: Default::default(),
+            kills: BTreeMap::new(),
+            gathered: BTreeMap::new(),
+            combat_from_game: false,
+            own_in_combat: None,
+            own_left_combat_ms: 0,
+            berserk: HashMap::new(),
+            server_offset: None,
+            incoming_max: HashMap::new(),
+            pvp_kills: 0,
+            pvp_deaths: 0,
+            last_death: None,
+            recent_taken: std::collections::VecDeque::new(),
             power: HashMap::new(),
+            recent_frames: std::collections::VecDeque::new(),
+            recent_frame_bytes: 0,
             orphan_bound: std::collections::HashSet::new(),
             orphans_checked_ms: 0,
             pending_spawn_position: None,
@@ -777,9 +916,8 @@ impl MeterEngine {
             }
             for payload in expanded {
                 self.diagnostics.frames += 1;
-                if let Some((source, scalar)) = packets::power_scalar(&payload) {
-                    self.observe_power(source, scalar);
-                }
+                self.remember_frame(now, &payload);
+                self.observe_game_frame(&payload, now);
                 match packets::decode(&payload) {
                     Ok(Some(event)) => {
                         if event_contains_pet_observation(&event)
@@ -943,7 +1081,32 @@ impl MeterEngine {
                     self.dirty();
                 }
             }
-            Event::Cube(event) => self.cubes.apply(event, now),
+            Event::Cube(event) => {
+                if let cube::Event::Clock { server_ms } = &event {
+                    self.server_offset = Some(now as i64 - *server_ms as i64);
+                }
+                self.cubes.apply(event, now)
+            }
+            Event::CombatState {
+                key,
+                in_combat,
+                berserk_ms,
+            } => {
+                if self.own_id == Some(key) && self.own_in_combat != Some(in_combat) {
+                    if !in_combat {
+                        self.own_left_combat_ms = now;
+                    }
+                    self.own_in_combat = Some(in_combat);
+                }
+                match berserk_ms {
+                    Some(ms) if in_combat && (self.berserk.len() < MAX_BERSERK || self.berserk.contains_key(&key)) => {
+                        self.berserk.insert(key, ms);
+                    }
+                    _ => {
+                        self.berserk.remove(&key);
+                    }
+                }
+            }
             Event::Resource(event) => {
                 self.resources.ingest(event, now);
                 self.character_revision = self.character_revision.wrapping_add(1);
@@ -1427,6 +1590,7 @@ impl MeterEngine {
                 self.bind_pending_profiles(now);
             }
             Event::PartyMemberRemoved { key, server } => {
+                self.party.remove(&key);
                 if let Some(member) = self.party_wire_members.get(&(server, key)) {
                     self.pending_profiles.retain(|(profile, _)| {
                         profile.server != member.server || profile.name != member.name
@@ -1621,7 +1785,7 @@ impl MeterEngine {
                 self.observe_recent_personal_hit(&hit, now);
                 self.training_hit(&hit, now);
                 if self.started.is_some() && self.idle_for(now) {
-                    self.finish(self.last_hit.saturating_add(IDLE_MS))
+                    self.finish(self.last_hit.saturating_add(self.idle_ms))
                 }
                 if self.started.is_none() {
                     // The finished encounter stays on screen: damage taken or a heal tick right
@@ -1650,6 +1814,28 @@ impl MeterEngine {
                     self.encounter_build_taken = true;
                 }
                 self.diagnostics.damage_events += 1;
+                if self.own_id == Some(Self::owner_in(&self.identities, hit.source)) && self.own_id != Some(hit.target) {
+                    if self.own_hit.len() >= 4096 {
+                        self.own_hit.clear();
+                    }
+                    self.own_hit.insert(hit.target);
+                }
+                if self.own_id == Some(hit.target) && self.own_id != Some(Self::owner_in(&self.identities, hit.source)) {
+                    self.recent_taken.push_back((now, hit.skill, hit.amount));
+                    if self.incoming_max.len() >= MAX_INCOMING_SKILLS && !self.incoming_max.contains_key(&hit.skill) {
+                        self.incoming_max.clear();
+                    }
+                    let seen = self.incoming_max.entry(hit.skill).or_default();
+                    *seen = (*seen).max(hit.amount);
+                    while self.recent_taken.len() > MAX_RECENT_TAKEN
+                        || self
+                            .recent_taken
+                            .front()
+                            .is_some_and(|(at, _, _)| now.saturating_sub(*at) > 2 * RECAP_WINDOW_MS)
+                    {
+                        self.recent_taken.pop_front();
+                    }
+                }
                 if self.hit_count < MAX_HITS {
                     self.observe_record_hit(&hit, now);
                     self.hit_count += 1;
@@ -1865,7 +2051,7 @@ impl MeterEngine {
             return;
         }
         if self.started.is_some() && self.idle_for(now) {
-            self.finish(self.last_hit.saturating_add(IDLE_MS));
+            self.finish(self.last_hit.saturating_add(self.idle_ms));
         }
         if self.started.is_none() {
             self.damage_samples.clear();
@@ -2007,7 +2193,7 @@ impl MeterEngine {
             self.bind_orphans();
         }
         if !self.paused && self.started.is_some() && self.idle_for(now) {
-            self.finish(self.last_hit.saturating_add(IDLE_MS))
+            self.finish(self.last_hit.saturating_add(self.idle_ms))
         }
     }
     pub fn connection_changed(&mut self) {
@@ -2034,6 +2220,13 @@ impl MeterEngine {
         self.spatial.clear();
         self.cubes.clear();
         self.power.clear();
+        self.own_in_combat = None;
+        self.berserk.clear();
+        self.server_offset = None;
+        self.incoming_max.clear();
+        self.party.clear();
+        self.scores.clear();
+        self.own_hit.clear();
         self.orphan_bound.clear();
         self.pending_spawn_position = None;
         self.field_bosses.clear();
@@ -2152,11 +2345,18 @@ impl MeterEngine {
     /// and has not died keeps it open for `BOSS_IDLE_MS`. The recorded end stays one ordinary
     /// idle limit after the last hit, so the pause is not counted into the duration twice.
     fn idle_for(&self, now: u64) -> bool {
+        // With the game's own combat state, the fight lasts while the game says the player is in
+        // combat and for the tail after it stops.
+        if self.combat_from_game {
+            if let Some(in_combat) = self.own_in_combat {
+                return !in_combat && now.saturating_sub(self.own_left_combat_ms) >= self.idle_ms;
+            }
+        }
         let quiet = now.saturating_sub(self.last_hit);
-        if quiet < IDLE_MS {
+        if quiet < self.idle_ms {
             return false;
         }
-        if quiet >= BOSS_IDLE_MS {
+        if quiet >= BOSS_IDLE_MS.max(self.idle_ms) {
             return true;
         }
         let bosses = self.report_bosses();
@@ -2164,6 +2364,15 @@ impl MeterEngine {
             .alive_targets
             .iter()
             .any(|target| bosses.contains(target))
+    }
+    /// Choose how an encounter ends: "hits" or "game", and the tail in seconds (5 to 300).
+    pub fn set_combat_detection(&mut self, source: &str, seconds: u64) -> Result<(), String> {
+        if !matches!(source, "hits" | "game") || !(5..=300).contains(&seconds) {
+            return Err("Combat detection is hits or game, with a tail of 5 to 300 seconds".into());
+        }
+        self.combat_from_game = source == "game";
+        self.idle_ms = seconds * 1000;
+        Ok(())
     }
     fn report_bosses(&self) -> Vec<u64> {
         let (manual, identities) = self
@@ -2182,6 +2391,14 @@ impl MeterEngine {
         bosses
     }
     pub fn reset(&mut self) {
+        self.pvp_kills = 0;
+        self.pvp_deaths = 0;
+        self.berserk.clear();
+        self.kills.clear();
+        self.gathered.clear();
+        self.own_hit.clear();
+        self.last_death = None;
+        self.recent_taken.clear();
         self.recent_personal_hit = None;
         self.cancel_training();
         self.finish(self.last_hit);
@@ -2286,6 +2503,196 @@ impl MeterEngine {
             hit_at_ms: hit.hit_at_ms,
             source: "server-self-hit".into(),
         })
+    }
+
+    /// Keep a received frame (cut to 4 KiB) in a bounded in-memory window: at most 40 000 frames
+    /// and 12 MiB. Nothing is written anywhere unless a capture is saved on request.
+    pub fn remember_frame(&mut self, now: u64, payload: &[u8]) {
+        let kept = &payload[..payload.len().min(4096)];
+        self.recent_frame_bytes += kept.len();
+        self.recent_frames.push_back((now, kept.to_vec()));
+        while self.recent_frames.len() > 40_000 || self.recent_frame_bytes > 12 * 1024 * 1024 {
+            match self.recent_frames.pop_front() {
+                Some((_, old)) => self.recent_frame_bytes -= old.len(),
+                None => break,
+            }
+        }
+    }
+    /// Frames received at or after `since_ms`, oldest first.
+    pub fn recent_frames(&self, since_ms: u64) -> Vec<(u64, Vec<u8>)> {
+        self.recent_frames
+            .iter()
+            .filter(|(at, _)| *at >= since_ms)
+            .cloned()
+            .collect()
+    }
+
+    /// The boss frenzy that will apply soonest (the focused target's when it has one).
+    fn frenzy(&self, now: u64) -> Option<Frenzy> {
+        let offset = self.server_offset?;
+        self.berserk
+            .iter()
+            .map(|(id, at)| (*id, *at as i64 + offset))
+            .filter(|(_, local)| (-5_000..=3_600_000).contains(&(local - now as i64)))
+            .min_by_key(|(_, local)| *local)
+            .map(|(target_id, local)| Frenzy {
+                target_id,
+                target_name: self.identities.get(&target_id).and_then(|row| row.name.clone()),
+                at_ms: local.max(0) as u64,
+            })
+    }
+
+    /// A death notice: count the local player's deaths and kills and keep what killed them.
+    /// What the frames that do not become meter events say: power scalars, deaths, the party's
+    /// health, the battle score and what gathering gave.
+    pub fn observe_game_frame(&mut self, payload: &[u8], now: u64) {
+        if let Some((source, scalar)) = packets::power_scalar(payload) {
+            self.observe_power(source, scalar);
+        }
+        if let Some(record) = packets::death_record(payload) {
+            self.observe_death(&record, now);
+        }
+        for member in packets::party_vitals(payload) {
+            if self.party.len() >= 24 && !self.party.contains_key(&member.key) {
+                continue;
+            }
+            self.party.insert(member.key, (member, now));
+        }
+        if let Some(health) = packets::party_health(payload) {
+            if let Some((member, at)) = self.party.get_mut(&health.key) {
+                member.hp = health.hp;
+                member.hp_max = health.hp_max;
+                *at = now;
+            }
+        }
+        if packets::party_ended(payload) {
+            self.party.clear();
+        }
+        for score in packets::battle_scores(payload) {
+            if self.scores.len() >= 128 && !self.scores.contains_key(&score.dbid) {
+                continue;
+            }
+            self.scores.insert(score.dbid, score);
+        }
+        for row in packets::gathered(payload) {
+            if self.gathered.len() < 256 || self.gathered.contains_key(&row.item) {
+                let total = self.gathered.entry(row.item).or_default();
+                *total = total.saturating_add(row.count);
+            }
+        }
+    }
+
+    fn party_frames(&self) -> Vec<PartyFrame> {
+        let mut frames: Vec<PartyFrame> = self
+            .party
+            .values()
+            .map(|(member, at)| PartyFrame {
+                id: u64::from(member.key),
+                name: member.name.clone(),
+                hp: member.hp,
+                hp_max: member.hp_max,
+                is_self: self.own_id == Some(u64::from(member.key)),
+                observed_at_ms: *at,
+            })
+            .collect();
+        frames.sort_by(|a, b| b.is_self.cmp(&a.is_self).then_with(|| a.name.cmp(&b.name)));
+        frames
+    }
+
+    /// The assists of the local character in the game's battle score; known only after the local
+    /// player has been seen in a party list, which is where the character id is read.
+    fn own_assists(&self) -> Option<u32> {
+        let own = self.own_id?;
+        let dbid = self.party.get(&u32::try_from(own).ok()?)?.0.dbid;
+        self.scores.get(&dbid).map(|score| u32::from(score.assists))
+    }
+
+    fn tracker(&self) -> Tracker {
+        let mut kills: Vec<KillRow> = self
+            .kills
+            .iter()
+            .map(|(model, count)| KillRow {
+                model: *model,
+                name: npc_catalog::name(*model).map(str::to_owned),
+                count: *count,
+            })
+            .collect();
+        kills.sort_by(|a, b| b.count.cmp(&a.count).then(a.model.cmp(&b.model)));
+        let kills_total = kills.iter().fold(0u32, |sum, row| sum.saturating_add(row.count));
+        kills.truncate(16);
+        let mut gathered: Vec<GatheredRow> = self
+            .gathered
+            .iter()
+            .map(|(item, count)| GatheredRow { item: *item, count: *count })
+            .collect();
+        gathered.sort_by(|a, b| b.count.cmp(&a.count).then(a.item.cmp(&b.item)));
+        gathered.truncate(16);
+        Tracker { kills, kills_total, gathered }
+    }
+
+    pub fn observe_death(&mut self, record: &packets::DeathRecord, now: u64) {
+        let Some(own) = self.own_id else {
+            return;
+        };
+        let killer_owner = record
+            .killer
+            .map(|killer| Self::owner_in(&self.identities, killer));
+        if record.victim == own {
+            self.pvp_deaths = self.pvp_deaths.saturating_add(1);
+            let mut per_skill: BTreeMap<u32, (u64, u32)> = BTreeMap::new();
+            let mut damage_taken = 0u64;
+            for (at, skill, amount) in &self.recent_taken {
+                if now.saturating_sub(*at) <= RECAP_WINDOW_MS {
+                    damage_taken = damage_taken.saturating_add(*amount);
+                    let row = per_skill.entry(*skill).or_default();
+                    row.0 = row.0.saturating_add(*amount);
+                    row.1 = row.1.saturating_add(1);
+                }
+            }
+            let mut top_skills: Vec<_> = per_skill
+                .into_iter()
+                .map(|(skill_id, (damage, hits))| RecapSkill { skill_id, damage, hits })
+                .collect();
+            top_skills.sort_by_key(|row| std::cmp::Reverse(row.damage));
+            top_skills.truncate(3);
+            let killer_row = killer_owner.and_then(|owner| self.identities.get(&owner));
+            self.last_death = Some(DeathRecap {
+                at_ms: now,
+                killer_name: record
+                    .killer_name
+                    .clone()
+                    .or_else(|| killer_row.and_then(|row| row.name.clone())),
+                killer_player: record.killer_name.is_some()
+                    || killer_row.is_some_and(|row| row.player && !row.npc && !row.pet),
+                skill_id: (record.skill != 0).then_some(record.skill),
+                npc_id: record.npc,
+                npc_name: record.npc.and_then(npc_catalog::name).map(str::to_owned),
+                damage_taken,
+                top_skills,
+            });
+        } else if killer_owner == Some(own)
+            && self
+                .identities
+                .get(&record.victim)
+                .is_some_and(|row| row.player && !row.npc && !row.pet)
+        {
+            self.pvp_kills = self.pvp_kills.saturating_add(1);
+        }
+        // A monster counts when it died by you or by something you had hit.
+        if let Some(model) = self
+            .identities
+            .get(&record.victim)
+            .filter(|row| row.npc && !row.player && !row.pet)
+            .and_then(|row| row.npc_model_id)
+        {
+            if killer_owner == Some(own) || self.own_hit.contains(&record.victim) {
+                if self.kills.len() < 512 || self.kills.contains_key(&model) {
+                    let total = self.kills.entry(model).or_default();
+                    *total = total.saturating_add(1);
+                }
+                self.own_hit.remove(&record.victim);
+            }
+        }
     }
 
     /// Remember the power scalars an attacker has hit with. A summon inherits its owner's, so the
@@ -3357,7 +3764,7 @@ impl MeterEngine {
             .iter()
             .filter_map(|target| {
                 let at = target.own_last_hit_ms?;
-                (now.checked_sub(at).is_some_and(|age| age < IDLE_MS)).then_some((target.id, at))
+                (now.checked_sub(at).is_some_and(|age| age < self.idle_ms)).then_some((target.id, at))
             })
             .collect();
         let latest = candidates.iter().map(|(_, at)| *at).max();
@@ -3535,6 +3942,21 @@ impl MeterEngine {
         });
         observed_targets.truncate(100);
         let mut assist = self.assistance.live_snapshot(now);
+        let own_hp = self
+            .own_id
+            .and_then(|own| self.identities.get(&own))
+            .and_then(|row| row.hp)
+            .filter(|hp| *hp > 0);
+        for cast in &mut assist.casts {
+            cast.hostile = self.identities.get(&cast.actor_id).is_some_and(|row| {
+                row.npc && !row.player && !row.pet && row.owner.is_none() && !row.removed
+            });
+            // Lethal only on what has been seen: that skill has hit you for at least the HP you
+            // have now, and it is aimed at you.
+            cast.lethal = cast.hostile
+                && self.own_id == Some(cast.target_id)
+                && own_hp.zip(self.incoming_max.get(&cast.skill_id)).is_some_and(|(hp, max)| *max >= hp);
+        }
         assist.casts.sort_by_key(|cast| {
             (
                 !self.bosses.contains(&cast.actor_id),
@@ -3652,10 +4074,31 @@ impl MeterEngine {
             target_mode: self.target_mode.clone(),
             history_revision: self.history_revision,
             history_count: self.history.len(),
+            combat: CombatInfo {
+                source: if self.combat_from_game { "game" } else { "hits" }.into(),
+                tail_ms: self.idle_ms,
+                game_in_combat: self.own_in_combat,
+            },
+            frenzy: self.frenzy(now),
+            own_health: self.own_id.and_then(|own| self.identities.get(&own)).and_then(|row| {
+                Some(OwnHealth {
+                    hp: row.hp?,
+                    max_hp: row.reported_max_hp,
+                    observed_at_ms: row.current_hp_observed_at_ms?,
+                })
+            }),
+            party: self.party_frames(),
+            tracker: self.tracker(),
+            pvp: PvpState {
+                kills: self.pvp_kills,
+                deaths: self.pvp_deaths,
+                assists: self.own_assists(),
+                last_death: self.last_death.clone(),
+            },
             encounter_active: self.started.is_some()
                 && self.completed.is_none()
                 && !self.paused
-                && now.saturating_sub(self.last_hit) < IDLE_MS,
+                && now.saturating_sub(self.last_hit) < self.idle_ms,
             local_player_id: current.local_player_id,
             local_player_name: current.local_player_name,
             local_identity_source: current.local_identity_source,

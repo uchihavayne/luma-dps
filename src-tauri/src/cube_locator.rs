@@ -33,6 +33,16 @@ pub struct NetworkCube {
     /// Age of the player's last received position, in 5-second steps.
     pub fix_age_s: Option<u32>,
     pub opening: bool,
+    /// "red" or "gold".
+    pub look: Option<&'static str>,
+    /// On the map: 0 is east, 90 north, 180 west, -90 south.
+    pub bearing_deg: Option<i32>,
+    /// It appeared while in view.
+    pub live: bool,
+    /// Seconds since the server created it.
+    pub age_s: Option<u32>,
+    /// Someone opened it a moment ago.
+    pub taken: bool,
 }
 
 impl NetworkCube {
@@ -47,6 +57,12 @@ impl NetworkCube {
             direction_deg: nearest.direction_deg,
             fix_age_s: radar.fix_age_ms.map(|age| (age / 5_000 * 5) as u32),
             opening: radar.cubes.iter().any(|cube| cube.opening),
+            look: Some(nearest.look.name()),
+            bearing_deg: nearest.bearing_deg,
+            live: nearest.live,
+            // Whole seconds are too fine to publish every tick: five-second steps.
+            age_s: nearest.age_s.map(|age| age / 5 * 5),
+            taken: nearest.taken,
         }
     }
 }

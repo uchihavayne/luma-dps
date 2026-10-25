@@ -48,6 +48,13 @@ pub enum Event {
     Assistance(crate::assistance::AssistEvent),
     Position(crate::spatial::Observation),
     Cube(crate::cube::Event),
+    /// The game's own combat state of an entity, and a boss's berserk (frenzy) time on the
+    /// server's clock.
+    CombatState {
+        key: u64,
+        in_combat: bool,
+        berserk_ms: Option<u64>,
+    },
     FieldBoss(crate::field_boss::FieldBossEvent),
     Character(crate::character::CharacterEvent),
     Resource(crate::resources::ResourceEvent),
@@ -145,6 +152,14 @@ impl<'a> Bytes<'a> {
         self.offset += n;
         Ok(())
     }
+    fn long(&mut self) -> Result<u64, ReadError> {
+        let raw = self
+            .data
+            .get(self.offset..self.offset + 8)
+            .ok_or(ReadError::Short)?;
+        self.offset += 8;
+        Ok(u64::from_le_bytes(raw.try_into().map_err(|_| ReadError::Short)?))
+    }
     fn word(&mut self) -> Result<u32, ReadError> {
         let raw = self
             .data
@@ -172,6 +187,19 @@ impl<'a> Bytes<'a> {
             return Err(ReadError::Invalid);
         };
         Ok(value.into())
+    }
+    /// A length-prefixed string that may be empty (a monster has no nickname or guild).
+    fn lenient_text(&mut self) -> Result<String, ReadError> {
+        let length = self.variable()? as usize;
+        if length > 255 {
+            return Err(ReadError::Invalid);
+        }
+        let raw = self
+            .data
+            .get(self.offset..self.offset + length)
+            .ok_or(ReadError::Short)?;
+        self.offset += length;
+        Ok(String::from_utf8_lossy(raw).trim_end_matches('\0').trim().to_owned())
     }
     fn character_text(&mut self) -> Result<String, ReadError> {
         let field = self.offset;
@@ -645,6 +673,55 @@ fn damage_record(frame: &[u8]) -> Result<Option<(Hit, u32)>, ReadError> {
     )))
 }
 
+/// A death notice: who died, to which skill and killer. A player killer comes with a name and
+/// home server, a monster with its model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeathRecord {
+    pub victim: u64,
+    pub skill: u32,
+    pub killer: Option<u64>,
+    pub killer_name: Option<String>,
+    pub npc: Option<u32>,
+}
+
+/// The death record of an `04 8D` frame. The short form that only names the victim carries no
+/// killer and gives nothing here. The tail (server, nickname, guild, emblem, monster model) is read
+/// as far as it goes: a short tail still says who died to what.
+pub fn death_record(frame: &[u8]) -> Option<DeathRecord> {
+    if frame.get(..2) != Some(&[4, 0x8d]) || frame.len() > 4096 {
+        return None;
+    }
+    let mut bytes = Bytes::new(frame);
+    let victim = u64::from(bytes.variable().ok()?);
+    if victim == 0 || bytes.offset >= frame.len() {
+        return None;
+    }
+    let skill = bytes.word().ok()?;
+    let killer = u64::from(bytes.variable().ok()?);
+    let mut record = DeathRecord {
+        victim,
+        skill,
+        killer: (killer != 0).then_some(killer),
+        killer_name: None,
+        npc: None,
+    };
+    let tail = (|| {
+        let server = u16::from(bytes.byte()?) | u16::from(bytes.byte()?) << 8;
+        let name = bytes.lenient_text()?;
+        bytes.lenient_text()?; // guild name
+        bytes.byte()?;
+        bytes.byte()?; // guild emblem
+        Ok::<_, ReadError>((server, name, bytes.variable()?))
+    })();
+    if let Ok((server, name, npc)) = tail {
+        if (1000..3000).contains(&server) && !name.is_empty() {
+            record.killer_name = Some(name);
+        }
+        record.npc = (npc != 0).then_some(npc);
+    }
+    Some(record)
+}
+
 /// The attacker and power scalar of a direct damage frame, when it has one.
 pub fn power_scalar(frame: &[u8]) -> Option<(u64, u32)> {
     if frame.get(..2) != Some(&[4, 0x38]) {
@@ -652,6 +729,173 @@ pub fn power_scalar(frame: &[u8]) -> Option<(u64, u32)> {
     }
     let (hit, scalar) = damage_record(frame).ok()??;
     (1..=1_000_000).contains(&scalar).then_some((hit.source, scalar))
+}
+
+/// One party member as the game lists them (`00 92` party info, `0d 92` a member added): the
+/// entity key the rest of the traffic uses, the character id, name and health.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartyVital {
+    pub key: u32,
+    pub dbid: u64,
+    pub server: u16,
+    pub name: String,
+    pub hp: u64,
+    pub hp_max: u64,
+}
+
+/// A party member's health pushed on its own (`1b 92`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartyHealth {
+    pub key: u32,
+    pub hp: u64,
+    pub hp_max: u64,
+}
+
+/// One entry of the game's battle score (`26 E3`): kills, deaths and assists of a character id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BattleScore {
+    pub dbid: u64,
+    pub kills: u8,
+    pub deaths: u8,
+    pub assists: u8,
+}
+
+/// Something dropped by gathering (`33 8D`): the item and how many.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gathered {
+    pub item: u32,
+    pub count: u32,
+}
+
+fn varint64(data: &[u8], offset: &mut usize) -> Option<u64> {
+    let mut value = 0u64;
+    for shift in (0..=63).step_by(7) {
+        let byte = *data.get(*offset)?;
+        *offset += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// The members of a party info frame or of an added-member frame. A member record is found the way
+/// the profile reader finds it: a 36-character account id in a fixed place, the home server twice
+/// (once alone, once as the top of the character id) and a nickname, so a stray byte run cannot
+/// pass. Health follows the nickname: a character-id-sized field, then current and maximum.
+pub fn party_vitals(frame: &[u8]) -> Vec<PartyVital> {
+    if !matches!(frame.get(..2), Some([0x00, 0x92] | [0x0d, 0x92])) || frame.len() > 16_384 {
+        return Vec::new();
+    }
+    let mut members: Vec<PartyVital> = Vec::new();
+    let mut end = 2;
+    for start in 2..frame.len().saturating_sub(54) {
+        if start < end || frame.get(start + 8) != Some(&36) {
+            continue;
+        }
+        let guid = &frame[start + 9..start + 45];
+        if !guid.iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }) {
+            continue;
+        }
+        let key = u32::from_le_bytes(frame[start..start + 4].try_into().unwrap_or_default());
+        let server = u16::from_le_bytes([frame[start + 4], frame[start + 5]]);
+        if key == 0 || !(1000..3000).contains(&server) || frame[start + 51..start + 53] != server.to_le_bytes() {
+            continue;
+        }
+        let dbid = u64::from_le_bytes(frame[start + 45..start + 53].try_into().unwrap_or_default());
+        let mut bytes = Bytes { data: frame, offset: start + 53 };
+        let Ok(name) = bytes.character_text() else {
+            continue;
+        };
+        let mut at = bytes.offset + 4; // the player class id
+        let (Some(hp), Some(hp_max)) = (varint64(frame, &mut at), varint64(frame, &mut at)) else {
+            continue;
+        };
+        if hp_max == 0 || hp > hp_max || hp_max > 1_000_000_000_000 || members.iter().any(|row| row.key == key) {
+            continue;
+        }
+        end = at;
+        members.push(PartyVital { key, dbid, server, name, hp, hp_max });
+        if members.len() > 24 {
+            return Vec::new();
+        }
+    }
+    members
+}
+
+pub fn party_health(frame: &[u8]) -> Option<PartyHealth> {
+    if frame.get(..2) != Some(&[0x1b, 0x92]) || !(5..=96).contains(&frame.len()) {
+        return None;
+    }
+    let mut at = 2;
+    let key = varint(frame, &mut at).ok()?;
+    let hp = varint64(frame, &mut at)?;
+    let hp_max = varint64(frame, &mut at)?;
+    (key != 0 && hp_max != 0 && hp <= hp_max && hp_max <= 1_000_000_000_000).then_some(PartyHealth { key, hp, hp_max })
+}
+
+/// The party ended for the local player: disbanded (`1f 92`) or kicked out (`19 92`).
+pub fn party_ended(frame: &[u8]) -> bool {
+    frame.len() == 3 && matches!(frame.get(..2), Some([0x1f, 0x92] | [0x19, 0x92]))
+}
+
+/// The battle score list: a count, then 13 bytes per character (id, flags, kills, deaths, assists,
+/// one more byte). A list that does not fit the frame exactly is not read at all.
+pub fn battle_scores(frame: &[u8]) -> Vec<BattleScore> {
+    if frame.get(..2) != Some(&[0x26, 0xe3]) || frame.len() > 4096 {
+        return Vec::new();
+    }
+    let mut at = 2;
+    let Ok(count) = varint(frame, &mut at) else {
+        return Vec::new();
+    };
+    let count = count as usize;
+    if count == 0 || count > 64 || at + count * 13 != frame.len() {
+        return Vec::new();
+    }
+    frame[at..]
+        .chunks_exact(13)
+        .map(|entry| BattleScore {
+            dbid: u64::from_le_bytes(entry[..8].try_into().unwrap_or_default()),
+            kills: entry[9],
+            deaths: entry[10],
+            assists: entry[11],
+        })
+        .collect()
+}
+
+/// What a finished gathering gave (`33 8D`): the main item and an extra one when there is one.
+pub fn gathered(frame: &[u8]) -> Vec<Gathered> {
+    if frame.get(..2) != Some(&[0x33, 0x8d]) || frame.len() > 64 {
+        return Vec::new();
+    }
+    let rows = (|| {
+        let mut bytes = Bytes::new(frame);
+        bytes.byte()?;
+        bytes.byte()?;
+        bytes.variable()?;
+        let item = bytes.word()?;
+        let basic = bytes.word()?;
+        let extra = bytes.word()?;
+        let bonus_item = bytes.word()?;
+        let bonus_count = bytes.word()?;
+        let mut rows = Vec::new();
+        if item != 0 && basic.saturating_add(extra) > 0 {
+            rows.push(Gathered { item, count: basic.saturating_add(extra) });
+        }
+        if bonus_item != 0 && bonus_count > 0 {
+            rows.push(Gathered { item: bonus_item, count: bonus_count });
+        }
+        Ok::<_, ReadError>(rows)
+    })();
+    rows.unwrap_or_default().into_iter().filter(|row| row.count <= 100_000).collect()
 }
 
 pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
@@ -718,7 +962,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             .map(|event| event.map(Event::Character))
             .map_err(|_| ReadError::Invalid);
     }
-    if matches!(opcode, [0x34 | 0x35 | 0x38 | 0x3a | 0x23, 0x36]) {
+    if matches!(opcode, [0x00 | 0x34 | 0x35 | 0x38 | 0x3a | 0x23, 0x36]) {
         return Ok(crate::cube::decode(frame).map(Event::Cube));
     }
     let mut bytes = Bytes::new(frame);
@@ -964,6 +1208,22 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             // A bare target/skill/actor prefix is not verified ownership.
             // Real ownership is decoded only from a complete spawn above.
             Ok(None)
+        }
+        [0x21, 0x8d] => {
+            // Entity key, flags, combat state (0 out of combat), then a berserk time when flagged.
+            let key = u64::from(bytes.variable()?);
+            let flags = bytes.byte()?;
+            let state = bytes.byte()?;
+            let berserk = if flags & 1 != 0 {
+                Some(bytes.long()?)
+            } else {
+                None
+            };
+            Ok((key > 0).then_some(Event::CombatState {
+                key,
+                in_combat: state != 0,
+                berserk_ms: berserk.filter(|ms| (1_000_000_000_000..4_000_000_000_000).contains(ms)),
+            }))
         }
         [0x47, 0x38] => {
             let count = bytes.byte()? as usize;

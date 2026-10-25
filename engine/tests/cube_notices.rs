@@ -96,17 +96,24 @@ fn a_position_older_than_thirty_seconds_gives_no_distance() {
 }
 
 #[test]
-fn someone_opening_it_is_shown_and_it_is_gone_once_opened_or_out_of_range() {
+fn someone_opening_it_is_shown_it_stays_listed_as_taken_for_a_moment_and_out_of_range_forgets_it() {
     let mut engine = engine();
     feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
     feed(&mut engine, &frame([0x38, 0x36], &hex("e5 ff 03 bb 2c 01")), 1_000);
     assert!(engine.cube_radar(1_100).cubes[0].opening);
     feed(&mut engine, &frame([0x3a, 0x36], &hex(KEY_DONE)), 5_000);
     feed(&mut engine, &frame([0x35, 0x36], &hex("e5 ff 03 04")), 5_100);
-    assert!(engine.cube_radar(5_200).cubes.is_empty());
-    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 6_000);
-    feed(&mut engine, &frame([0x35, 0x36], &hex("e5 ff 03 01")), 7_000);
-    assert!(engine.cube_radar(7_100).cubes.is_empty());
+    // Opened: still listed, marked taken, for eight seconds.
+    let taken = engine.cube_radar(5_200).cubes;
+    assert_eq!(taken.len(), 1);
+    assert!(taken[0].taken && !taken[0].opening);
+    assert!(engine.cube_radar(5_100 + 7_900).cubes[0].taken);
+    assert!(engine.cube_radar(5_100 + 8_100).cubes.is_empty());
+    // Out of range: forgotten at once.
+    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 20_000);
+    assert!(!engine.cube_radar(20_100).cubes[0].taken);
+    feed(&mut engine, &frame([0x35, 0x36], &hex("e5 ff 03 01")), 21_000);
+    assert!(engine.cube_radar(21_100).cubes.is_empty());
 }
 
 #[test]
@@ -205,4 +212,99 @@ fn a_crowd_of_ordinary_objects_never_pushes_a_cube_out() {
         feed(&mut engine, &frame([0x34, 0x36], &other), 10 + u64::from(id));
     }
     assert_eq!(engine.cube_radar(1_000).cubes.len(), 1);
+}
+
+// The creation time of the sample Cube, milliseconds on the server's clock.
+const CREATED_MS: u64 = 0x01a1_34a5_e4aa;
+
+fn cube_with(template: u32, reason: Option<u8>) -> Vec<u8> {
+    let mut body = hex(SPAWN);
+    body[5..9].copy_from_slice(&template.to_le_bytes());
+    if let Some(reason) = reason {
+        body[31] = reason;
+    }
+    frame([0x34, 0x36], &body)
+}
+
+#[test]
+fn all_nineteen_cube_templates_are_cubes_with_their_look_and_other_objects_are_not() {
+    use luma_engine::cube::{known_look, Look};
+    let red = [1_200_039, 1_200_040, 1_200_041, 1_201_503, 1_201_504, 1_301_199, 1_301_200, 1_301_244, 1_301_245];
+    let gold = [1_200_036, 1_200_037, 1_200_667, 1_201_502, 1_201_505, 1_300_081, 1_300_082, 1_300_754, 1_301_242, 1_301_243];
+    assert!(red.iter().all(|t| known_look(*t) == Some(Look::Red)));
+    assert!(gold.iter().all(|t| known_look(*t) == Some(Look::Gold)));
+    for (template, look) in [(1_200_036, "gold"), (1_301_245, "red")] {
+        let mut engine = engine();
+        feed(&mut engine, &cube_with(template, None), 0);
+        let cubes = engine.cube_radar(100).cubes;
+        assert_eq!((cubes.len(), cubes[0].look.name()), (1, look));
+    }
+    let mut engine = engine();
+    feed(&mut engine, &cube_with(1_500_041, None), 0);
+    assert!(engine.cube_radar(100).cubes.is_empty());
+}
+
+#[test]
+fn a_cube_that_spawned_in_view_is_live_and_its_age_comes_from_the_servers_clock() {
+    use luma_engine::cube::Event as CubeEvent;
+    let mut engine = engine();
+    feed(&mut engine, &cube_with(1_200_039, Some(6)), 1_000);
+    feed(&mut engine, &cube_with(1_200_041, Some(1)), 1_000);
+    // No clock yet: no age.
+    assert!(engine.cube_radar(1_100).cubes.iter().all(|cube| cube.age_s.is_none()));
+    engine.ingest_event(Event::Cube(CubeEvent::Clock { server_ms: CREATED_MS + 125_000 }), 10_000);
+    let cubes = engine.cube_radar(10_000).cubes;
+    assert_eq!(cubes.len(), 1); // both used the same object id: the second replaced the first
+    assert!(!cubes[0].live);
+    assert_eq!(cubes[0].age_s, Some(125));
+    // The age keeps growing with the local clock.
+    assert_eq!(engine.cube_radar(40_000).cubes[0].age_s, Some(155));
+    let mut engine = self::engine();
+    feed(&mut engine, &cube_with(1_200_039, Some(6)), 1_000);
+    assert!(engine.cube_radar(1_100).cubes[0].live);
+    // A creation time from the future of the clock is never a negative age.
+    engine.ingest_event(Event::Cube(CubeEvent::Clock { server_ms: CREATED_MS - 50_000 }), 2_000);
+    assert_eq!(engine.cube_radar(2_100).cubes[0].age_s, Some(0));
+}
+
+#[test]
+fn the_map_bearing_points_east_when_the_cube_is_east_and_north_is_world_minus_y() {
+    for (dx, dy, bearing) in [(3_000.0, 0.0, 0), (0.0, -3_000.0, 90), (-3_000.0, 0.0, 180), (0.0, 3_000.0, -90)] {
+        let mut engine = engine();
+        feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
+        me(&mut engine, -50_205.0 - dx, 126_283.0 - dy, 15_449.0, 1_000);
+        let cube = engine.cube_radar(1_100).cubes.remove(0);
+        assert_eq!(cube.bearing_deg, Some(bearing), "cube offset ({dx}, {dy})");
+        assert_eq!(cube.distance_m, Some(30));
+    }
+    // No position of the player, no bearing.
+    let mut engine = engine();
+    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
+    assert_eq!(engine.cube_radar(100).cubes[0].bearing_deg, None);
+}
+
+#[test]
+fn the_map_frame_gives_the_server_clock_and_an_object_with_a_nickname_still_parses() {
+    use luma_engine::cube::Event as CubeEvent;
+    let mut clock = CREATED_MS.to_le_bytes().to_vec();
+    clock.extend([0, 0]);
+    assert_eq!(
+        packets::decode(&frame([0x00, 0x36], &clock)).unwrap(),
+        Some(Event::Cube(CubeEvent::Clock { server_ms: CREATED_MS }))
+    );
+    // A heartbeat that is too small to be a clock is ignored.
+    assert!(packets::decode(&frame([0x00, 0x36], &[1, 0, 0, 0, 0, 0, 0, 0])).unwrap().is_none());
+    // A named object: flags, descriptor flags with a nickname, then the template.
+    let mut body = hex("e5 ff 03 04 01 03 61 62 63");
+    body.extend(1_200_041u32.to_le_bytes());
+    body.extend(floats(-50_205.0, 126_283.0, 15_449.0));
+    body.extend([0; 8]);
+    body.extend([1, 1, 6]);
+    body.extend(CREATED_MS.to_le_bytes());
+    let Some(Event::Cube(CubeEvent::Spawn { template, reason, created_ms, .. })) =
+        packets::decode(&frame([0x34, 0x36], &body)).unwrap()
+    else {
+        panic!("expected a spawn");
+    };
+    assert_eq!((template, reason, created_ms), (1_200_041, 6, Some(CREATED_MS)));
 }

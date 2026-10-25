@@ -205,7 +205,7 @@ test('without a Cube announcement the notice says so, and malformed readings are
   assert.equal(normalizeCubeNetwork({ cubes: 1, direction_deg: 181 }).direction_deg, null); assert.equal(normalizeCubeNetwork({ cubes: 1, vertical_m: -501 }).vertical_m, null);
   assert.equal(normalizeCubeNetwork({ cubes: 1, fix_age_s: 61 }).fix_age_s, null); assert.equal(normalizeCubeNetwork({ cubes: 1, opening: 1 }).opening, false);
   // Nothing about a Cube is kept when none is announced.
-  assert.deepEqual(normalizeCubeNetwork({ cubes: 0, distance_m: 5, vertical_m: 1, direction_deg: 2, fix_age_s: 3, opening: true }), { cubes: 0, distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null, opening: false });
+  assert.deepEqual(normalizeCubeNetwork({ cubes: 0, distance_m: 5, vertical_m: 1, direction_deg: 2, fix_age_s: 3, opening: true }), { cubes: 0, distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null, opening: false, look: null, bearing_deg: null, live: false, age_s: null, taken: false });
   for (const value of [null, [], 'near', 7]) assert.equal(normalizeCubeNetwork(value).cubes, 0);
   assert.equal(normalizeCubeNetwork({ cubes: 500 }).cubes, 99);
 });
@@ -214,4 +214,25 @@ test('a stored Cube state keeps its network reading when it is normalized again 
   const stored = normalizeCubeState({ network: { cubes: 2, distance_m: 72, vertical_m: -8, direction_deg: -30, fix_age_s: 5, opening: true } });
   assert.deepEqual(normalizeCubeState(stored).network, stored.network);
   assert.equal(cubePresentation(stored, { now }).network.summary, '72 m · 8 m aşağıda · önünde · biri açıyor · +1');
+});
+
+test('a Cube shows its kind, map direction, age and when it was opened', () => {
+  const base = { cubes: 2, distance_m: 72, vertical_m: 8, direction_deg: null, fix_age_s: 5, opening: false };
+  const gold = cubePresentation({ network: { ...base, look: 'gold', bearing_deg: 45, age_s: 125 } }, { now }).network;
+  assert.equal(gold.kind, 'Altın Küp'); assert.equal(gold.look, 'gold'); assert.equal(gold.wind, 'kuzeydoğuda');
+  assert.equal(gold.age, '2 dk 5 sn önce doğdu'); assert.equal(gold.nearLabel, 'Altın Küp yakında');
+  assert.equal(gold.detail, '8 m yukarıda · kuzeydoğuda · +1'); assert.equal(gold.summary, '72 m · 8 m yukarıda · kuzeydoğuda · 2 dk 5 sn önce doğdu · +1');
+  const red = cubePresentation({ network: { ...base, look: 'red', live: true, age_s: 0, bearing_deg: -90 } }, { now, locale: 'en' }).network;
+  assert.equal(red.kind, 'Red Cube'); assert.equal(red.wind, 'to the south'); assert.equal(red.age, 'just spawned');
+  for (const [degrees, word] of [[0, 'doğuda'], [45, 'kuzeydoğuda'], [90, 'kuzeyde'], [135, 'kuzeybatıda'], [180, 'batıda'], [-180, 'batıda'], [-135, 'güneybatıda'], [-90, 'güneyde'], [-45, 'güneydoğuda']]) {
+    assert.equal(cubePresentation({ network: { ...base, bearing_deg: degrees } }, { now }).network.wind, word, `${degrees}`);
+  }
+  const taken = cubePresentation({ network: { ...base, look: 'red', taken: true, bearing_deg: 45, age_s: 30 } }, { now }).network;
+  assert.equal(taken.taken, true); assert.equal(taken.nearLabel, 'Kırmızı Küp açıldı'); assert.equal(taken.detail, '');
+  assert.ok(!taken.summary.includes('yukarıda')); assert.equal(taken.look, 'red');
+  assert.equal(cubePresentation({ network: { ...base, age_s: 90 } }, { now }).network.age, '1 dk 30 sn önce doğdu');
+  assert.equal(cubePresentation({ network: { ...base, age_s: 59 } }, { now }).network.age, '59 sn önce doğdu');
+  // Unknown looks and malformed values are dropped.
+  const odd = normalizeCubeNetwork({ cubes: 1, look: 'blue', bearing_deg: 200, age_s: -1, live: 1, taken: 'yes' });
+  assert.deepEqual([odd.look, odd.bearing_deg, odd.age_s, odd.live, odd.taken], [null, null, null, false, false]);
 });

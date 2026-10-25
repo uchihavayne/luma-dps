@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay-windows",
+  "description": "Detached panel windows listen to the meter's events; everything else they use is an app command",
+  "windows": ["overlay-*"],
+  "permissions": ["core:event:default"]
+}

@@ -455,6 +455,12 @@ pub struct ActiveCast {
     pub expires_ms: u64,
     pub duration_ms: u64,
     pub source: String,
+    /// Set by the engine when the caster is a hostile NPC, as opposed to a player or a summon.
+    #[serde(default)]
+    pub hostile: bool,
+    /// Set by the engine when this skill has hit the player for at least their current HP.
+    #[serde(default)]
+    pub lethal: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -684,6 +690,8 @@ impl AssistState {
                         expires_ms: now.saturating_add(duration_ms),
                         duration_ms,
                         source: "server-windup".into(),
+                        hostile: false,
+                        lethal: false,
                     },
                 );
                 self.log(

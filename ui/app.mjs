@@ -1,4 +1,8 @@
 import { skillLabel } from './skill-names.mjs';
+import { skillRows } from './skills.mjs';
+import { deathRecap } from './pvp.mjs';
+import { frenzyLabel, healthFraction, normalizeCombatDetection } from './combat.mjs';
+import { normalizeIdNames } from './session-data.mjs';
 import { bossLog } from './boss-log.mjs';
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
@@ -12,7 +16,7 @@ import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSe
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
 import { createRecordNotifier, recordSnapshot, recordPresentation, renderRecords } from './records.mjs';
 import { trainingState, validateTrainingDuration, damageCurve, curvePath, historyProgress, takenCoverage } from './analysis.mjs';
-import { assistanceState, assistanceTimeline, ownTargetedWindups, scopedEffects } from './assistance.mjs';
+import { assistanceState, assistanceTimeline, bossCasts, scopedEffects } from './assistance.mjs';
 import { characterSnapshot, renderCharacterCollections, fieldBossSnapshot, fieldBossTimers, metadataEpoch, characterSnapshotReader } from './character.mjs';
 import { decodeGameReport, comparePersonalReport, GAME_REPORT_MAX_BYTES } from './game-reports.mjs';
 import * as scheduling from './events.mjs';
@@ -196,7 +200,7 @@ if (telemetryDemo && targetPetDemo) {
     live_target: oneShot ? null : target, targets: oneShot ? [] : [target],
     recent_personal_target: { actor_id: 7, target_id: 960, target_name: idOnly ? null : target.name, target_npc_id: idOnly ? targetPetDemoMode === 'npc-id' ? 2400617 : 9999999 : null, hit_at_ms: at, source: 'server-self-hit' } });
 }
-if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000, network: { cubes: 2, distance_m: 72, vertical_m: 8, direction_deg: 30, fix_age_s: 5, opening: false } });
+if (cubeDemo) cubeState = normalizeCubeState({ revision: 1, enabled: true, status: 'detected', source: 'game', reference: { name: 'Hidden Cube', seconds: 8 }, score: .94, direction: 'left', direction_confidence: .85, pan: -.5, steer_degrees: -30, bearing_ambiguous: true, snr_db: 18.2, signal_strength: .7, strength_db: -27.5, trend: 'approaching', last_detection_ms: Date.now(), audio_channels: 2, sample_rate: 48000, network: { cubes: 2, distance_m: 72, vertical_m: 8, direction_deg: 30, fix_age_s: 5, opening: false, look: 'gold', bearing_deg: 45, live: false, age_s: 125, taken: false } });
 const rosterDemoCount = demo ? Number(new URLSearchParams(location.search).get('rosterDemo')) : 0;
 if ([5, 6, 12].includes(rosterDemoCount)) {
   state = normalizeState(rosterDemoState(state, rosterDemoCount));
@@ -290,6 +294,22 @@ Object.assign(words.tr, { rateCaption: 'SANİYELİK DPS', totalCaption: 'TOPLAM 
 Object.assign(words.en, { rateCaption: 'DAMAGE / SECOND', totalCaption: 'TOTAL DAMAGE', rowBoth: 'Total damage and DPS (K/s)' });
 Object.assign(words.tr, { cubeCompass: 'Ses pusulası', cubeOpen: 'Hidden Cube ses pusulasını aç', cubeDps: 'DPS görünümüne dön', cubeExpand: 'Ayrıntılı pusula', cubeCompact: 'Küçük pusula', cubeAudioSettings: 'Küp ses ayarları', cubeHide: 'Pusula göstergesini gizle', cubeHideListening: 'Pusula göstergesini gizle · dinleme sürer', cubeStereoAmbiguity: 'Ses pusulası · ön/arka belirsiz', cubeTurn: 'Kamerayı döndürerek karşılaştır', cubeRelativeStrength: 'Göreli sinyal', cubeSnr: 'Sinyal / gürültü', cubeLeft: 'SOL', cubeRight: 'SAĞ', cubeIndicator: 'Küp algılanınca DPS yanında pusulayı göster', cubeShow: 'Pusulayı göster', cubeSize: 'Pusula düzeni', cubeCompactLabel: 'Küçük', cubeFullLabel: 'Ayrıntılı' });
 Object.assign(words.en, { cubeCompass: 'Audio compass', cubeOpen: 'Open Hidden Cube audio compass', cubeDps: 'Return to DPS view', cubeExpand: 'Detailed compass', cubeCompact: 'Compact compass', cubeAudioSettings: 'Cube audio settings', cubeHide: 'Hide compass indicator', cubeHideListening: 'Hide compass indicator · listening continues', cubeStereoAmbiguity: 'Audio compass · front/back ambiguous', cubeTurn: 'Turn the camera to compare', cubeRelativeStrength: 'Relative signal', cubeSnr: 'Signal / noise', cubeLeft: 'LEFT', cubeRight: 'RIGHT', cubeIndicator: 'Show a compass beside DPS when a Cube is detected', cubeShow: 'Show compass', cubeSize: 'Compass layout', cubeCompactLabel: 'Compact', cubeFullLabel: 'Detailed' });
+Object.assign(words.tr, { bossCastsLabel: 'Yaklaşan boss büyülerini göster (sana yönelmese de)' });
+Object.assign(words.en, { bossCastsLabel: 'Show the monster casts about to land (even when not aimed at you)' });
+Object.assign(words.tr, {
+  lethal: 'ÖLÜMCÜL', combatSave: 'Kaydet', ownHealthLabel: 'Kendi canımı göster (HP)', combatDetection: 'Savaş algılama', combatSource: 'Karşılaşma neye göre biter',
+  combatHits: 'Vuruşlar (son vuruştan sonra sessizlik)', combatGame: 'Oyunun savaş durumu', combatSeconds: 'Bekleme süresi (5–300 sn)',
+  combatLive: 'Oyunun şu anki bildirimi', combatUnknown: 'henüz bilgi gelmedi', combatIn: 'savaştasın', combatOut: 'savaşta değilsin',
+  combatHelp: 'Vuruşlar: son vuruştan sonra seçilen süre sessizlik olursa karşılaşma biter. Oyun: oyun seni savaşta saydığı sürece karşılaşma açık kalır (boss fazlarında bölünmez); süre, savaştan çıktıktan sonraki bekleme. DPS süresi iki durumda da ilk vuruştan son vuruşa ölçülür. Oyun hiçbir bildirim göndermediyse vuruşlara dönülür.',
+  lethalHelp: 'ÖLÜMCÜL yalnızca gördüğümüz veriye dayanır: o büyü sana, şu anki canından fazla bir hasar vurmuştu.',
+});
+Object.assign(words.en, {
+  lethal: 'LETHAL', combatSave: 'Save', ownHealthLabel: 'Show my health (HP)', combatDetection: 'Combat detection', combatSource: 'What ends an encounter',
+  combatHits: 'Hits (quiet after the last hit)', combatGame: "The game's combat state", combatSeconds: 'Wait (5–300 s)',
+  combatLive: 'What the game says now', combatUnknown: 'nothing received yet', combatIn: 'you are in combat', combatOut: 'you are out of combat',
+  combatHelp: "Hits: the encounter ends after the chosen quiet time. Game: it stays open while the game counts you in combat (boss phases do not split it); the time is the wait after you leave combat. DPS is timed from the first hit to the last either way. If the game sends no notice, hits are used.",
+  lethalHelp: 'LETHAL rests only on what has been seen: that spell once hit you for more than the health you have now.',
+});
 Object.assign(words.tr, { cubeWalkRelative: 'Yürüdüğün yöne göre' });
 Object.assign(words.en, { cubeWalkRelative: 'Relative to your walking direction' });
 Object.assign(words.tr, { cubeAutoListen: 'Küp sesini arka planda otomatik dinle', cubeAutoHelp: 'Luma açıkken yalnızca AION2 sesi dinlenir. Küp sesi eşleştiğinde pusula DPS listesinin yanında açılır. İstersen dinlemeyi kapatabilirsin.', cubeCueLeft: 'Sola dön', cubeCueRight: 'Sağa dön', cubeCueBalanced: 'Stereo dengeli', cubeCueUnknown: 'Dönerek ara' });
@@ -574,6 +594,9 @@ function toolsMenuContent() {
     <section id="tools-status" class="tools-status" role="status" hidden></section>
     <h3>${pair('Paneller', 'Panels')}</h3>
     <div class="tools-links">${item('pets', pair('Pet rehberi', 'Pet guide'))}${item('radar-details', 'Radar')}${item('playback', 'Replay')}${item('team', pair('Takım cooldown’ları', 'Team cooldowns'))}${item('calendar', pair('Etkinlikler', 'Events'))}${item('cube', pair('Küp sesi', 'Cube audio'))}${item('character', pair('Karakterim', 'My character'))}${item('history', pair('Geçmiş', 'History'))}${item('records', pair('Rekorlar', 'Personal bests'))}${item('community', pair('Sıralama ve paylaşım', 'Rankings and sharing'))}</div>
+    <h3>${pair('Ayrı pencereler', 'Separate windows')}</h3>
+    <div class="tools-toggles">${[['pvp', 'PvP'], ['vitals', pair('Can ve öfke', 'Health & frenzy')], ['cube', 'Hidden Cube'], ['party', pair('Parti', 'Party')], ['tickets', pair('Biletler', 'Tickets')], ['tracker', pair('Takip', 'Tracker')], ['cooldowns', pair('Beceriler', 'Skills')]].map(([name, label]) => `<label><input type="checkbox" data-overlay-panel="${name}"><span>${label}</span></label>`).join('')}</div>
+    <p class="help">${pair('Her pencere ayrı açılır, sürüklenir ve boyutlanır; yerini hatırlar. Yalnızca okur, ayar değiştirmez.', 'Each window opens, moves and resizes on its own and remembers its place. It only reads and never changes a setting.')}</p>
     <h3>${pair('Ana ekranda göster', 'Show in the meter')}</h3>
     <div class="tools-toggles">${[['dps', pair('DPS listesi', 'DPS roster')], ['pets', pair('Pet takibi', 'Pet tracker')], ['radar', 'Radar'], ['events', pair('Etkinlik saati', 'Event timer')], ['team', pair('Takım kısayolu', 'Team shortcut')], ['odyle', 'Odyle']].map(([name, label]) => `<label><input type="checkbox" data-hud-panel="${name}"><span>${label}</span></label>`).join('')}</div>
     <details class="tools-filters"><summary>${pair('Liste ve görünüm seçenekleri', 'Roster and display options')}</summary>
@@ -599,6 +622,7 @@ function renderToolsMenu() {
   setText(status, notice.title || notice.textContent);
   setAttribute(host.querySelector('[data-tools-action="lock"]'), 'aria-pressed', String(prefs.locked));
   setAttribute(host.querySelector('[data-tools-action="compact"]'), 'aria-pressed', String(prefs.compactStrip));
+  for (const input of host.querySelectorAll('[data-overlay-panel]')) { input.checked = overlayOpen.has(input.dataset.overlayPanel); input.disabled = !native; if (!native) input.title = prefs.locale === 'tr' ? 'Yalnızca masaüstü uygulamasında' : 'Desktop app only'; }
   for (const input of host.querySelectorAll('[data-hud-panel]')) {
     const name = input.dataset.hudPanel;
     input.checked = name === 'dps' ? prefs.displayModules.dps : name === 'radar' ? prefs.radarOpen : hudPanelVisible(prefs, name) && (name !== 'pets' || prefs.showPetTracker);
@@ -623,11 +647,23 @@ function closeTools({ focus = true } = {}) {
   return transition;
 }
 
+// Which detached windows are open, asked of the desktop whenever the tools menu opens.
+const overlayOpen = new Set();
+async function readOverlays(list) {
+  try { list ??= native ? await invoke('list_overlays') : []; } catch { list = []; }
+  overlayOpen.clear(); for (const panel of Array.isArray(list) ? list : []) overlayOpen.add(String(panel));
+  renderToolsMenu();
+}
+async function toggleOverlay(panel, open) {
+  try { await readOverlays(await action('set_overlay', { panel, open })); } catch { await readOverlays(); }
+}
+
 function openTools() {
   if (toolsOpen) { closeTools(); return; }
   toolsOpen = true; $('#tools-menu').hidden = false; setAttribute($('#tools-button'), 'aria-expanded', 'true');
   if (prefs.compactStrip && prefs.displayModules.dps) { toolsExpanded = true; applyAppearance(); syncNativePanel(true); }
   renderToolsMenu(); $('#tools-menu [data-tools-action]')?.focus({ preventScroll: true });
+  readOverlays();
 }
 
 function openToolPanel(section) {
@@ -798,6 +834,9 @@ function renderMeter() {
   if (drawer === 'analysis' && tab === 'training') updateTrainingLive();
   renderLatency();
   renderCombatWarning();
+  renderSkillPopover();
+  renderPvp();
+  renderCombatChips();
   renderCubeLive();
   renderLiveTools();
   updateTeamLive();
@@ -1017,8 +1056,17 @@ function moduleSettingsContent() {
   return `<section class="module-settings" aria-labelledby="module-settings-title"><div class="record-top"><h3 id="module-settings-title" class="section-title">${tr ? 'Görünür modüller' : 'Visible modules'}</h3><span class="tag">${tr ? 'Kişisel görünüm' : 'Your view'}</span></div><p class="help">${tr ? 'Yalnız ilgilendiğin araçları göster. Başlıktaki modüller düğmesiyle her zaman geri dönebilirsin. Bu seçimler kayıt ve ses dinleme ayarlarını değiştirmez.' : 'Show the tools you use. The modules button in the header always lets you restore them. Display choices do not change capture or audio listening settings.'}</p><div class="button-row"><button type="button" class="action-button" data-action="modules-pets" aria-pressed="${petOnlyDisplay(prefs)}">${tr ? 'Yalnız pet' : 'Pets only'}</button><button type="button" class="action-button secondary" data-action="modules-all" aria-pressed="${Object.values(prefs.displayModules).every(Boolean)}">${tr ? 'Tüm modüller' : 'All modules'}</button></div><div class="module-options">${DISPLAY_MODULES.map(name => `<label class="check-field"><input type="checkbox" name="displayModule" value="${name}" ${prefs.displayModules[name] ? 'checked' : ''}>${labels[name]}</label>`).join('')}</div></section>`;
 }
 
+// The game sends ticket and item ids without names; the player names the ones they care about.
+function namesSettingsContent() {
+  const tr = prefs.locale === 'tr', ids = [];
+  for (const row of Array.isArray(state.resources?.tickets) ? state.resources.tickets.slice(0, 40) : []) if (Number.isSafeInteger(row?.ticket_id) && row.ticket_id !== 60000001 && !ids.some(entry => entry[0] === `ticket:${row.ticket_id}`)) ids.push([`ticket:${row.ticket_id}`, `${tr ? 'Bilet' : 'Ticket'} #${row.ticket_id}`]);
+  for (const row of state.tracker.gathered) ids.push([`item:${row.item}`, `${tr ? 'Eşya' : 'Item'} #${row.item}`]);
+  for (const key of Object.keys(prefs.idNames)) if (!ids.some(entry => entry[0] === key)) ids.push([key, key.startsWith('item:') ? `${tr ? 'Eşya' : 'Item'} #${key.slice(5)}` : `${tr ? 'Bilet' : 'Ticket'} #${key.slice(7)}`]);
+  return `<h3 class="section-title">${tr ? 'Bilet ve eşya adları' : 'Ticket and item names'}</h3><p class="help">${tr ? 'Oyun bilet ve eşyaları adsız, yalnızca numarayla gönderir. Önemsediklerine ad ver; Biletler ve Takip pencerelerinde görünür.' : 'The game sends tickets and items by number only. Name the ones you care about; they show in the Tickets and Tracker windows.'}</p>${ids.length ? `<form id="names-form">${ids.slice(0, 60).map(([key, caption]) => `<label class="field"><span>${esc(caption)}</span><input name="${esc(key)}" type="text" maxlength="40" value="${esc(prefs.idNames[key] || '')}"></label>`).join('')}<button type="submit" class="action-button">${tr ? 'Kaydet' : 'Save'}</button></form>` : `<p class="help">${tr ? 'Henüz bilet listesi ya da toplanan eşya gelmedi.' : 'No ticket list or gathered item yet.'}</p>`}`;
+}
+
 function combatSettingsContent() {
-  return `<label class="field"><span>${prefs.locale === 'tr' ? 'Kişisel rekor bildirimleri' : 'Personal best notices'}</span><select name="recordNotifications">${[['party', prefs.locale === 'tr' ? 'Ben ve takımım' : 'Me and my party'], ['self', prefs.locale === 'tr' ? 'Yalnız ben' : 'Only me'], ['off', prefs.locale === 'tr' ? 'Kapalı' : 'Off']].map(([id, label]) => `<option value="${id}" ${prefs.recordNotifications === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p class="help">${prefs.locale === 'tr' ? 'Rekorlar otomatik kaydedilir. Sessiz bildirim 4 saniye görünür; ayrıntıları Analiz → Rekorlar’da bulabilirsin.' : 'Records are saved automatically. The silent notice lasts 4 seconds; details are in Analysis → Personal bests.'}</p><label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
+  return `<label class="field"><span>${prefs.locale === 'tr' ? 'Kişisel rekor bildirimleri' : 'Personal best notices'}</span><select name="recordNotifications">${[['party', prefs.locale === 'tr' ? 'Ben ve takımım' : 'Me and my party'], ['self', prefs.locale === 'tr' ? 'Yalnız ben' : 'Only me'], ['off', prefs.locale === 'tr' ? 'Kapalı' : 'Off']].map(([id, label]) => `<option value="${id}" ${prefs.recordNotifications === id ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p class="help">${prefs.locale === 'tr' ? 'Rekorlar otomatik kaydedilir. Sessiz bildirim 4 saniye görünür; ayrıntıları Analiz → Rekorlar’da bulabilirsin.' : 'Records are saved automatically. The silent notice lasts 4 seconds; details are in Analysis → Personal bests.'}</p><label class="check-field"><input type="checkbox" name="autoTargetRoster" ${prefs.autoTargetRoster ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Vurduğum hedefin İlk 10 listesini otomatik göster' : 'Automatically show the target’s Top 10 contributors'}</label><p class="help">${prefs.locale === 'tr' ? 'Partide olman gerekmez. Liste yalnız o hedefe verilen, bağlantında alınan hasarı kapsar.' : 'No party is required. Only damage received on your connection to that target is included.'}</p><h3 class="section-title">${t('combatDetection')}</h3><p class="help">${t('combatHelp')}</p><form id="combat-form"><label class="field"><span>${t('combatSource')}</span><select name="source"><option value="hits" ${prefs.combatDetection.source === 'hits' ? 'selected' : ''}>${t('combatHits')}</option><option value="game" ${prefs.combatDetection.source === 'game' ? 'selected' : ''}>${t('combatGame')}</option></select></label>${field('seconds', 'combatSeconds', 'number', prefs.combatDetection.seconds, 'min="5" max="300"')}<p class="help">${t('combatLive')}: ${state.combat.game_in_combat === null ? t('combatUnknown') : state.combat.game_in_combat ? t('combatIn') : t('combatOut')}</p><button type="submit" class="action-button">${t('combatSave')}</button></form><label class="check-field"><input type="checkbox" name="ownHealth" ${prefs.alerts.ownHealth ? 'checked' : ''}>${t('ownHealthLabel')}</label><p class="help">${t('lethalHelp')}</p>${namesSettingsContent()}<h3 class="section-title">${t('bossSettings')}</h3><p class="help">${t('bossSettingsHelp')}</p><form id="boss-form">${state.targets.length ? state.targets.map(target => `<label class="check-field boss-choice"><input name="bossId" type="checkbox" value="${esc(target.id)}" ${target.is_boss ? 'checked' : ''}><span title="#${esc(target.id)}">${esc(target.name)}</span></label>`).join('') : empty('noTargets')}<button class="action-button" type="submit" ${state.targets.length ? '' : 'disabled'}>${t('saveBoss')}</button></form><div class="button-row">${button('open-alerts', 'alerts', '', true)}${button('open-training', 'training', '', true)}</div>`;
 }
 
 function captureDiagnosticsContent() {
@@ -1081,10 +1129,14 @@ async function performCaptureDiagnosticAction(actionName) {
   }
 }
 
+function captureSaveContent(tr) {
+  return `<h3 class="section-title">${tr ? 'Veri kaydı' : 'Data capture'}</h3><p class="help">${tr ? 'Son 2 dakikanın ham oyun verisini bu bilgisayara kaydeder; yeni bir özelliği gerçek veriyle geliştirmek için kullanılır. İçinde oyuncu adları ve sohbet bulunabilir. Kendin paylaşmadıkça hiçbir yere gönderilmez; en yeni 5 kayıt tutulur.' : 'Saves the last 2 minutes of raw game data on this computer so a feature can be built from real traffic. It may contain player names and chat. It is never sent anywhere unless you share it; the newest 5 captures are kept.'}</p><div class="field-grid"><label class="field"><span>${tr ? 'Ne oldu? (kısa not)' : 'What happened? (short note)'}</span><input name="captureLabel" type="text" maxlength="32" placeholder="${tr ? 'pvp, hasat, boss-buyu…' : 'pvp, gathering, boss-cast…'}" ${native ? '' : 'disabled'}></label></div><div class="button-row"><button type="button" class="action-button" data-action="save-capture" ${native ? '' : 'disabled'}>${tr ? 'Son 2 dakikayı kaydet' : 'Save the last 2 minutes'}</button></div><p class="help" id="capture-saved" aria-live="polite"></p>`;
+}
+
 function controlsContent() {
   const tr = prefs.locale === 'tr';
   const options = [['fullscreenOverlay', tr ? 'Tam ekran görünümünü aç' : 'Enable fullscreen view'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['compactStrip', tr ? 'Pencere ve HUD için tek satır kompakt görünüm' : 'One-line compact view for the window and HUD']];
-  return `${captureDiagnosticsContent()}<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Tam ekran seçeneği ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The fullscreen option opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p><details class="appearance-details"><summary>${tr ? 'Kısayollar' : 'Shortcuts'}</summary>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}</details>`;
+  return `${captureDiagnosticsContent()}<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Tam ekran seçeneği ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The fullscreen option opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p><details class="appearance-details"><summary>${tr ? 'Kısayollar' : 'Shortcuts'}</summary>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}</details>${captureSaveContent(tr)}`;
 }
 
 async function readRuntimeState() {
@@ -1172,7 +1224,7 @@ function renderCubeLive() {
   const net = view.network;
   // The game's own position data outranks stereo balance once the walking direction is known.
   setText($('#cube-nav-direction'), net.side ? `${net.side[0].toUpperCase()}${net.side.slice(1)}` : view.matched ? t({ left: 'cubeCueLeft', right: 'cubeCueRight', center: 'cubeCueBalanced', unknown: 'cubeCueUnknown' }[view.direction]) : net.near ? `${net.nearLabel} · ${net.distance}` : view.label);
-  $('#cube-nav-network').hidden = !net.near; $('#cube-nav-network').title = net.summary; setText($('#cube-nav-network-distance'), net.distance); setText($('#cube-nav-network-detail'), net.detail);
+  $('#cube-nav-network').hidden = !net.near; $('#cube-nav-network').title = net.summary; $('#cube-nav-kind').dataset.look = net.look || ''; $('#cube-nav-kind').dataset.taken = String(net.taken); setText($('#cube-nav-kind-name'), net.kind); setText($('#cube-nav-network-distance'), net.distance); setText($('#cube-nav-network-detail'), net.detail);
   setText($('#cube-nav-guidance'), net.side ? t('cubeWalkRelative') : view.sensitive && view.direction === 'unknown' ? (prefs.locale === 'tr' ? 'Zayıf sinyal · yön dinleniyor' : 'Faint signal · checking direction') : t('cubeStereoAmbiguity'));
   setText($('#cube-nav-trend'), view.matched ? view.trendLabel : net.near ? '' : t('cubeTurn'));
   setText($('#cube-nav-similarity'), view.similarity); setText($('#cube-nav-strength'), view.relativeStrength);
@@ -1482,15 +1534,106 @@ function renderEffectLists() {
   });
 }
 
+// Your skills over the list, like the skill overlay of the other meters: click the footer rate to
+// open it, click it again (or press Escape) to close it. It follows the live numbers.
+let skillPopoverOpen = false;
+function setSkillPopover(open) {
+  skillPopoverOpen = open;
+  if (open && pvpPopoverOpen) setPvpPopover(false);
+  $('#compact-summary').setAttribute('aria-expanded', String(open));
+  renderSkillPopover();
+}
+function renderSkillPopover() {
+  const host = $('#skill-popover');
+  host.hidden = !skillPopoverOpen;
+  if (!skillPopoverOpen) return;
+  const own = ownPlayer(state), tr = prefs.locale === 'tr';
+  const view = skillRows(own, state.personal_elapsed_ms || state.elapsed_ms, { limit: 5 });
+  const rows = view.rows.map(row => `<div class="skill-row" style="--share:${row.share.toFixed(3)}"><span class="skill-name" title="${esc(skillLabel(row.id))}">${esc(skillLabel(row.id))}</span><span class="skill-rate">${esc(rate(row.perSecond))}</span><span class="skill-share">${(row.share * 100).toFixed(1)}%</span><span class="skill-total">${esc(num(row.damage))}</span></div>`).join('');
+  const html = `<div class="skill-head"><strong>${tr ? 'Yeteneklerim' : 'My skills'}</strong><span>${esc(rate(view.total / view.seconds))} · ${esc(num(view.total))}</span><button type="button" class="icon-button" data-skill-popover="close" aria-label="${tr ? 'Kapat' : 'Close'}">×</button></div>${rows || `<p class="help">${tr ? 'Kendi hasarın alındığında yeteneklerin burada görünür.' : 'Your skills appear here once your own damage is received.'}</p>`}<div class="skill-foot">${view.more ? `<span>+${view.more}</span>` : '<span></span>'}<button type="button" class="text-button" data-skill-popover="all">${tr ? 'Tüm yetenekler ↗' : 'All skills ↗'}</button></div>`;
+  if (host._html !== html) { host.innerHTML = html; host._html = html; }
+}
+$('#compact-summary').addEventListener('click', () => setSkillPopover(!skillPopoverOpen));
+$('#compact-summary').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSkillPopover(!skillPopoverOpen); } });
+$('#skill-popover').addEventListener('click', event => {
+  const action = event.target.closest('[data-skill-popover]')?.dataset.skillPopover;
+  if (action === 'close') setSkillPopover(false);
+  else if (action === 'all') { const own = ownPlayer(state); if (own) selectedPlayer = own.id; setSkillPopover(false); snapshot = null; openDrawer('analysis', 'skills'); }
+});
+
+// PvP: your kills and deaths this session (the game's death notices), opened from the chip beside
+// the other tools, and opened by itself with the recap when you die.
+let pvpPopoverOpen = false, pvpSeenDeath = 0, pvpAutoCloseAt = 0;
+function setPvpPopover(open) {
+  pvpPopoverOpen = open;
+  if (open && skillPopoverOpen) setSkillPopover(false);
+  $('#pvp-chip').setAttribute('aria-expanded', String(open));
+  pvpAutoCloseAt = 0;
+  renderPvp();
+}
+function renderPvp() {
+  const pvp = state.pvp, tr = prefs.locale === 'tr', chip = $('#pvp-chip'), host = $('#pvp-popover');
+  const death = pvp.last_death?.at_ms || 0;
+  if (death && death !== pvpSeenDeath) {
+    // A new death: show the recap for twenty seconds unless something else is open.
+    const first = pvpSeenDeath === 0 && !pvp.deaths;
+    pvpSeenDeath = death;
+    if (!first && !drawer && !toolsOpen) { if (skillPopoverOpen) setSkillPopover(false); pvpPopoverOpen = true; pvpAutoCloseAt = Date.now() + 20000; $('#pvp-chip').setAttribute('aria-expanded', 'true'); }
+  }
+  if (pvpPopoverOpen && pvpAutoCloseAt && Date.now() > pvpAutoCloseAt) { pvpPopoverOpen = false; pvpAutoCloseAt = 0; chip.setAttribute('aria-expanded', 'false'); }
+  const active = pvp.kills + pvp.deaths > 0;
+  chip.hidden = !active && !pvpPopoverOpen;
+  setText(chip, `PvP ${pvp.kills}/${pvp.deaths}`);
+  chip.title = tr ? `${pvp.kills} öldürme · ${pvp.deaths} ölüm (bu oturum)` : `${pvp.kills} kills · ${pvp.deaths} deaths (this session)`;
+  host.hidden = !pvpPopoverOpen;
+  if (!pvpPopoverOpen) return;
+  const recap = deathRecap(pvp.last_death, { locale: prefs.locale, label: id => skillLabel(id) });
+  const stat = (value, label, title = '') => `<div${title ? ` title="${esc(title)}"` : ''}><b>${value}</b><small>${label}</small></div>`;
+  const rows = recap ? recap.skills.map(row => `<div class="skill-row" style="--share:${row.share.toFixed(3)}"><span class="skill-name" title="${esc(row.name)}">${esc(row.name)}</span><span class="skill-rate">${row.hits}×</span><span class="skill-share">${(row.share * 100).toFixed(0)}%</span><span class="skill-total">${esc(num(row.damage))}</span></div>`).join('') : '';
+  const html = `<div class="skill-head"><strong>PvP</strong><span>${tr ? 'bu oturum' : 'this session'}</span><button type="button" class="icon-button" data-pvp-popover="close" aria-label="${tr ? 'Kapat' : 'Close'}">×</button></div>
+    <div class="pvp-grid">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? (tr ? 'Asist, oyunun skor bildirimi ve parti listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party list.') : '')}</div>
+    ${recap ? `<div class="pvp-recap"><strong>${esc(recap.kind)}</strong><span>${esc(recap.line)}</span><small>${tr ? 'Son 10 sn alınan hasar' : 'Damage taken in the last 10 s'}: ${esc(num(recap.taken))}</small></div>${rows}` : `<p class="help">${tr ? 'Henüz bir oyuncuyla savaşmadın.' : 'No player fought yet.'}</p>`}`;
+  if (host._html !== html) { host.innerHTML = html; host._html = html; }
+}
+$('#pvp-chip').addEventListener('click', () => setPvpPopover(!pvpPopoverOpen));
+$('#pvp-popover').addEventListener('click', event => { if (event.target.closest('[data-pvp-popover=close]')) setPvpPopover(false); });
+
+// Boss frenzy countdown and your own health, as chips beside the other tools. The frenzy time comes
+// from the game on the server's clock and is shown only once that clock is known.
+function renderCombatChips() {
+  const tr = prefs.locale === 'tr', now = Date.now();
+  const frenzy = frenzyLabel(state.frenzy, { locale: prefs.locale, now }), chip = $('#frenzy-chip');
+  chip.hidden = !frenzy;
+  if (frenzy) {
+    setText(chip, frenzy.text); chip.dataset.urgent = String(frenzy.urgent);
+    chip.title = `${tr ? 'Boss öfkesi' : 'Boss frenzy'}${state.frenzy.target_name ? ` · ${state.frenzy.target_name}` : ''}\n${tr ? 'Oyunun bildirdiği süre' : 'Time reported by the game'}`;
+  }
+  const health = prefs.alerts.ownHealth ? state.own_health : null, hp = $('#hp-chip');
+  hp.hidden = !health;
+  if (health) {
+    const fraction = healthFraction(health);
+    setText(hp, `HP ${num(health.hp)}${fraction === null ? '' : ` · ${Math.round(fraction * 100)}%`}`);
+    hp.dataset.low = String(fraction !== null && fraction < 0.3);
+    hp.title = `${tr ? 'Canın' : 'Your health'}: ${fullNumber(health.hp)}${health.max_hp ? ` / ${fullNumber(health.max_hp)}` : ''}`;
+  }
+}
+
 function renderCombatWarning() {
-  const targeted = prefs.alerts.incomingWarnings ? ownTargetedWindups(state) : [];
-  const cast = targeted[0], warning = $('#combat-warning'); warning.hidden = !cast;
+  const now = Date.now();
+  // A cast aimed at you warns (and beeps) as before; the other monster casts about to land are
+  // shown without the warning colour when that is switched on.
+  const casts = bossCasts(state, now).filter(cast => cast.aimed ? prefs.alerts.incomingWarnings : prefs.alerts.bossCasts);
+  const cast = casts[0], warning = $('#combat-warning'); warning.hidden = !cast;
   if (!cast) return;
-  setText($('#combat-warning-text'), `${t('targeted')} · ${actorName(cast.actor_id)}`);
-  setText($('#combat-warning-time'), `${Math.max(0, (cast.expires_ms - Date.now()) / 1000).toFixed(1)} s`);
-  warning.title = `${t('serverObserved')} · ${skillLabel(cast.skill_id)}`;
-  const key = `${cast.actor_id}:${cast.skill_id}:${cast.started_ms}`;
-  if (key !== warnedWindup) { warnedWindup = key; beep(); }
+  const label = item => `${item.lethal ? `${t('lethal')} · ` : ''}${item.aimed ? `${t('targeted')} · ` : ''}${actorName(item.actor_id)} · ${skillLabel(item.skill_id || '?')}`;
+  warning.dataset.aimed = String(cast.aimed); warning.dataset.lethal = String(Boolean(cast.lethal));
+  setText($('#combat-warning-text'), `${label(cast)}${casts.length > 1 ? ` +${casts.length - 1}` : ''}`);
+  setText($('#combat-warning-time'), `${Math.max(0, (cast.expires_ms - now) / 1000).toFixed(1)} s`);
+  warning.title = `${casts.map(item => `${label(item)} · ${(Math.max(0, item.expires_ms - now) / 1000).toFixed(1)} s`).join('\n')}\n${t('serverObserved')}`;
+  if (cast.aimed) {
+    const key = `${cast.actor_id}:${cast.skill_id}:${cast.started_ms}`;
+    if (key !== warnedWindup) { warnedWindup = key; beep(); }
+  }
 }
 
 function characterDataEpoch() { return `${state.local_player_id ?? ''}:${petCollectionEpoch(state)}`; }
@@ -1827,7 +1970,7 @@ function plannerContent() {
 }
 
 function alertsContent() {
-  return `<p class="help">${t('alertHelp')}</p><form id="alerts-form">${field('dpsGoal', 'dpsGoal', 'number', prefs.alerts.dpsGoal, 'min="0" max="1000000000000"')}${field('eventLeadMinutes', 'eventLead', 'number', prefs.alerts.eventLeadMinutes, 'min="0" max="60"')}<label class="check-field"><input name="incomingWarnings" type="checkbox" ${prefs.alerts.incomingWarnings ? 'checked' : ''}>${t('incomingWarnings')}</label><label class="check-field"><input name="sound" type="checkbox" ${prefs.alerts.sound ? 'checked' : ''}>${t('sound')}</label><p class="help">${t('soundHelp')}</p><button type="submit" class="action-button">${t('savePlan')}</button></form><hr class="divider"><div id="alert-status" class="status-card"></div>`;
+  return `<p class="help">${t('alertHelp')}</p><form id="alerts-form">${field('dpsGoal', 'dpsGoal', 'number', prefs.alerts.dpsGoal, 'min="0" max="1000000000000"')}${field('eventLeadMinutes', 'eventLead', 'number', prefs.alerts.eventLeadMinutes, 'min="0" max="60"')}<label class="check-field"><input name="incomingWarnings" type="checkbox" ${prefs.alerts.incomingWarnings ? 'checked' : ''}>${t('incomingWarnings')}</label><label class="check-field"><input name="bossCasts" type="checkbox" ${prefs.alerts.bossCasts ? 'checked' : ''}>${t('bossCastsLabel')}</label><label class="check-field"><input name="sound" type="checkbox" ${prefs.alerts.sound ? 'checked' : ''}>${t('sound')}</label><p class="help">${t('soundHelp')}</p><button type="submit" class="action-button">${t('savePlan')}</button></form><hr class="divider"><div id="alert-status" class="status-card"></div>`;
 }
 
 function actualCooldownText(value) {
@@ -2030,6 +2173,8 @@ function selectDrawerTab(name) {
 
 function openDrawer(kind, requestedTab = 'overview') {
   if (toolsOpen) { closeTools(); }
+  if (pvpPopoverOpen) setPvpPopover(false);
+  if (skillPopoverOpen) setSkillPopover(false);
   if (kind === 'analysis') { const allowed = visibleAnalysisSections(ANALYSIS_SECTIONS, prefs); if (!allowed.length) { kind = 'settings'; requestedTab = 'appearance'; } else if (!allowed.includes(requestedTab)) requestedTab = allowed[0]; }
   if (!drawer) restoreFocus = document.activeElement;
   drawer = kind; tab = requestedTab;
@@ -2114,6 +2259,9 @@ function tickTimers() {
   for (const element of $$('[data-scheduled-time]')) { const event = scheduledEvents().find(event => event.id === element.dataset.scheduledTime), timing = event ? scheduleTiming(event) : null; setText(element, timing?.status === 'open' ? `${t('calendarOpen')} ${clockTime(timing.remainingMs)}` : timing ? clockTime(timing.remainingMs, true) : '—'); const next = element.closest('.schedule-card')?.querySelector('[data-scheduled-next]'); if (next) setText(next, `${t(timing?.status === 'open' ? 'calendarCloses' : 'calendarNext')}: ${timing ? dateText(timing.status === 'open' ? timing.closesAt : timing.nextOpening) : '—'}`); }
   renderLatency();
   renderCombatWarning();
+  renderSkillPopover();
+  renderPvp();
+  renderCombatChips();
   renderCubeLive();
   renderLiveTools();
   updateTeamLive();
@@ -2135,6 +2283,7 @@ $('#tools-menu').addEventListener('click', async event => {
 });
 $('#tools-menu').addEventListener('change', event => {
   const input = event.target, panel = input.dataset.hudPanel, field = input.dataset.toolsField;
+  if (input.dataset.overlayPanel) { toggleOverlay(input.dataset.overlayPanel, input.checked); return; }
   if (panel === 'dps') savePreferences({ displayModules: { ...prefs.displayModules, dps: input.checked } });
   else if (panel === 'radar') savePreferences({ radarOpen: input.checked, ...(input.checked && !prefs.displayModules.dps && !prefs.displayModules.pets ? { displayModules: { ...prefs.displayModules, pets: true } } : {}) });
   else if (HUD_PANELS.includes(panel)) savePreferences({ ...(prefs.layout !== 'cupertino' ? { displayModules: { ...prefs.displayModules, [panel]: input.checked } } : hudPanelChange(prefs, panel, input.checked)), ...(panel === 'pets' && !prefs.displayModules.dps && !input.checked ? { displayModules: { ...prefs.displayModules, pets: false } } : {}), ...(panel === 'pets' && input.checked ? { showPetTracker: true } : {}) });
@@ -2238,6 +2387,8 @@ $('#resize-button').addEventListener('keydown', event => {
 });
 document.addEventListener('pointerdown', enableAudio, { passive: true });
 document.addEventListener('keydown', event => {
+  if (skillPopoverOpen && !drawer && !toolsOpen && event.key === 'Escape') { event.preventDefault(); setSkillPopover(false); return; }
+  if (pvpPopoverOpen && !drawer && !toolsOpen && event.key === 'Escape') { event.preventDefault(); setPvpPopover(false); return; }
   if (toolsOpen && !drawer) {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeTools(); return; }
     if (event.key === 'Tab') { const target = focusBoundary(modalControls($('#tools-menu')), document.activeElement, event.shiftKey); if (target) { event.preventDefault(); target.focus(); } }
@@ -2303,6 +2454,7 @@ $('#drawer-content').addEventListener('change', async event => {
   }
   if (['targetFontSize', 'numberPrecision'].includes(name)) { const patch = numericPreferenceEdit(name, element.value); if (patch) savePreferences(patch); element.value = prefs[name]; return; }
   if (['locale', 'font', 'targetFont', 'textScale', 'opacity', 'activeEventId', 'density', 'rowMetric', 'summaryMetric', 'damageScope', 'rowColorMode', 'recordNotifications'].includes(name)) { savePreferences({ [name]: element.value }); if (name === 'locale') refreshDrawer(name); if (name === 'activeEventId') syncCalendarSelection(); return; }
+  if (name === 'ownHealth') { savePreferences({ alerts: { ...prefs.alerts, ownHealth: element.checked } }); return; }
   if (['showTargetName', 'showTargetHealth', 'showClass', 'showShares', 'showTeamCooldowns', 'autoTargetRoster'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (['eventReminderEnabled', 'eventReminderLead'].includes(name)) { const key = name === 'eventReminderEnabled' ? 'reminderEnabled' : 'reminderLeadMinutes'; savePreferences({ events: prefs.events.map(timer => timer.id === element.dataset.eventId ? { ...timer, [key]: name === 'eventReminderEnabled' ? element.checked : Number(element.value) } : timer) }); if (name === 'eventReminderLead') element.value = prefs.events.find(timer => timer.id === element.dataset.eventId)?.reminderLeadMinutes ?? 5; return; }
   if (['builtInReminderEnabled', 'builtInReminderLead'].includes(name)) { const id = element.dataset.eventId, current = prefs.builtInReminders[id] || { enabled: false, leadMinutes: 5 }; savePreferences({ builtInReminders: { ...prefs.builtInReminders, [id]: { ...current, [name === 'builtInReminderEnabled' ? 'enabled' : 'leadMinutes']: name === 'builtInReminderEnabled' ? element.checked : Number(element.value) } } }); const lead = element.closest('.schedule-card')?.querySelector('[name=builtInReminderLead]'); if (lead) { lead.disabled = !prefs.builtInReminders[id].enabled; if (name === 'builtInReminderLead') lead.value = prefs.builtInReminders[id].leadMinutes; } return; }
@@ -2417,6 +2569,14 @@ $('#drawer-content').addEventListener('click', async event => {
     let link; try { link = communityShareLink(await invoke('get_share_link', { id }), share.visibility); if (!link) throw new Error('Invalid share link'); } catch { toast(t('failed'), true); return; }
     if (actionName === 'open-community') await openCommunityUrl(link, share.visibility);
     else { try { if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable'); await navigator.clipboard.writeText(link); toast(communityLabels[prefs.locale].copied); } catch { if (share.visibility === 'private') { const field = document.createElement('textarea'); field.className = 'private-copy-field'; field.readOnly = true; field.value = link; field.setAttribute('aria-label', t('selectToCopy')); $('#drawer-content').append(field); field.focus(); field.select(); field.addEventListener('blur', () => { field.value = ''; field.remove(); }, { once: true }); toast(t('selectToCopy')); } else { const field = $$('[data-community-url]').find(element => element.dataset.communityUrl === id); field?.focus(); field?.select(); toast(t('selectToCopy')); } } }
+    return;
+  }
+  if (actionName === 'save-capture') {
+    const label = $('[name=captureLabel]')?.value ?? '';
+    try {
+      const path = await action('save_capture', { label, seconds: 120 });
+      if (path) { setText($('#capture-saved'), `${prefs.locale === 'tr' ? 'Kaydedildi' : 'Saved'}: ${path}`); toast(t('saved')); }
+    } catch { /* action already told the user why */ }
     return;
   }
   if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
@@ -2548,7 +2708,9 @@ $('#drawer-content').addEventListener('submit', async event => {
   if (form.id === 'equipment-form') { if (!values.equipmentName.trim()) { toast(t('invalidEquipment'), true); return; } savePreferences({ equipment: [...prefs.equipment, { id: uid(), name: values.equipmentName.trim(), note: values.note }] }); refreshDrawer(); toast(t('saved')); }
   if (form.id === 'cooldown-form') { const seconds = Number(values.seconds); if (!values.cooldownName.trim() || seconds < 1 || seconds > 86400 || !Number.isFinite(seconds)) { toast(t('invalidPlanner'), true); return; } savePreferences({ manualCooldowns: [...prefs.manualCooldowns, { id: uid(), name: values.cooldownName.trim(), seconds, startedAt: 0 }] }); refreshDrawer(); toast(t('saved')); }
   if (form.id === 'odyle-form') { savePreferences({ odyle: values }); toast(t('saved')); tickTimers(); }
-  if (form.id === 'alerts-form') { savePreferences({ alerts: { ...values, sound: values.sound === 'on', incomingWarnings: values.incomingWarnings === 'on' } }); enableAudio(); toast(t('saved')); tickTimers(); }
+  if (form.id === 'alerts-form') { savePreferences({ alerts: { ...values, sound: values.sound === 'on', incomingWarnings: values.incomingWarnings === 'on', bossCasts: values.bossCasts === 'on', ownHealth: prefs.alerts.ownHealth } }); enableAudio(); toast(t('saved')); tickTimers(); }
+  if (form.id === 'names-form') { dirtySettingsForms.delete(form.id); const names = { ...prefs.idNames }; for (const [key, value] of Object.entries(values)) { if (!/^(ticket|item):/.test(key)) continue; if (String(value).trim()) names[key] = String(value); else delete names[key]; } savePreferences({ idNames: normalizeIdNames(names) }); refreshDrawer(); toast(t('saved')); }
+  if (form.id === 'combat-form') { dirtySettingsForms.delete(form.id); savePreferences({ combatDetection: normalizeCombatDetection({ source: values.source, seconds: Number(values.seconds) }) }); refreshDrawer(); toast(t('saved')); }
   if (form.id === 'boss-form') { const ids = new FormData(form).getAll('bossId').map(Number).filter(Number.isSafeInteger); try { if (native) await action('set_boss_targets', { ids }); else if (demo) state = normalizeState({ ...state, targets: state.targets.map(target => ({ ...target, is_boss: ids.includes(Number(target.id)) })) }); dirtySettingsForms.delete(form.id); if (native) await refreshState(); refreshDrawer(); toast(t('saved')); } catch {} }
 });
 
