@@ -227,3 +227,17 @@ test('the window sizes are small enough to shrink by hand but not below a usable
   assert.match(source, /function scaleToFit\(\)/); assert.match(source, /grewAt > 1500/, 'it grows at most now and then, and only when it would be unreadable');
   assert.match(source, /Math\.max\(0\.6,/);
 });
+
+test('a count above the plain Odyle cap shows the member cap: 840 is never "/ 560"', () => {
+  const resources = membership => ({ source: 'server-contents-ticket', actor_id: 7, awaiting_identity: false, ...(membership === undefined ? {} : { membership: { source: 'server-benefit-list', observed_at_ms: NOW - 1000, expires_at_ms: NOW + 86_400_000, active: membership } }),
+    odyle: { ticket_id: 60_000_001, base: 840, bonus: 40, total: 880, time_left_ms: 4_440_000, observed_at_ms: NOW - 1000 },
+    tickets: [{ ticket_id: 60_000_001, count: 840, bonus: 40, time_left_ms: 4_440_000, observed_at_ms: NOW }] });
+  for (const membership of [undefined, false, true]) {
+    const html = renderPanel('tickets', { state: normalizeState({ resources: resources(membership) }), now: NOW, locale: 'en' });
+    assert.match(html, /<b>840<\/b><em>\+40<\/em><small>\/ 840<\/small>/, String(membership));
+    assert.doesNotMatch(html, /\/ 560/);
+  }
+  // A count within the plain cap keeps the plain cap until the membership says otherwise.
+  const plain = resources(undefined); plain.odyle.base = 105; plain.odyle.total = 145; plain.tickets[0].count = 105;
+  assert.match(renderPanel('tickets', { state: normalizeState({ resources: plain }), now: NOW, locale: 'en' }), /<small>\/ 560<\/small>/);
+});

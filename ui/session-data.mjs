@@ -115,7 +115,10 @@ export function ticketRows(resources, { names = {}, caps = {}, now = Date.now(),
     const split = info ? splitTicketName(info.name) : { category: null, name: '' };
     const typedName = idLabel(names, 'ticket', id, '');
     const catalogCap = info ? (member && info.memberMax ? info.memberMax : info.max) : 0;
-    const cap = object(caps) && Number.isSafeInteger(caps[`ticket:${id}`]) ? caps[`ticket:${id}`] : catalogCap > 0 ? catalogCap : null;
+    const typedCap = object(caps) && Number.isSafeInteger(caps[`ticket:${id}`]) ? caps[`ticket:${id}`] : null;
+    // A count above the plain cap can only be a member's: when the membership was not seen, the count says it.
+    const inferred = typedCap === null && info?.memberMax && catalogCap > 0 && count > catalogCap && count <= info.memberMax ? info.memberMax : null;
+    const cap = typedCap ?? inferred ?? (catalogCap > 0 ? catalogCap : null);
     const name = typedName || split.name || `${tr ? 'Bilet' : 'Ticket'} #${id}`;
     return {
       id, name, category: split.category, named: Boolean(typedName || split.name), hero, count, bonus, cap, left_ms: left, rule: refillText(info, member === true, locale),

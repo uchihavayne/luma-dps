@@ -60,8 +60,9 @@ function render() {
 // the room it has, so made smaller it shrinks and still shows every row, made bigger it grows. Nothing
 // is cut, scrolled away or pulled back.
 const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map: 300, cooldowns: 300, actions: 300, rivals: 300 };
-let contentRevision = 0, fittedKey = '';
-let grewAt = 0;
+let contentRevision = 0, fittedKey = '', grewAt = 0;
+// The content is laid out as wide as the window allows and scaled as large as still shows all of it:
+// a wide window gets more columns, a narrow one a smaller scale, and neither leaves an empty margin.
 function scaleToFit() {
   if (marker) return;
   const body = $('#panel-body'), content = $('#panel-content'), look = getComputedStyle(body);
@@ -72,18 +73,23 @@ function scaleToFit() {
   const key = `${panel}:${contentRevision}:${Math.round(room.width)}x${Math.round(room.height)}`;
   if (key === fittedKey) return;
   fittedKey = key;
-  const design = DESIGN_WIDTH[panel] ?? 290;
-  content.style.zoom = '1'; content.style.width = `${design}px`; content.style.alignSelf = 'center';
-  const natural = Math.max(1, content.offsetHeight);
-  const widthZoom = room.width / design, zoom = Math.min(1.6, Math.max(0.6, Math.min(widthZoom, room.height / natural)));
-  content.style.zoom = String(zoom);
+  const design = DESIGN_WIDTH[panel] ?? 290, narrowest = Math.round(design * 0.85);
+  const heightAt = width => { content.style.zoom = '1'; content.style.width = `${width}px`; return Math.max(1, content.offsetHeight); };
+  const fits = scale => heightAt(Math.max(narrowest, room.width / scale)) * scale <= room.height + 0.5;
+  const high = Math.max(0.6, Math.min(1.6, room.width / narrowest));
+  let zoom = 0.6;
+  if (fits(high)) zoom = high;
+  else if (fits(0.6)) { let low = 0.6, up = high; for (let step = 0; step < 8; step += 1) { const mid = (low + up) / 2; if (fits(mid)) low = mid; else up = mid; } zoom = low; }
+  const layout = Math.max(narrowest, room.width / zoom), natural = heightAt(layout);
+  content.style.width = `${layout}px`; content.style.zoom = String(zoom); content.style.alignSelf = 'center';
   // Smaller than a readable scale never happens: what is left over scrolls, and the window grows once to
-  // show it all at the scale its width allows.
-  const fits = natural * zoom <= room.height + 1;
-  body.style.overflowY = fits ? 'hidden' : 'auto';
-  if (!fits && native && Date.now() - grewAt > 1500) {
+  // show it all at full scale.
+  const whole = natural * zoom <= room.height + 1;
+  body.style.overflowY = whole ? 'hidden' : 'auto';
+  if (!whole && native && Date.now() - grewAt > 1500) {
     grewAt = Date.now();
-    const chrome = innerHeight - room.height, wanted = Math.ceil(natural * Math.min(1, Math.max(0.6, widthZoom)) + chrome);
+    const chrome = innerHeight - room.height, wanted = Math.ceil(heightAt(Math.max(design, room.width)) + chrome);
+    content.style.width = `${layout}px`; content.style.zoom = String(zoom);
     invoke('overlay_fit', { height: Math.min(900 / scale, wanted) * scale }).catch(() => {});
   }
 }
