@@ -446,6 +446,58 @@ pub fn decode(frame: &[u8]) -> Result<Option<AssistEvent>, AssistError> {
     Ok(Some(event))
 }
 
+/// Flight points from a point update (`00 8d`): types 6 (current) and 13 (maximum), from either of
+/// its two groups (a type byte with a 32-bit or a 64-bit value). The health the same frame may carry
+/// is read by `decode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlightPoints {
+    pub actor_id: u64,
+    pub fp: Option<i64>,
+    pub fp_max: Option<i64>,
+}
+
+pub fn flight_points(frame: &[u8]) -> Option<FlightPoints> {
+    if frame.get(..2) != Some(&[0, 0x8d]) || frame.len() > MAX_FRAME {
+        return None;
+    }
+    let mut reader = Reader { bytes: frame, offset: 2 };
+    let actor_id = reader.actor().ok()?;
+    let format = reader.byte().ok()?;
+    if format == 0 || format & !3 != 0 {
+        return None;
+    }
+    let (mut fp, mut fp_max) = (None, None);
+    for (bit, wide) in [(1u8, false), (2, true)] {
+        if format & bit == 0 {
+            continue;
+        }
+        let count = usize::from(reader.byte().ok()?);
+        if count > 64 {
+            return None;
+        }
+        for _ in 0..count {
+            let kind = reader.byte().ok()?;
+            let value = if wide {
+                i64::from_le_bytes(reader.take().ok()?)
+            } else {
+                i64::from(i32::from_le_bytes(reader.take().ok()?))
+            };
+            match kind {
+                6 => fp = Some(value),
+                13 => fp_max = Some(value),
+                _ => {}
+            }
+        }
+    }
+    reader.end().ok()?;
+    let sane = |value: i64| (0..=1_000_000_000).contains(&value);
+    (fp.is_some_and(sane) || fp_max.is_some_and(sane)).then_some(FlightPoints {
+        actor_id,
+        fp: fp.filter(|value| sane(*value)),
+        fp_max: fp_max.filter(|value| sane(*value)),
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveCast {
     pub actor_id: u64,

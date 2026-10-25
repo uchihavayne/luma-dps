@@ -92,6 +92,12 @@ pub enum Event {
         id: u64,
         current: u64,
     },
+    /// Flight points (the time one can still fly) of a creature, from a point update.
+    Flight {
+        id: u64,
+        fp: Option<i64>,
+        fp_max: Option<i64>,
+    },
     Updates(Vec<Event>),
     /// Complete party membership, expressed as names rather than account ids.
     PartyRoster {
@@ -909,7 +915,15 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
         opcode,
         [9, 0x38] | [2, 0x38] | [0x2a, 0x38] | [0x2b, 0x38] | [0x2c, 0x38] | [0, 0x8d] | [5, 0xe0]
     ) {
-        return crate::assistance::decode(frame)
+        let flight = (opcode == [0, 0x8d])
+            .then(|| crate::assistance::flight_points(frame))
+            .flatten()
+            .map(|points| Event::Flight {
+                id: points.actor_id,
+                fp: points.fp,
+                fp_max: points.fp_max,
+            });
+        let decoded = crate::assistance::decode(frame)
             .map(|event| {
                 event.map(|event| {
                     let event = Event::Assistance(event);
@@ -921,6 +935,11 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
                 })
             })
             .map_err(|_| ReadError::Invalid);
+        return match (flight, decoded) {
+            (Some(flight), Ok(Some(event))) => Ok(Some(Event::Updates(vec![flight, event]))),
+            (Some(flight), _) => Ok(Some(flight)),
+            (None, decoded) => decoded,
+        };
     }
     if opcode == [1, 0x91] {
         return crate::field_boss::decode(frame)
@@ -1150,6 +1169,14 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
             if let Some(owner) = owner {
                 events.push(Event::Owner { id, owner });
             }
+            // A creature's health at the moment it appears, so a boss has a bar before anyone hits it.
+            if let Some((hp, hp_max)) = npc_vitals(frame, model_end) {
+                events.push(Event::Assistance(crate::assistance::AssistEvent::Health {
+                    actor_id: id,
+                    current_hp: Some(hp),
+                    reported_max_hp: Some(hp_max),
+                }));
+            }
             if let (Some(x), Some(y)) = (
                 frame.get(model_end + 2..model_end + 6),
                 frame.get(model_end + 6..model_end + 10),
@@ -1314,6 +1341,24 @@ pub fn decode(frame: &[u8]) -> Result<Option<Event>, ReadError> {
         })),
         _ => Ok(None),
     }
+}
+
+/// The creature state that follows a spawned NPC's description: flags, its place and heading, the
+/// optional extras those flags announce, whether it lives, then its health and its maximum health.
+/// Values that cannot be a health pool are dropped rather than shown.
+fn npc_vitals(frame: &[u8], state_start: usize) -> Option<(u64, u64)> {
+    let flags = u16::from_le_bytes(frame.get(state_start..state_start + 2)?.try_into().ok()?);
+    let mut at = state_start + 2 + 12 + 4 + 2;
+    for (bit, size) in [(1u16, 12usize), (2, 4), (4, 2), (8, 12), (16, 12), (32, 4)] {
+        if flags & bit != 0 {
+            at += size;
+        }
+    }
+    let mut offset = at + 1;
+    let hp = varint64(frame, &mut offset)?;
+    let hp_max = varint64(frame, &mut offset)?;
+    (100..=10_000_000_000_000).contains(&hp_max).then_some(())?;
+    (hp <= hp_max).then_some((hp, hp_max))
 }
 
 #[cfg(test)]

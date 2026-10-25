@@ -445,6 +445,26 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 .skill-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; font-size: 10px; color: var(--muted); }
 .skill-foot .text-button { font-size: 10px; padding: 2px 4px; }
 
+/* My skills, in the window itself: never a popover, never a second window. */
+.skill-board { container-type: inline-size; flex: 0 0 auto; margin: 0 9px 5px; padding: 6px 8px 5px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--text) 4%, transparent); }
+.skill-board[hidden] { display: none; }
+.board-head { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.board-head > strong { font-weight: 650; }
+.board-head > .board-total { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.board-head > .board-total b { color: var(--text); font-weight: 650; }
+.board-head > .icon-button { width: 18px; height: 18px; font-size: 13px; line-height: 1; transition: transform .15s ease; }
+.skill-board[data-collapsed=true] .board-head > .icon-button { transform: rotate(180deg); }
+.board-rows { margin-top: 5px; }
+.skill-board .skill-row { min-height: 22px; margin-bottom: 2px; font-size: 11.5px; grid-template-columns: minmax(0, 1fr) 52px 42px 52px; gap: 5px; }
+@container (max-width: 340px) { .skill-board .skill-row { grid-template-columns: minmax(0, 1fr) 52px 52px; } .skill-board .skill-share { display: none; } }
+@container (max-width: 260px) { .skill-board .skill-row { grid-template-columns: minmax(0, 1fr) 52px; } .skill-board .skill-total { display: none; } }
+.skill-board .skill-name { display: flex; align-items: center; gap: 6px; }
+.skill-board .skill-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-board .skill-name .game-icon { flex: none; border-radius: 4px; }
+.skill-board .skill-rate, .skill-board .skill-share, .skill-board .skill-total { text-align: right; font-variant-numeric: tabular-nums; }
+.board-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; font-size: 10px; color: var(--muted); }
+.board-foot .text-button { font-size: 10px; padding: 2px 4px; }
+
 /* The Cube's own icon, drawn here: red or gold, dimmed once it has been opened. */
 .cube-nav-kind { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 1px; }
 .cube-nav-kind > svg { width: 18px; height: 18px; flex: 0 0 auto; filter: drop-shadow(0 1px 2px #0008); }
@@ -467,7 +487,7 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 .pvp-recap > small { color: var(--muted); }
 
 /* The tools row shows in the Clear layout when the PvP chip has something to say. */
-#meter[data-layout=cupertino]:has(:is(#pvp-chip, #frenzy-chip, #hp-chip):not([hidden])) > .live-tools { display: flex; gap: 6px; padding: 0 12px 5px; flex: 0 0 auto; }
+#meter[data-layout=cupertino]:has(:is(#pvp-chip, #frenzy-chip, #hp-chip, #control-chip):not([hidden])) > .live-tools { display: flex; gap: 6px; padding: 0 12px 5px; flex: 0 0 auto; }
 
 /* Boss frenzy countdown, own health and a lethal cast. */
 #frenzy-chip, #hp-chip { font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -476,3 +496,15 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #frenzy-chip[data-urgent=true] { color: #ffb36b; border-color: color-mix(in srgb, #ffb36b 55%, transparent); }
 #hp-chip[data-low=true] { color: #ff8e8e; border-color: color-mix(in srgb, #ff8e8e 55%, transparent); }
 .combat-warning[data-lethal=true] { border-color: #ff6b6b; background: color-mix(in srgb, #ff6b6b 20%, transparent); color: var(--text); font-weight: 600; }
+
+/* Loss of control: a red chip beside the other tools. */
+#control-chip { font-size: 11px; font-weight: 700; letter-spacing: .04em; font-variant-numeric: tabular-nums; color: #ff8e8e; border-color: color-mix(in srgb, #ff6b6b 65%, transparent); background: color-mix(in srgb, #ff6b6b 18%, transparent); }
+#meter[data-layout=cupertino] #control-chip { display: inline-flex; }
+#control-chip[hidden] { display: none !important; }
+
+/* The share heading is placed over its column by the meter when the rows have one. */
+.clear-column-headings > #column-share { display: none; }
+
+/* The dock's Cube is the game's picture. */
+.cube-nav-art { display: block; width: 22px; height: 22px; flex: 0 0 auto; object-fit: contain; filter: drop-shadow(0 1px 3px #000a); }
+.cube-nav-kind[data-look=''] > .cube-nav-art, .cube-nav-art:not([src]) { display: none; }

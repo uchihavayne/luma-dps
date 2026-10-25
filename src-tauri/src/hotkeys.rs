@@ -17,6 +17,8 @@ pub enum Action {
     Settings,
     CopySummary,
     ToggleFullscreen,
+    /// Opens (and closes) the window that lists every detached window, like the other meters' Alt+E.
+    OverlayControls,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -43,7 +45,26 @@ pub fn default_bindings() -> Vec<Binding> {
         shortcut: format!("Ctrl+Alt+Shift+{key}"),
         enabled: true,
     })
+    .chain([overlay_controls_binding()])
     .collect()
+}
+
+/// Alt+E, the one shortcut that may use a single modifier: it only opens a window, and it is the way
+/// back to the detached windows when they let every click through.
+pub fn overlay_controls_binding() -> Binding {
+    Binding {
+        action: Action::OverlayControls,
+        shortcut: "Alt+E".into(),
+        enabled: true,
+    }
+}
+
+/// Older saved lists have no Alt+E; add it once. A list that has the action keeps what it says.
+pub fn with_overlay_controls(mut bindings: Vec<Binding>) -> Vec<Binding> {
+    if !bindings.iter().any(|binding| binding.action == Action::OverlayControls) {
+        bindings.push(overlay_controls_binding());
+    }
+    bindings
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -71,8 +92,8 @@ pub fn normalize_bindings(bindings: Vec<Binding>) -> Result<Vec<Binding>, String
 }
 
 fn parse_bindings(bindings: Vec<Binding>) -> Result<Vec<Parsed>, String> {
-    if bindings.len() > 7 {
-        return Err("At most seven global hotkeys are supported".into());
+    if bindings.len() > 8 {
+        return Err("At most eight global hotkeys are supported".into());
     }
     let mut actions = BTreeSet::new();
     let mut keys = BTreeSet::new();
@@ -90,7 +111,8 @@ fn parse_bindings(bindings: Vec<Binding>) -> Result<Vec<Parsed>, String> {
             continue;
         }
         let parts: Vec<_> = binding.shortcut.split('+').map(str::trim).collect();
-        if !(3..=4).contains(&parts.len()) {
+        let least = if binding.action == Action::OverlayControls { 2 } else { 3 };
+        if !(least..=4).contains(&parts.len()) {
             return Err("Use two or three modifiers plus a key, such as Ctrl+Alt+F7".into());
         }
         let mut modifiers = 0;
@@ -454,7 +476,19 @@ mod tests {
             binding(Action::Reset, "Ctrl+Alt+F8")
         ])
         .is_err());
-        assert_eq!(normalize_bindings(default_bindings()).unwrap().len(), 7);
+        assert_eq!(normalize_bindings(default_bindings()).unwrap().len(), 8);
+    }
+    #[test]
+    fn only_the_overlay_controls_may_use_a_single_modifier() {
+        assert!(normalize_bindings(vec![binding(Action::OverlayControls, "Alt+E")]).is_ok());
+        assert!(normalize_bindings(vec![binding(Action::OverlayControls, "E")]).is_err());
+        assert!(normalize_bindings(vec![binding(Action::Reset, "Alt+E")]).is_err());
+        let older = with_overlay_controls(default_bindings().into_iter().filter(|value| value.action != Action::OverlayControls).collect());
+        assert_eq!(older.len(), 8);
+        assert_eq!(older.last().unwrap().shortcut, "Alt+E");
+        let kept = with_overlay_controls(vec![Binding { enabled: false, ..overlay_controls_binding() }]);
+        assert_eq!(kept.len(), 1);
+        assert!(!kept[0].enabled, "a switched-off Alt+E stays off");
     }
     #[derive(Default)]
     struct Fake {
@@ -515,7 +549,7 @@ mod tests {
             parse_bindings(default_bindings()).unwrap(),
         )
         .unwrap();
-        assert_eq!(registrar.active.len(), 7);
+        assert_eq!(registrar.active.len(), 8);
         let disabled = default_bindings()
             .into_iter()
             .map(|mut value| {

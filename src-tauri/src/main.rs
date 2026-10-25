@@ -141,6 +141,7 @@ fn configured_hotkeys(preferences: &Preferences) -> Vec<hotkeys::Binding> {
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .and_then(|bindings| hotkeys::normalize_bindings(bindings).ok())
         .unwrap_or_else(hotkeys::default_bindings);
+    let mut bindings = hotkeys::with_overlay_controls(bindings);
     // Older configurations contain six actions. Add the new rescue once;
     // an explicitly disabled rescue remains disabled.
     if !bindings
@@ -186,7 +187,7 @@ fn set_hotkeys(
     runtime: State<Arc<HotkeyRuntime>>,
     bindings: Vec<hotkeys::Binding>,
 ) -> Result<Value, String> {
-    let bindings = hotkeys::normalize_bindings(bindings)?;
+    let bindings = hotkeys::normalize_bindings(hotkeys::with_overlay_controls(bindings))?;
     let _change = shared
         .preference_change
         .lock()
@@ -441,6 +442,7 @@ fn handle_global_hotkey(
             let _ = window.set_focus();
         }
         hotkeys::Action::CopySummary => {}
+        hotkeys::Action::OverlayControls => overlays::toggle_controls(app),
         hotkeys::Action::ToggleFullscreen => {
             let runtime = app
                 .try_state::<Arc<HotkeyRuntime>>()
@@ -1567,22 +1569,27 @@ mod shell_tests {
     }
 
     #[test]
-    fn older_shortcuts_gain_only_the_new_fullscreen_rescue_and_explicit_disable_survives() {
+    fn older_shortcuts_gain_only_the_new_fullscreen_rescue_and_overlay_controls_and_explicit_disable_survives() {
         let mut preferences = Preferences::default();
         let old: Vec<_> = hotkeys::default_bindings()
             .into_iter()
-            .filter(|binding| binding.action != hotkeys::Action::ToggleFullscreen)
+            .filter(|binding| {
+                !matches!(binding.action, hotkeys::Action::ToggleFullscreen | hotkeys::Action::OverlayControls)
+            })
             .collect();
         preferences
             .extra
             .insert("hotkeys".into(), serde_json::to_value(&old).unwrap());
         let migrated = configured_hotkeys(&preferences);
         assert_eq!(&migrated[..6], &old);
-        assert_eq!(migrated.len(), 7);
-        assert_eq!(migrated[6].action, hotkeys::Action::ToggleFullscreen);
-        assert_eq!(migrated[6].shortcut, "Ctrl+Alt+Shift+F5");
+        assert_eq!(migrated.len(), 8);
+        let find = |action| migrated.iter().find(|binding| binding.action == action).unwrap();
+        assert_eq!(find(hotkeys::Action::ToggleFullscreen).shortcut, "Ctrl+Alt+Shift+F5");
+        assert_eq!(find(hotkeys::Action::OverlayControls).shortcut, "Alt+E");
         let mut disabled = migrated;
-        disabled[6].enabled = false;
+        for binding in disabled.iter_mut().filter(|binding| matches!(binding.action, hotkeys::Action::ToggleFullscreen | hotkeys::Action::OverlayControls)) {
+            binding.enabled = false;
+        }
         preferences
             .extra
             .insert("hotkeys".into(), serde_json::to_value(&disabled).unwrap());
@@ -4059,6 +4066,15 @@ fn main() {
             overlays::list_overlays,
             overlays::overlay_drag,
             overlays::overlay_resize,
+            overlays::overlay_fit,
+            overlays::cube_marker_edit,
+            overlays::overlay_options,
+            overlays::overlay_controls,
+            overlays::overlay_lock,
+            overlays::overlay_locked,
+            overlays::overlay_reload,
+            overlays::overlay_preference,
+            overlays::overlay_show_main,
             set_boss_targets,
             set_locked,
             start_resize,
@@ -4305,6 +4321,10 @@ fn main() {
                         panels.flush(false);
                     }
                     if let Ok(state) = snapshot(&shared) {
+                        overlays::sync_combat(
+                            &handle,
+                            state.get("encounter_active").and_then(Value::as_bool) == Some(true),
+                        );
                         let _ = handle.emit("luma-state", state);
                     }
                     let calendar_update = shared.calendar.lock().ok().and_then(|calendar| {

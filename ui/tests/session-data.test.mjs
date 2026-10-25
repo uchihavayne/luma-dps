@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clockText, idLabel, normalizeIdNames, normalizeParty, normalizeTracker, partyFraction, ticketRows } from '../session-data.mjs';
+import { clockText, groupedNumber, idLabel, normalizeCurrencies, normalizeIdCaps, normalizeIdNames, normalizeParty, normalizeRoom, normalizeTracker, partyFraction, powerText, roomSummary, spanText, ticketRows } from '../session-data.mjs';
 import { normalizePvp } from '../pvp.mjs';
 import { normalizePreferences, normalizeState } from '../model.mjs';
 
@@ -18,8 +18,8 @@ test('party rows are bounded, deduplicated and refuse impossible health', () => 
 
 test('the tracker keeps real rows only and totals what it was not told', () => {
   const tracker = normalizeTracker({ kills: [{ model: 5, name: ' Boar ', count: 3 }, { model: 0, count: 1 }, { model: 6, count: 0 }, null], gathered: [{ item: 9, count: 2 }, { item: 'x', count: 1 }] });
-  assert.deepEqual(tracker, { kills: [{ model: 5, name: 'Boar', count: 3 }], kills_total: 3, gathered: [{ item: 9, count: 2 }] });
-  for (const value of [null, [], 'x', 7]) assert.deepEqual(normalizeTracker(value), { kills: [], kills_total: 0, gathered: [] });
+  assert.deepEqual(tracker, { kills: [{ model: 5, name: 'Boar', count: 3 }], kills_total: 3, gathered: [{ item: 9, count: 2 }], looted: [] });
+  for (const value of [null, [], 'x', 7]) assert.deepEqual(normalizeTracker(value), { kills: [], kills_total: 0, gathered: [], looted: [] });
   assert.equal(normalizeTracker(normalizeTracker({ kills: [{ model: 5, count: 3 }] })).kills_total, 3);
 });
 
@@ -37,7 +37,8 @@ test('names the player gave are limited to ticket and item ids and bounded', () 
 test('the ticket list counts down from when it was observed and drops empty tickets', () => {
   const now = 1_760_000_000_000;
   const rows = ticketRows({ source: 'server-contents-ticket', tickets: [{ ticket_id: 60_000_001, count: 5, bonus: 1, time_left_ms: 10_000, observed_at_ms: now - 4000 }, { ticket_id: 3, count: 0, bonus: 0, time_left_ms: 1000, observed_at_ms: now - 5000 }, { ticket_id: 4, count: 0, bonus: 0, time_left_ms: 0, observed_at_ms: now }] }, { now, locale: 'en' });
-  assert.deepEqual(rows.map(row => [row.name, row.count, row.bonus, row.left_ms]), [['Odyle', 5, 1, 6000]]);
+  assert.deepEqual(rows.map(row => [row.name, row.count, row.bonus, row.left_ms]), [['Odyle Energy', 5, 1, 6000], ['Nightmare Attempt Count', 0, 0, 0], ['Lower Abyss Access Hours', 0, 0, 0]]);
+  assert.equal(rows[1].category, 'Nightmare');
   for (const resources of [null, {}, { source: 'x', tickets: [] }, { source: 'server-contents-ticket', tickets: 'x' }, { source: 'server-contents-ticket', awaiting_identity: true, tickets: [{ ticket_id: 1, count: 1 }] }]) assert.deepEqual(ticketRows(resources, { now }), []);
   assert.equal(clockText(0), '0:00'); assert.equal(clockText(65_000), '1:05'); assert.equal(clockText(25_200_000), '7:00:00');
 });
@@ -51,4 +52,38 @@ test('assists stay unknown until the engine reports them and the new state field
   assert.equal(state.party[0].name, 'Mira'); assert.equal(state.tracker.kills_total, 2); assert.equal(state.pvp.assists, 3);
   const again = normalizeState(state);
   assert.deepEqual([again.party, again.tracker, again.pvp.assists], [state.party, state.tracker, 3]);
+});
+
+test('the room keeps real members, bounded fields and counts the leader as ready', () => {
+  const room = normalizeRoom({ title: ' Fire\u0007 ', kind: 3, dungeon_id: 2_000_031, members: [
+    { id: '651614571085448170', name: 'Mira', server: 2315, class: 'Ranger', level: 45, gear_score: 2262, combat_power: 122_800, ready: false, leader: true, is_self: true },
+    { id: '651614571085448170', name: 'Dup', combat_power: 1 }, { id: '0', name: 'Zero' }, { id: '5', name: '' }, null,
+    { id: '7', name: 'Odd', class: 'Wizard', gear_score: 99_999_999, combat_power: -5, level: 'x', ready: 'yes' },
+    { id: '8', name: 'Ready', combat_power: 100_000, ready: true },
+  ] });
+  assert.equal(room.title, 'Fire'); assert.deepEqual(room.members.map(row => row.name), ['Mira', 'Odd', 'Ready']);
+  const odd = room.members[1];
+  assert.deepEqual([odd.class, odd.gear_score, odd.combat_power, odd.level, odd.ready], [null, 0, 0, 0, false]);
+  assert.deepEqual(roomSummary(room), { total: 3, ready: 2, average_power: 111_400 });
+  assert.deepEqual(roomSummary(null), { total: 0, ready: 0, average_power: null });
+  for (const value of [null, [], 'x', 7]) assert.equal(normalizeRoom(value), null);
+  assert.deepEqual(normalizeRoom(room), room);
+  assert.equal(normalizeRoom({ members: Array.from({ length: 80 }, (_, index) => ({ id: String(index + 1), name: `P${index}` })) }).members.length, 30);
+});
+
+test('currencies, caps, loot and the number formats', () => {
+  assert.deepEqual(normalizeCurrencies([{ item: 930_100_003, count: 5 }, { item: 930_100_001, count: 9 }, { item: 0, count: 1 }, { item: 4, count: 0 }, null]), [{ item: 930_100_001, count: 9 }, { item: 930_100_003, count: 5 }]);
+  assert.deepEqual(normalizeCurrencies('x'), []);
+  assert.deepEqual(normalizeIdCaps({ 'ticket:12': 14, 'ticket:13': 0, 'ticket:14': 1.5, 'item:1': 5, 'ticket:15': 'x', 'ticket:16': 100_000 }), { 'ticket:12': 14 });
+  assert.deepEqual(normalizeIdCaps(null), {});
+  assert.deepEqual(normalizePreferences({ idCaps: { 'ticket:12': 14 } }).idCaps, { 'ticket:12': 14 });
+  assert.equal(normalizeTracker({ looted: [{ item: 5, count: 3 }, { item: 6, count: 0 }] }).looted.length, 1);
+  assert.deepEqual(normalizeIdNames({ 'server:2315': 'KRO', 'server:0': 'No' }), { 'server:2315': 'KRO' });
+  assert.equal(powerText(122_800), '122.8K'); assert.equal(powerText(1_234_000), '1.23M'); assert.equal(powerText(0), '—'); assert.equal(powerText(NaN), '—');
+  assert.equal(groupedNumber(249_000), '249.000'); assert.equal(groupedNumber(249_000, 'en'), '249,000'); assert.equal(groupedNumber(NaN), '—');
+  assert.equal(spanText(12_993_000), '3h 36m'); assert.equal(spanText(25_200_000), '7h'); assert.equal(spanText(120_000), '2m'); assert.equal(spanText(1000), '1s'); assert.equal(spanText(59_000), '59s');
+  const rows = ticketRows({ source: 'server-contents-ticket', tickets: [{ ticket_id: 12, count: 14, bonus: 0, time_left_ms: 0, observed_at_ms: 1 }, { ticket_id: 3, count: 0, bonus: 0, time_left_ms: 5000, observed_at_ms: 1_760_000_000_000 }, { ticket_id: 60_000_001, count: 5, bonus: 0, time_left_ms: 0, observed_at_ms: 1 }] }, { now: 1_760_000_000_000, caps: { 'ticket:12': 14 } });
+  assert.deepEqual(rows.map(row => [row.id, row.hero, row.kind, row.cap]), [[60_000_001, true, 'count', 560], [3, false, 'time', null]]);
+  const chosen = ticketRows({ source: 'server-contents-ticket', tickets: [{ ticket_id: 12, count: 14, bonus: 0, time_left_ms: 0, observed_at_ms: 1 }, { ticket_id: 1, count: 9, bonus: 5, time_left_ms: 0, observed_at_ms: 1 }] }, { now: 1_760_000_000_000, caps: { 'ticket:12': 14 }, shown: [12] });
+  assert.deepEqual(chosen.map(row => [row.id, row.cap]), [[12, 14]]);
 });

@@ -36,6 +36,14 @@ export function normalizeOwnHealth(value) {
   return { hp, max_hp: max && max >= hp ? max : null, observed_at_ms: count(value.observed_at_ms, Number.MAX_SAFE_INTEGER) ?? 0 };
 }
 
+// What is left of the time one can fly: points, the most there is, and how fast they run out.
+export function normalizeFlight(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fp = count(value.fp, 1e9), max = count(value.max, 1e9), drain = Number(value.drain_per_s);
+  if (fp === null) return null;
+  return { fp, max: max && max >= fp ? max : null, observed_at_ms: count(value.observed_at_ms, Number.MAX_SAFE_INTEGER) ?? 0, drain_per_s: Number.isFinite(drain) && drain > 0 && drain < 1e9 ? drain : null };
+}
+
 // "Öfke 1:05" until it applies, "Öfke!" for a few seconds once it has. The chip warns in the last
 // thirty seconds. Null when there is nothing to show.
 export function frenzyLabel(frenzy, { locale = 'tr', now = Date.now() } = {}) {

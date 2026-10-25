@@ -1,18 +1,18 @@
 const esc = value => String(value ?? '').replace(/[&<>"']/gu, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-export const HOTKEY_ACTIONS = ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen'];
+export const HOTKEY_ACTIONS = ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen', 'overlay-controls'];
 const labels = {
-  tr: ['Göster / gizle', 'Kilitle / aç', 'Duraklat / sürdür', 'Karşılaşmayı sıfırla', 'Ayarları aç', 'Özeti kopyala', 'Tam ekran / pencere'],
-  en: ['Show / hide', 'Lock / unlock', 'Pause / resume', 'Reset encounter', 'Open settings', 'Copy summary', 'Fullscreen / window'],
+  tr: ['Göster / gizle', 'Kilitle / aç', 'Duraklat / sürdür', 'Karşılaşmayı sıfırla', 'Ayarları aç', 'Özeti kopyala', 'Tam ekran / pencere', 'Pencere kontrolleri'],
+  en: ['Show / hide', 'Lock / unlock', 'Pause / resume', 'Reset encounter', 'Open settings', 'Copy summary', 'Fullscreen / window', 'Overlay controls'],
 };
 export function hotkeyDraft(rows) {
   return HOTKEY_ACTIONS.map((action, index) => {
     const row = (Array.isArray(rows) ? rows : []).find(item => item?.action === action);
-    return { action, shortcut: typeof row?.shortcut === 'string' ? row.shortcut.slice(0, 48) : `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`, enabled: row?.enabled !== false };
+    return { action, shortcut: typeof row?.shortcut === 'string' ? row.shortcut.slice(0, 48) : (index === 7 ? 'Alt+E' : `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`), enabled: row?.enabled !== false };
   });
 }
 export function renderHotkeys(state, { locale = 'tr', native = false, busy = false } = {}) {
   const tr = locale === 'tr';
-  return `<h3 class="section-title">${tr ? 'Genel kısayollar' : 'Global shortcuts'}</h3><p class="help">${tr ? 'Oyun öndeyken de çalışır. Ctrl, Alt, Shift arasından en az ikisi ve bir tuş kullan. Çakışan değişiklikler kaydedilmez.' : 'Works while the game is foreground. Use at least two of Ctrl, Alt, Shift plus a key. Conflicting changes are not saved.'}</p>${(state?.errors || []).slice(0, 6).map(error => `<p class="quality-warning">${esc(String(error).slice(0, 240))}</p>`).join('')}<form id="hotkey-form" class="hotkey-form">${hotkeyDraft(state?.bindings).map((row, index) => `<div class="hotkey-row"><label class="check-field"><input type="checkbox" name="enabled-${row.action}" ${row.enabled ? 'checked' : ''} ${!native || busy ? 'disabled' : ''}>${labels[tr ? 'tr' : 'en'][index]}</label><input type="text" aria-label="${labels[tr ? 'tr' : 'en'][index]}" name="shortcut-${row.action}" maxlength="48" value="${esc(row.shortcut)}" spellcheck="false" ${!native || busy ? 'disabled' : ''}></div>`).join('')}<button type="submit" class="action-button" ${!native || busy ? 'disabled' : ''}>${tr ? 'Kısayolları kaydet' : 'Save shortcuts'}</button></form>`;
+  return `<h3 class="section-title">${tr ? 'Genel kısayollar' : 'Global shortcuts'}</h3><p class="help">${tr ? 'Oyun öndeyken de çalışır. Ctrl, Alt, Shift arasından en az ikisi ve bir tuş kullan; yalnızca Pencere kontrolleri tek tuşla (Alt+E) olabilir. Çakışan değişiklikler kaydedilmez.' : 'Works while the game is foreground. Use at least two of Ctrl, Alt, Shift plus a key; only Overlay controls may use one (Alt+E). Conflicting changes are not saved.'}</p>${(state?.errors || []).slice(0, 6).map(error => `<p class="quality-warning">${esc(String(error).slice(0, 240))}</p>`).join('')}<form id="hotkey-form" class="hotkey-form">${hotkeyDraft(state?.bindings).map((row, index) => `<div class="hotkey-row"><label class="check-field"><input type="checkbox" name="enabled-${row.action}" ${row.enabled ? 'checked' : ''} ${!native || busy ? 'disabled' : ''}>${labels[tr ? 'tr' : 'en'][index]}</label><input type="text" aria-label="${labels[tr ? 'tr' : 'en'][index]}" name="shortcut-${row.action}" maxlength="48" value="${esc(row.shortcut)}" spellcheck="false" ${!native || busy ? 'disabled' : ''}></div>`).join('')}<button type="submit" class="action-button" ${!native || busy ? 'disabled' : ''}>${tr ? 'Kısayolları kaydet' : 'Save shortcuts'}</button></form>`;
 }
 export function updatePresentation(value = {}) {
   const status = ['idle', 'checking', 'available', 'current', 'downloading', 'downloaded', 'installing', 'error'].includes(value.status) ? value.status : 'idle';

@@ -10,10 +10,11 @@
 </head>
 <body>
   <main id="panel" class="panel" role="region" aria-live="polite">
-    <header id="panel-drag" class="panel-head"><strong id="panel-title">Luma</strong><button id="panel-close" class="panel-close" type="button" aria-label="Kapat">×</button></header>
-    <section id="panel-body" class="panel-body"></section>
+    <header id="panel-drag" class="panel-head"><strong id="panel-title">Luma</strong><button id="panel-reload" class="panel-close" type="button" aria-label="Yenile" title="Yenile">⟳</button><button id="panel-close" class="panel-close" type="button" aria-label="Kapat">×</button></header>
+    <section id="panel-body" class="panel-body"><div id="panel-content" class="panel-content"></div></section>
     <button id="panel-resize" class="panel-resize" type="button" aria-label="Boyutlandır" tabindex="-1"></button>
   </main>
+  <div id="edit-bar" class="edit-bar"><span id="edit-hint"></span><button id="edit-done" type="button"></button></div>
   <script type="module" src="overlay-window.mjs"></script>
 </body>
 </html>

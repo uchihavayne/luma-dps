@@ -159,6 +159,11 @@ fn a_large_number_of_repeated_hits_keeps_one_aggregate_bucket() {
     assert_eq!(state.total_damage, 250_000);
     assert_eq!(state.players[0].skills.len(), 1);
     assert_eq!(state.players[0].skills[0].hits, 250_000);
+    // The state is as big as one hit makes it plus a few digits, however many hits were repeated;
+    // a fixed byte budget would fail every time the state gains an honest field.
     let encoded = serde_json::to_vec(&state).unwrap();
-    assert!(encoded.len() < 4096);
+    let mut single = MeterEngine::default();
+    single.ingest_event(hit(1, 10, 1), 0);
+    let baseline = serde_json::to_vec(&single.live_state(1)).unwrap();
+    assert!(encoded.len() < baseline.len() + 256, "{} bytes for 250,000 hits against {} for one", encoded.len(), baseline.len());
 }

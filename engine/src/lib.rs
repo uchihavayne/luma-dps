@@ -2,6 +2,9 @@ pub mod assistance;
 pub mod character;
 pub mod cooldowns;
 pub mod cube;
+pub mod items;
+pub mod lobby;
+pub mod wire;
 pub mod field_boss;
 pub mod framing;
 pub mod latency;
@@ -221,6 +224,37 @@ pub struct PvpState {
     pub assists: Option<u32>,
     pub last_death: Option<DeathRecap>,
 }
+/// One member of the party finder room.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoomMemberFrame {
+    pub id: String,
+    pub name: String,
+    pub server: u16,
+    pub class: Option<String>,
+    pub level: u32,
+    pub gear_score: u32,
+    pub combat_power: u64,
+    pub ready: bool,
+    pub leader: bool,
+    pub is_self: bool,
+}
+/// The party finder room the local player is in.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoomFrame {
+    pub title: String,
+    pub kind: u8,
+    pub dungeon_id: u32,
+    pub members: Vec<RoomMemberFrame>,
+    pub observed_at_ms: u64,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CurrencyRow {
+    pub item: u32,
+    pub count: u64,
+}
 /// One party member's health as the game lists it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -252,6 +286,7 @@ pub struct Tracker {
     pub kills: Vec<KillRow>,
     pub kills_total: u32,
     pub gathered: Vec<GatheredRow>,
+    pub looted: Vec<GatheredRow>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -275,6 +310,8 @@ pub struct RecapSkill {
 }
 const RECAP_WINDOW_MS: u64 = 10_000;
 const MAX_BERSERK: usize = 64;
+/// The Hidden Cube keys (tradable, bound, bound): what opens a Cube.
+const CUBE_KEYS: [u32; 3] = [610_900_001, 630_900_003, 660_900_003];
 const MAX_INCOMING_SKILLS: usize = 512;
 
 /// How the meter decides an encounter is over.
@@ -295,6 +332,27 @@ pub struct Frenzy {
     pub target_name: Option<String>,
     pub at_ms: u64,
 }
+/// The player's flight points: what is left, the most there is, and how fast they run out while flying.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Flight {
+    pub fp: i64,
+    pub max: Option<i64>,
+    pub observed_at_ms: u64,
+    /// Points lost per second over the last updates; `None` when not flying (or no recent drain).
+    pub drain_per_s: Option<f64>,
+}
+#[derive(Clone, Copy, Debug, Default)]
+struct FlightSample {
+    fp: i64,
+    max: Option<i64>,
+    at: u64,
+    drain_per_s: f64,
+    drain_at: u64,
+}
+/// A drain older than this no longer says the player is flying.
+const FLIGHT_DRAIN_FRESH_MS: u64 = 4_000;
+const MAX_FLIGHT_ACTORS: usize = 64;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct OwnHealth {
@@ -442,10 +500,15 @@ pub struct MeterState {
     pub encounter_active: bool,
     pub pvp: PvpState,
     pub party: Vec<PartyFrame>,
+    pub room: Option<RoomFrame>,
+    pub currencies: Vec<CurrencyRow>,
+    /// How many Hidden Cube keys the player carries; unknown until the game has sent the item list.
+    pub cube_keys: Option<u64>,
     pub tracker: Tracker,
     pub combat: CombatInfo,
     pub frenzy: Option<Frenzy>,
     pub own_health: Option<OwnHealth>,
+    pub flight: Option<Flight>,
     pub local_player_id: Option<u64>,
     pub local_player_name: String,
     pub local_identity_source: String,
@@ -555,6 +618,12 @@ pub struct MeterEngine {
     cubes: cube::Tracker,
     idle_ms: u64,
     party: BTreeMap<u32, (packets::PartyVital, u64)>,
+    room: Option<(lobby::Room, u64)>,
+    stacks: HashMap<u64, (u32, u64)>,
+    stacks_known: bool,
+    flight: BTreeMap<u64, FlightSample>,
+    currencies: BTreeMap<u32, u64>,
+    looted: BTreeMap<u32, u64>,
     scores: BTreeMap<u64, packets::BattleScore>,
     own_hit: std::collections::HashSet<u64>,
     kills: BTreeMap<u32, u32>,
@@ -649,6 +718,12 @@ impl Default for MeterEngine {
             cubes: cube::Tracker::default(),
             idle_ms: IDLE_MS,
             party: BTreeMap::new(),
+            room: None,
+            stacks: HashMap::new(),
+            stacks_known: false,
+            flight: BTreeMap::new(),
+            currencies: BTreeMap::new(),
+            looted: BTreeMap::new(),
             scores: BTreeMap::new(),
             own_hit: Default::default(),
             kills: BTreeMap::new(),
@@ -1733,6 +1808,33 @@ impl MeterEngine {
                     );
                 }
             }
+            Event::Flight { id, fp, fp_max } => {
+                if self.flight.len() >= MAX_FLIGHT_ACTORS && !self.flight.contains_key(&id) {
+                    self.flight.clear();
+                }
+                let sample = self.flight.entry(id).or_default();
+                if let Some(max) = fp_max {
+                    sample.max = Some(max);
+                }
+                if let Some(points) = fp {
+                    let seen = sample.at != 0 && now > sample.at;
+                    if seen && points < sample.fp && now - sample.at <= 3_000 {
+                        let rate = (sample.fp - points) as f64 * 1000.0 / (now - sample.at) as f64;
+                        // Smooth over the last updates so one odd step does not swing the time left.
+                        sample.drain_per_s = if sample.drain_per_s > 0.0 && now - sample.drain_at <= FLIGHT_DRAIN_FRESH_MS {
+                            sample.drain_per_s * 0.6 + rate * 0.4
+                        } else {
+                            rate
+                        };
+                        sample.drain_at = now;
+                    } else if points >= sample.fp {
+                        sample.drain_per_s = 0.0;
+                    }
+                    sample.fp = points;
+                    sample.at = now;
+                }
+                self.dirty();
+            }
             Event::Health { id, current } => {
                 let entry = self.identities.entry(id).or_default();
                 entry.health_observed_at_ms = Some(now);
@@ -2225,6 +2327,12 @@ impl MeterEngine {
         self.server_offset = None;
         self.incoming_max.clear();
         self.party.clear();
+        self.room = None;
+        self.stacks.clear();
+        self.stacks_known = false;
+        self.flight.clear();
+        self.currencies.clear();
+        self.looted.clear();
         self.scores.clear();
         self.own_hit.clear();
         self.orphan_bound.clear();
@@ -2396,6 +2504,7 @@ impl MeterEngine {
         self.berserk.clear();
         self.kills.clear();
         self.gathered.clear();
+        self.looted.clear();
         self.own_hit.clear();
         self.last_death = None;
         self.recent_taken.clear();
@@ -2552,6 +2661,20 @@ impl MeterEngine {
         if let Some(record) = packets::death_record(payload) {
             self.observe_death(&record, now);
         }
+        if let Some(event) = lobby::decode(payload) {
+            self.observe_room(event, now);
+        }
+        if let Some(stacks) = items::inventory(payload) {
+            self.stacks.clear();
+            self.currencies.clear();
+            self.stacks_known = true;
+            for stack in stacks {
+                self.remember_stack(stack.key, stack.item, stack.count, false);
+            }
+        }
+        for change in items::changes(payload) {
+            self.remember_stack(change.key, change.item, change.count, change.loot);
+        }
         for member in packets::party_vitals(payload) {
             if self.party.len() >= 24 && !self.party.contains_key(&member.key) {
                 continue;
@@ -2582,6 +2705,97 @@ impl MeterEngine {
         }
     }
 
+    /// A stack of items changed. Loot is counted only as the growth of a stack the full list
+    /// already showed, so a reconnect or a move between bags never counts as loot.
+    fn remember_stack(&mut self, key: u64, item: u32, count: u64, loot: bool) {
+        let before = self.stacks.get(&key).map_or(0, |(_, held)| *held);
+        if loot && self.stacks_known && count > before {
+            if self.looted.len() < 512 || self.looted.contains_key(&item) {
+                let total = self.looted.entry(item).or_default();
+                *total = total.saturating_add(count - before);
+            }
+        }
+        if count == 0 {
+            self.stacks.remove(&key);
+        } else if self.stacks.len() < 30_000 || self.stacks.contains_key(&key) {
+            self.stacks.insert(key, (item, count));
+        }
+        if items::is_currency(item) {
+            self.currencies.insert(item, count);
+        }
+    }
+
+    fn own_name(&self) -> Option<&str> {
+        self.own_id
+            .and_then(|own| self.identities.get(&own))
+            .and_then(|row| row.name.as_deref())
+    }
+
+    fn observe_room(&mut self, event: lobby::RoomEvent, now: u64) {
+        match event {
+            lobby::RoomEvent::Group(room) => self.room = Some((room, now)),
+            lobby::RoomEvent::Joined(member) | lobby::RoomEvent::Updated(member) => {
+                if let Some((room, at)) = self.room.as_mut() {
+                    if let Some(index) = room.members.iter().position(|row| row.dbid == member.dbid) {
+                        room.members[index] = member;
+                    } else if room.members.len() < 30 {
+                        room.members.push(member);
+                    }
+                    *at = now;
+                }
+            }
+            lobby::RoomEvent::Ready { dbid, ready } => {
+                let own = self.own_name().map(str::to_owned);
+                if let Some((room, at)) = self.room.as_mut() {
+                    let target = room.members.iter_mut().find(|row| match dbid {
+                        Some(id) => row.dbid == id,
+                        None => own.as_deref() == Some(row.name.as_str()),
+                    });
+                    if let Some(row) = target {
+                        row.ready = ready;
+                        *at = now;
+                    }
+                }
+            }
+            lobby::RoomEvent::Left => self.room = None,
+        }
+    }
+
+    fn room_frame(&self) -> Option<RoomFrame> {
+        let (room, at) = self.room.as_ref()?;
+        let own = self.own_name();
+        Some(RoomFrame {
+            title: room.title.clone(),
+            kind: room.kind,
+            dungeon_id: room.dungeon_id,
+            observed_at_ms: *at,
+            members: room
+                .members
+                .iter()
+                .map(|member| RoomMemberFrame {
+                    id: member.dbid.to_string(),
+                    name: member.name.clone(),
+                    server: member.server,
+                    class: lobby::class_name(member.class_id).map(str::to_owned),
+                    level: member.level,
+                    gear_score: member.gear_score,
+                    combat_power: member.combat_power,
+                    ready: member.ready,
+                    leader: member.dbid == room.leader,
+                    is_self: own == Some(member.name.as_str()),
+                })
+                .collect(),
+        })
+    }
+
+    fn currency_rows(&self) -> Vec<CurrencyRow> {
+        self.currencies
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(item, count)| CurrencyRow { item: *item, count: *count })
+            .collect()
+    }
+
     fn party_frames(&self) -> Vec<PartyFrame> {
         let mut frames: Vec<PartyFrame> = self
             .party
@@ -2603,7 +2817,16 @@ impl MeterEngine {
     /// player has been seen in a party list, which is where the character id is read.
     fn own_assists(&self) -> Option<u32> {
         let own = self.own_id?;
-        let dbid = self.party.get(&u32::try_from(own).ok()?)?.0.dbid;
+        let name = self.own_name();
+        let from_room = self
+            .room
+            .as_ref()
+            .and_then(|(room, _)| room.members.iter().find(|member| name == Some(member.name.as_str())))
+            .map(|member| member.dbid);
+        let dbid = match from_room {
+            Some(dbid) => dbid,
+            None => self.party.get(&u32::try_from(own).ok()?)?.0.dbid,
+        };
         self.scores.get(&dbid).map(|score| u32::from(score.assists))
     }
 
@@ -2627,7 +2850,14 @@ impl MeterEngine {
             .collect();
         gathered.sort_by(|a, b| b.count.cmp(&a.count).then(a.item.cmp(&b.item)));
         gathered.truncate(16);
-        Tracker { kills, kills_total, gathered }
+        let mut looted: Vec<GatheredRow> = self
+            .looted
+            .iter()
+            .map(|(item, count)| GatheredRow { item: *item, count: u32::try_from(*count).unwrap_or(u32::MAX) })
+            .collect();
+        looted.sort_by(|a, b| b.count.cmp(&a.count).then(a.item.cmp(&b.item)));
+        looted.truncate(16);
+        Tracker { kills, kills_total, gathered, looted }
     }
 
     pub fn observe_death(&mut self, record: &packets::DeathRecord, now: u64) {
@@ -4087,7 +4317,21 @@ impl MeterEngine {
                     observed_at_ms: row.current_hp_observed_at_ms?,
                 })
             }),
+            flight: self.own_id.and_then(|own| self.flight.get(&own)).filter(|sample| sample.at != 0).map(|sample| Flight {
+                fp: sample.fp,
+                max: sample.max,
+                observed_at_ms: sample.at,
+                drain_per_s: (sample.drain_per_s > 0.0 && now >= sample.drain_at && now - sample.drain_at <= FLIGHT_DRAIN_FRESH_MS).then_some(sample.drain_per_s),
+            }),
             party: self.party_frames(),
+            room: self.room_frame(),
+            currencies: self.currency_rows(),
+            cube_keys: self.stacks_known.then(|| {
+                self.stacks
+                    .values()
+                    .filter(|(item, _)| CUBE_KEYS.contains(item))
+                    .fold(0u64, |sum, (_, count)| sum.saturating_add(*count))
+            }),
             tracker: self.tracker(),
             pvp: PvpState {
                 kills: self.pvp_kills,
