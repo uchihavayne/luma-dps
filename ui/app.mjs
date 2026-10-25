@@ -79,6 +79,8 @@ if (spatialDemo) {
 }
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
+// Luma starts locked: the meter is drawn bare, with no window around it. Alt+E unlocks it for editing.
+let overlayLocked = window.__TAURI__?.core?.invoke ? true : new URLSearchParams(location.search).get('bare') === '1';
 let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, fitRequested = 0, rosterContext = '';
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
@@ -440,6 +442,7 @@ function applyAppearance() {
   $('#meter').dataset.largeType = String(prefs.textScale > 1.25);
   for (const name of HUD_PANELS) $('#meter').dataset[`hud${name[0].toUpperCase()}${name.slice(1)}`] = String(hudPanelVisible(prefs, name));
   $('#meter').dataset.clean = String(prefs.cleanLook);
+  $('#meter').dataset.look = prefs.cleanLook && overlayLocked && !drawer && !toolsOpen ? 'bare' : 'frame';
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
   scheduleRosterFit();
@@ -602,7 +605,7 @@ function toolsMenuContent() {
     <h3>${pair('Paneller', 'Panels')}</h3>
     <div class="tools-links">${item('pets', pair('Pet rehberi', 'Pet guide'))}${item('radar-details', 'Radar')}${item('playback', 'Replay')}${item('team', pair('Takım cooldown’ları', 'Team cooldowns'))}${item('calendar', pair('Etkinlikler', 'Events'))}${item('cube', pair('Küp sesi', 'Cube audio'))}${item('character', pair('Karakterim', 'My character'))}${item('history', pair('Geçmiş', 'History'))}${item('records', pair('Rekorlar', 'Personal bests'))}${item('community', pair('Sıralama ve paylaşım', 'Rankings and sharing'))}</div>
     <h3>${pair('Ayrı pencereler', 'Separate windows')}</h3><button type="button" class="text-button" data-overlay-controls>${pair('Pencere kontrolleri · Alt+E', 'Overlay controls · Alt+E')}</button>
-    <div class="tools-toggles">${PANELS.filter(name => name !== 'controls').map(name => [name, pair(...PANEL_TITLES[name])]).map(([name, label]) => `<label><input type="checkbox" data-overlay-panel="${name}"><span>${label}</span></label>`).join('')}</div>
+    <div class="tools-toggles">${PANELS.filter(name => !['controls', 'damage'].includes(name)).map(name => [name, pair(...PANEL_TITLES[name])]).map(([name, label]) => `<label><input type="checkbox" data-overlay-panel="${name}"><span>${label}</span></label>`).join('')}</div>
     <p class="help">${pair('Her pencere ayrı açılır, sürüklenir ve boyutlanır; yerini hatırlar. Yalnızca okur, ayar değiştirmez.', 'Each window opens, moves and resizes on its own and remembers its place. It only reads and never changes a setting.')}</p>
     <div class="tools-links tools-templates">${Object.entries(TEMPLATE_LABELS).map(([name, [trLabel, enLabel]]) => item(`template-${name}`, `${pair('Düzen', 'Layout')}: ${pair(trLabel, enLabel)}`)).join('')}</div>
     <h3>${pair('Ana ekranda göster', 'Show in the meter')}</h3>
@@ -2900,6 +2903,9 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-cube-state', event => applyCubeSnapshot(event.payload)); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey', async event => { if (event.payload?.error) { toast(String(event.payload.error).slice(0, 200), true); return; } if (event.payload?.action === 'settings') openDrawer('settings', 'controls'); if (event.payload?.action === 'copy-summary') { try { const text = communitySummary(await invoke('get_current_encounter'), { scope: prefs.damageScope, locale: prefs.locale, anonymous: true }); if (text) { await navigator.clipboard.writeText(text); toast(t('copied')); } } catch { toast(t('failed'), true); } } }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-fullscreen-error', event => { if (event.payload) toast(String(event.payload).slice(0, 200), true); }); } catch {}
+  try { invoke('overlay_locked').then(value => { overlayLocked = value === true; applyAppearance(); scheduleRosterFit(); }).catch(() => {}); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-overlay-lock', event => { overlayLocked = event.payload === true; applyAppearance(); scheduleRosterFit(); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-main-action', event => { if (event.payload === 'settings') openDrawer('settings', 'controls'); else if (event.payload === 'analysis') openDrawer('analysis', 'overview'); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-preference-patch', event => { const patch = event.payload && typeof event.payload === 'object' ? event.payload : {}; const allowed = ['overlayScale', 'overlayRate', 'overlaySnap', 'opacity', 'combatDetection']; savePreferences(Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)))); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); renderUpdatePrompt(); }); } catch {}

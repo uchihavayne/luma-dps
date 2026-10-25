@@ -242,12 +242,10 @@ impl Store {
             }
             let _ = fs::write(&markers, b"1");
         }
-        let moved = directory.join("overlays-skills-in-main.done");
-        if !moved.exists() {
-            if let Some(entry) = entries.get_mut("damage") {
-                entry.open = false;
-            }
-            let _ = fs::write(&moved, b"1");
+        // The skill table is in the main window; a window of its own for it is not offered any more, and
+        // one an older version left open is closed.
+        if let Some(entry) = entries.get_mut("damage") {
+            entry.open = false;
         }
         // The Cube marker is there from the first start too; it draws nothing until a Cube is near.
         entries.entry("cube".to_string()).or_insert(Entry { frame: None, open: true });
@@ -510,6 +508,20 @@ pub fn overlay_preference(app: AppHandle, patch: serde_json::Map<String, serde_j
         return Err("Nothing to change".into());
     }
     app.emit_to("main", "luma-preference-patch", patch).map_err(|error| error.to_string())
+}
+
+/// Settings and Analysis open inside the meter's window, which is bare while locked: the controls
+/// window asks for them.
+#[tauri::command]
+pub fn overlay_main_action(app: AppHandle, action: String) -> Result<(), String> {
+    if !["settings", "analysis"].contains(&action.as_str()) {
+        return Err("Unknown action".into());
+    }
+    let window = app.get_webview_window("main").ok_or("Luma window is unavailable")?;
+    let _ = window.set_ignore_cursor_events(false);
+    let _ = window.show();
+    let _ = window.set_focus();
+    app.emit_to("main", "luma-main-action", action).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -881,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn a_damage_window_left_open_by_an_older_version_is_closed_once() {
+    fn a_damage_window_left_open_by_an_older_version_is_closed() {
         let directory = directory("moved");
         fs::write(
             directory.join("overlays.json"),
@@ -891,11 +903,11 @@ mod tests {
         let first = Store::load(&directory);
         assert_eq!(first.open_panels(), vec!["cube", "party", "flight", "ping"], "the skill table is in the main window now");
         assert!(!first.entry("damage").open);
-        assert_eq!(first.entry("damage").frame.map(|frame| frame.x), Some(484), "its place is kept for when it is wanted");
-        // Opened again on purpose, it stays open on later starts.
+        assert_eq!(first.entry("damage").frame.map(|frame| frame.x), Some(484));
+        // It is never offered again, so it stays closed on every later start.
         first.set_open("damage", true);
         first.flush(true);
-        assert_eq!(Store::load(&directory).open_panels(), vec!["damage", "cube", "party", "flight", "ping"]);
+        assert_eq!(Store::load(&directory).open_panels(), vec!["cube", "party", "flight", "ping"]);
         let _ = fs::remove_dir_all(directory);
     }
 }

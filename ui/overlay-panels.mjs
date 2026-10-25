@@ -300,7 +300,7 @@ function pingPanel({ state, locale, now, marker = {} }) {
 // drawn from what the controls window read (which are open, the look settings, the lock).
 function controlsPanel({ controls, locale }) {
   const tr = locale !== 'en', open = new Set(controls?.open || []), option = controls?.options || {}, locked = controls?.locked === true;
-  const toggles = PANELS.filter(name => name !== 'controls').map(name => `<button type="button" class="ctl-toggle" data-panel="${name}" aria-pressed="${open.has(name)}">${esc(PANEL_TITLES[name][tr ? 0 : 1])}</button>`).join('');
+  const toggles = PANELS.filter(name => !['controls', 'damage'].includes(name)).map(name => `<button type="button" class="ctl-toggle" data-panel="${name}" aria-pressed="${open.has(name)}">${esc(PANEL_TITLES[name][tr ? 0 : 1])}</button>`).join('');
   const segment = (key, choices, current) => `<div class="ctl-seg">${choices.map(([value, text]) => `<button type="button" data-pref="${key}" data-value="${value}" aria-pressed="${String(current) === String(value)}">${text}</button>`).join('')}</div>`;
   const slider = (key, label, low, high, value) => `<label class="ctl-row"><span>${label}</span><input type="range" min="${low}" max="${high}" step="5" value="${value}" data-slider="${key}"><output>${value}%</output></label>`;
   const scale = Math.round((Number(option.scale) || 1) * 100), opacity = Math.round((Number(option.opacity) || .88) * 100);
@@ -311,6 +311,7 @@ function controlsPanel({ controls, locale }) {
 <h4>${tr ? 'Savaş algılama' : 'Combat detection'}</h4>${segment('source', [['game', tr ? 'Oyun söylediğinde' : 'The game says so'], ['hits', tr ? 'Vurduğumda' : 'When I hit']], option.source ?? 'game')}
 ${segment('seconds', [[5, '5 s'], [10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '60 s']], option.seconds ?? 10)}
 <div class="ctl-foot"><button type="button" data-action="lock" aria-pressed="${locked}">${locked ? (tr ? 'Kilidi aç' : 'Unlock') : (tr ? 'Kilitle' : 'Lock')}</button><button type="button" data-action="reload">${tr ? 'Yenile' : 'Refresh'}</button><button type="button" data-action="open-app">${tr ? 'Uygulamada aç' : 'Open app'}</button></div>
+<div class="ctl-foot"><button type="button" data-action="settings">${tr ? 'Ayarlar' : 'Settings'}</button><button type="button" data-action="analysis">${tr ? 'Analiz' : 'Analysis'}</button></div>
 <div class="ctl-foot"><button type="button" class="primary" data-action="done">${tr ? 'Bitti' : 'Done'}</button></div></div>`;
 }
 

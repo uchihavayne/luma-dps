@@ -152,7 +152,7 @@ test('the Ping window shows the round-trip time with bars that fill with a good 
 test('the Overlay controls list every window but themselves, show what is on, and carry the shared look', () => {
   const html = renderPanel('controls', { state: normalizeState({}), locale: 'en', now: NOW, controls: { open: ['pvp', 'map'], options: { scale: 1.25, opacity: .8, rate: 500, snap: true, source: 'hits', seconds: 20 }, locked: false } });
   const toggles = [...html.matchAll(/data-panel="([a-z]+)" aria-pressed="(true|false)"/g)];
-  assert.deepEqual(toggles.map(row => row[1]), [...PANELS].filter(name => name !== 'controls'));
+  assert.deepEqual(toggles.map(row => row[1]), [...PANELS].filter(name => !['controls', 'damage'].includes(name)), 'the skill table is in the main window, not a window of its own');
   assert.deepEqual(toggles.filter(row => row[2] === 'true').map(row => row[1]), ['pvp', 'map']);
   assert.match(html, /value="125" data-slider="overlayScale"/); assert.match(html, /value="80" data-slider="opacity"/);
   assert.match(html, /data-pref="overlayRate" data-value="500" aria-pressed="true"/); assert.match(html, /data-pref="overlayRate" data-value="250" aria-pressed="false"/);
@@ -224,6 +224,6 @@ test('a ticket tile keeps its name and count: the action bar slots have a class 
 test('the window sizes are small enough to shrink by hand but not below a usable corner', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(new URL('../overlay-window.mjs', import.meta.url), 'utf8');
-  assert.match(source, /function scaleToFit\(\)/); assert.doesNotMatch(source, /overlay_fit/, 'the window is never resized to its content');
-  assert.match(source, /Math\.max\(0\.45,/);
+  assert.match(source, /function scaleToFit\(\)/); assert.match(source, /grewAt > 1500/, 'it grows at most now and then, and only when it would be unreadable');
+  assert.match(source, /Math\.max\(0\.6,/);
 });

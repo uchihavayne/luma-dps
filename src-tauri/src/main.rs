@@ -4134,6 +4134,7 @@ fn main() {
             overlays::overlay_reload,
             overlays::overlay_preference,
             overlays::overlay_show_main,
+            overlays::overlay_main_action,
             set_boss_targets,
             set_locked,
             start_resize,

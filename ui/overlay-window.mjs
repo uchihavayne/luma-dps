@@ -61,9 +61,12 @@ function render() {
 // is cut, scrolled away or pulled back.
 const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map: 300, cooldowns: 300, actions: 300, rivals: 300 };
 let contentRevision = 0, fittedKey = '';
+let grewAt = 0;
 function scaleToFit() {
   if (marker) return;
   const body = $('#panel-body'), content = $('#panel-content'), look = getComputedStyle(body);
+  // The map lays itself out to the room it has.
+  if (panel === 'map') { content.style.zoom = ''; content.style.width = ''; content.style.height = '100%'; body.style.overflowY = 'hidden'; return; }
   const room = { width: body.clientWidth - parseFloat(look.paddingLeft) - parseFloat(look.paddingRight), height: body.clientHeight - parseFloat(look.paddingTop) - parseFloat(look.paddingBottom) };
   if (!(room.width > 0 && room.height > 0)) return;
   const key = `${panel}:${contentRevision}:${Math.round(room.width)}x${Math.round(room.height)}`;
@@ -72,10 +75,17 @@ function scaleToFit() {
   const design = DESIGN_WIDTH[panel] ?? 290;
   content.style.zoom = '1'; content.style.width = `${design}px`; content.style.alignSelf = 'center';
   const natural = Math.max(1, content.offsetHeight);
-  const zoom = Math.min(2.2, Math.max(0.45, Math.min(room.width / design, room.height / natural)));
+  const widthZoom = room.width / design, zoom = Math.min(1.6, Math.max(0.6, Math.min(widthZoom, room.height / natural)));
   content.style.zoom = String(zoom);
-  // Only at the smallest scale may anything be left to scroll to.
-  body.style.overflowY = zoom <= 0.46 ? 'auto' : 'hidden';
+  // Smaller than a readable scale never happens: what is left over scrolls, and the window grows once to
+  // show it all at the scale its width allows.
+  const fits = natural * zoom <= room.height + 1;
+  body.style.overflowY = fits ? 'hidden' : 'auto';
+  if (!fits && native && Date.now() - grewAt > 1500) {
+    grewAt = Date.now();
+    const chrome = innerHeight - room.height, wanted = Math.ceil(natural * Math.min(1, Math.max(0.6, widthZoom)) + chrome);
+    invoke('overlay_fit', { height: Math.min(900 / scale, wanted) * scale }).catch(() => {});
+  }
 }
 new ResizeObserver(() => requestAnimationFrame(scaleToFit)).observe($('#panel-body'));
 
@@ -139,6 +149,7 @@ $('#panel-content').addEventListener('click', async event => {
   else if (toggle === 'overlaySnap') changePreference('overlaySnap', controlsOptions.snap !== true);
   else if (action === 'reload') invoke('overlay_reload').catch(() => {});
   else if (action === 'open-app') invoke('overlay_show_main').catch(() => {});
+  else if (action === 'settings' || action === 'analysis') invoke('overlay_main_action', { action }).catch(() => {});
   else if (action === 'done') invoke('overlay_controls', { open: false }).catch(() => {});
   else if (action === 'lock') invoke('overlay_lock', { locked: !locked }).catch(() => {});
 });

@@ -108,8 +108,8 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 .slot .game-icon { position: absolute; inset: 2px; width: 40px; height: 40px; border-radius: 6px; }
 .slot i { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(8, 10, 14, .72); }
 .slot b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; text-shadow: 0 1px 3px #000; font-variant-numeric: tabular-nums; }
-.map { display: grid; gap: 5px; }
-.map-view { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 10px; background: #0b0f14; cursor: zoom-in; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+.map { display: flex; flex-direction: column; align-items: center; gap: 5px; height: 100%; container-type: size; }
+.map-view { position: relative; flex: none; width: min(100cqw, calc(100cqh - 24px)); aspect-ratio: 1; overflow: hidden; border-radius: 10px; background: #0b0f14; cursor: zoom-in; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
 .map-view .world { position: absolute; left: 50%; top: 50%; max-width: none; height: auto; transform-origin: 0 0; user-select: none; pointer-events: none; }
 .map-view .dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .7); background: #cfd6df; }
 .map-view .dot.party { background: #6ee7a8; width: 10px; height: 10px; margin: -5px 0 0 -5px; }
@@ -311,3 +311,11 @@ body[data-panel=flight] .panel-body { align-items: stretch; padding: 0 8px; }
 body.editing .edit-bar { top: 4px; right: 6px; bottom: auto; }
 .map-view[data-old=true] .me { opacity: .55; }
 .tile .label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.2; }
+
+/* Locked, no window: the card behind a window goes, every block on it floats on a pill of its own, and
+   the empty-state messages (which would be a lone box) are not drawn. */
+body.locked .panel { background: none; border-color: transparent; box-shadow: none; }
+body.locked .hint { display: none; }
+body.locked .panel-content { text-shadow: 0 1px 3px #000d, 0 0 8px #000a; }
+body.locked .panel-content :is(.hero, .tile, .time-row, .line, .timer, .cd, .effect, .member, .seat, .skill, .target, .slot, .recap, .group, .alert, .stats > div, .map-view) { background-color: color-mix(in srgb, #0b0f14 72%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+body.locked[data-panel=map] .map-foot { text-shadow: 0 1px 3px #000, 0 0 8px #000; }

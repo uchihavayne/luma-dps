@@ -530,3 +530,20 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #meter[data-clean=true] .metrics strong { margin-top: 2px; }
 #meter[data-clean=true] > .roster-controls { margin-top: 4px; }
 #meter[data-clean=true] #compact-summary, #meter[data-clean=true] #clear-roster-summary, #meter[data-clean=true] #roster-summary { display: none; }
+
+/* Bare: while the windows are locked the meter is not a window at all. No header, no footer, no card,
+   no frame; only the target, the column names, the player rows and your skills float over the game,
+   each on a pill of its own. Alt+E gives the card and its buttons back for moving and for settings. */
+#meter[data-clean=true][data-look=bare] { background: transparent; border-radius: 0; }
+#meter[data-clean=true][data-look=bare] > .topbar, #meter[data-clean=true][data-look=bare] > .footer,
+#meter[data-clean=true][data-look=bare]:not(.compact-strip) > .metrics, #meter[data-clean=true][data-look=bare] .scope-label,
+#meter[data-clean=true][data-look=bare] #target-pet-pin, #meter[data-clean=true][data-look=bare] #event-chip,
+#meter[data-clean=true][data-look=bare] #pet-tracker, #meter[data-clean=true][data-look=bare] #players .empty { display: none; }
+/* With nothing to show it shows nothing at all. */
+#meter[data-clean=true][data-look=bare]:has(#players .empty) > .encounter-header, #meter[data-clean=true][data-look=bare]:has(#players .empty) > .roster-controls { display: none; }
+#meter[data-clean=true][data-look=bare] > .encounter-header { padding-top: 6px; text-shadow: 0 1px 3px #000d, 0 0 8px #000a; }
+#meter[data-clean=true][data-look=bare] > .roster-controls { justify-content: flex-end; text-shadow: 0 1px 3px #000d; }
+#meter[data-clean=true][data-look=bare] #players .player, #meter[data-clean=true][data-look=bare] .skill-board { background: color-mix(in srgb, #0b0f14 68%, transparent); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); border-radius: 10px; border-color: transparent; }
+#meter[data-clean=true][data-look=bare] #players .player { margin-bottom: 4px; }
+#meter[data-clean=true][data-look=bare] .player-bar { opacity: .5; }
+#meter[data-clean=true][data-look=frame] { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -3px; }
