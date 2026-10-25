@@ -24,19 +24,23 @@ test('the Timers window lists what is open first, then what opens next, and says
   assert.doesNotMatch(renderPanel('timers', { state: normalizeState({}), events: hostile, now: NOW }), /<b onmouseover/);
 });
 
-test('the Flight window shows the points as a bar and the seconds left only while they drain', () => {
+test('the Flight marker shows only while the points run out, with the seconds left, a bar and the points', () => {
   const drain = { fp: 60_000, max: 100_000, observed_at_ms: NOW, drain_per_s: 2_000 };
   const flying = renderPanel('flight', { state: normalizeState({ flight: drain }), now: NOW, locale: 'en' });
-  assert.match(flying, /data-flying="true" data-low="false"/);
-  assert.match(flying, /<b>60%<\/b><span>0:30<\/span>/);
-  assert.match(flying, /style="width:60\.0%"/); assert.match(flying, /60K \/ 100K/);
+  assert.match(flying, /class="flyer" data-low="false" data-sample="false"/);
+  assert.match(flying, /<b class="fly-time">0:30<\/b><span class="fly-label">FLIGHT<\/span>/);
+  assert.match(flying, /style="width:60\.0%"/); assert.match(flying, /60% · 60K \/ 100K/);
   assert.match(renderPanel('flight', { state: normalizeState({ flight: { ...drain, fp: 10_000 } }), now: NOW }), /data-low="true"/);
-  const resting = renderPanel('flight', { state: normalizeState({ flight: { ...drain, drain_per_s: null } }), now: NOW, locale: 'en' });
-  assert.match(resting, /data-flying="false"/); assert.match(resting, /resting/);
+  // Resting, landed or never flown: nothing is drawn at all.
+  assert.equal(renderPanel('flight', { state: normalizeState({ flight: { ...drain, drain_per_s: null } }), now: NOW }), '');
+  assert.equal(renderPanel('flight', { state: normalizeState({}), now: NOW }), '');
+  // While the windows are being placed a sample shows, even with no flight; real numbers win over it.
+  const sample = renderPanel('flight', { state: normalizeState({}), now: NOW, locale: 'en', marker: { edit: true } });
+  assert.match(sample, /data-sample="true"/); assert.match(sample, /0:41/);
+  assert.match(renderPanel('flight', { state: normalizeState({ flight: drain }), now: NOW, marker: { edit: true } }), /data-sample="false"/);
   // Without a maximum there is no percent, only the points.
-  assert.match(renderPanel('flight', { state: normalizeState({ flight: { fp: 5_000, max: null, drain_per_s: null } }), now: NOW }), /<b>5\.0K<\/b>/);
-  assert.match(renderPanel('flight', { state: normalizeState({}), now: NOW, locale: 'en' }), /No flight points yet/);
-  for (const junk of [{ fp: -1 }, { fp: 'x' }, { fp: 5, drain_per_s: -3 }, 7, []]) assert.ok(!/<script/.test(renderPanel('flight', { state: normalizeState({ flight: junk }), now: NOW })));
+  assert.match(renderPanel('flight', { state: normalizeState({ flight: { fp: 5_000, max: null, drain_per_s: 100 } }), now: NOW }), /<small class="fly-points">5\.0K<\/small>/);
+  for (const junk of [{ fp: -1 }, { fp: 'x' }, { fp: 5, drain_per_s: -3 }, 7, []]) assert.equal(renderPanel('flight', { state: normalizeState({ flight: junk }), now: NOW }), '');
   assert.equal(normalizeState({ flight: { fp: 5, drain_per_s: -3 } }).flight.drain_per_s, null);
   assert.equal(normalizeState({ flight: { fp: -1 } }).flight, null);
   assert.deepEqual(normalizeState(normalizeState({ flight: drain })).flight, normalizeState({ flight: drain }).flight);
@@ -169,4 +173,40 @@ test('Alt+E is the eighth shortcut and the only one that may use a single modifi
   const prefs = normalizePreferences({});
   assert.equal(prefs.hotkeys.length, 8); assert.equal(prefs.hotkeys[7].shortcut, 'Alt+E');
   assert.equal(normalizePreferences({ hotkeys: [{ action: 'overlay-controls', shortcut: 'Alt+Q', enabled: false }] }).hotkeys[0].shortcut, 'Alt+Q');
+});
+
+test('the Ping marker shows a sample while the windows are placed and nothing is hidden by a missing sample', () => {
+  const edit = renderPanel('ping', { state: normalizeState({}), now: NOW, locale: 'en', marker: { edit: true } });
+  assert.match(edit, /<b>42<\/b>/); assert.match(edit, /data-tone="good"/);
+  assert.match(renderPanel('ping', { state: normalizeState({}), now: NOW, locale: 'en' }), /<b>—<\/b>/);
+});
+
+test('the Map keeps your last position, dimmed once it is old, and drops it only after half an hour', () => {
+  const old = (seconds, patch = {}) => world({ positions: [at(7, 0, 0, { at_ms: NOW - seconds * 1000 }), at(8, 20_000, 0, { at_ms: NOW - seconds * 1000 })], ...patch });
+  const fresh = renderPanel('map', { state: old(2), now: NOW, locale: 'en' });
+  assert.match(fresh, /data-old="false"/); assert.match(fresh, /<time>0, 0 m<\/time>/);
+  const stale = renderPanel('map', { state: old(45), now: NOW, locale: 'en' });
+  assert.match(stale, /data-old="true"/); assert.match(stale, /<time>0, 0 m · 45 s ago<\/time>/);
+  assert.doesNotMatch(stale, /class="dot/, 'what others did 45 s ago is not shown as if it were now');
+  assert.match(renderPanel('map', { state: old(400), now: NOW, locale: 'tr' }), /7 dk önce/);
+  assert.match(renderPanel('map', { state: old(1_900), now: NOW, locale: 'en' }), /position has not arrived/);
+  // Another place, or a position from the future, is not the map's.
+  assert.match(renderPanel('map', { state: old(5), now: NOW - 60_000, locale: 'en' }), /position has not arrived/);
+});
+
+test('a new version asks first to download, then to install and restart, and "later" keeps quiet', async () => {
+  const { updatePrompt } = await import('../runtime-tools.mjs');
+  const ask = updatePrompt({ status: 'available', version: '0.26.0' }, { locale: 'tr' });
+  assert.equal(ask.stage, 'available'); assert.equal(ask.version, '0.26.0');
+  assert.match(ask.html, /Yeni sürüm 0\.26\.0 var/); assert.match(ask.html, /İndirmek ister misin\?/);
+  assert.match(ask.html, /data-update-prompt="update-download"/); assert.match(ask.html, /data-update-prompt="update-later"/);
+  const install = updatePrompt({ status: 'downloaded', version: '0.26.0', downloaded: true }, { locale: 'en' });
+  assert.equal(install.stage, 'downloaded'); assert.match(install.html, /Version 0\.26\.0 downloaded/); assert.match(install.html, /data-update-prompt="update-install"/); assert.match(install.html, /Install and restart/);
+  const busy = updatePrompt({ status: 'downloading', version: '0.26.0' }, { locale: 'en' });
+  assert.equal(busy.stage, 'busy'); assert.doesNotMatch(busy.html, /<button/);
+  // Later hides the question but never the work in progress; nothing to ask when up to date or on error.
+  assert.equal(updatePrompt({ status: 'available', version: '0.26.0' }, { snoozed: true }), null);
+  assert.equal(updatePrompt({ status: 'downloading', version: '0.26.0' }, { snoozed: true }).stage, 'busy');
+  for (const quiet of [{}, { status: 'current' }, { status: 'checking' }, { status: 'error', error: 'x' }, undefined, null]) assert.equal(updatePrompt(quiet), null);
+  assert.doesNotMatch(updatePrompt({ status: 'available', version: '<img src=x onerror=1>' }).html, /<img/);
 });

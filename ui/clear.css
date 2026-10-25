@@ -446,6 +446,11 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 .skill-foot .text-button { font-size: 10px; padding: 2px 4px; }
 
 /* My skills, in the window itself: never a popover, never a second window. */
+.update-prompt { position: absolute; left: 10px; right: 10px; bottom: 44px; z-index: 12; display: grid; gap: 4px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--bg, #0d1218) 96%, transparent); box-shadow: 0 10px 30px #0009; font-size: 12px; }
+.update-prompt[hidden] { display: none; }
+.update-prompt > strong { font-size: 13px; }
+.update-prompt > span { color: var(--muted); }
+.update-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
 .skill-board { container-type: inline-size; flex: 0 0 auto; margin: 0 9px 5px; padding: 6px 8px 5px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--text) 4%, transparent); }
 .skill-board[hidden] { display: none; }
 .board-head { display: flex; align-items: center; gap: 6px; font-size: 11px; }
@@ -508,3 +513,10 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 /* The dock's Cube is the game's picture. */
 .cube-nav-art { display: block; width: 22px; height: 22px; flex: 0 0 auto; object-fit: contain; filter: drop-shadow(0 1px 3px #000a); }
 .cube-nav-kind[data-look=''] > .cube-nav-art, .cube-nav-art:not([src]) { display: none; }
+
+/* Clean look: the window shows its numbers, not its controls. The buttons come back while the pointer
+   is over the meter (or a key reaches one); the notice cards that repeat the "!" status are hidden,
+   and what the "!" says is one click away in the tools menu. */
+#meter[data-clean=true] > .notice, #meter[data-clean=true] #roster-unnamed { display: none; }
+#meter[data-clean=true]:not(:hover):not(:focus-within) .topbar > button:not(#compact-status) { display: none; }
+#meter[data-clean=true]:not(:hover):not(:focus-within) .topbar { border-bottom-color: transparent; }

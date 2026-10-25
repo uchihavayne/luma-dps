@@ -28,9 +28,9 @@ pub const PANELS: [&str; 18] = [
 /// the saved preference.
 static SNAP_GRID: AtomicU32 = AtomicU32::new(0);
 static LAST_MOVE: AtomicU64 = AtomicU64::new(0);
-/// While locked the detached windows let every click through to the game and show no title bar;
-/// unlocked (the editing state) they can be moved, resized and closed.
-static LOCKED: AtomicBool = AtomicBool::new(false);
+/// While locked (how Luma starts) the detached windows let every click through to the game and show
+/// no title bar; unlocked (the editing state, Alt+E) they can be moved, resized and closed.
+static LOCKED: AtomicBool = AtomicBool::new(true);
 /// A window that is only shown while you fight, and for a while after.
 const GRACE_MS: u64 = 15_000;
 static LAST_ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -82,12 +82,12 @@ pub fn default_size(panel: &str) -> (u32, u32) {
         "effects" => (290, 300),
         "cube" => (340, 120),
         "timers" => (290, 260),
-        "flight" => (260, 120),
+        "flight" => (260, 96),
         "bosshp" => (300, 170),
         "actions" => (300, 140),
         "rivals" => (300, 200),
         "map" => (300, 350),
-        "ping" => (150, 64),
+        "ping" => (150, 60),
         "controls" => (340, 560),
         _ => (280, 180),
     }
@@ -109,7 +109,7 @@ pub fn min_width(panel: &str) -> u32 {
 /// The Hidden Cube marker is not a window to look at: it is drawn straight onto the screen and lets
 /// every click through, except while the player is placing it.
 pub fn is_marker(panel: &str) -> bool {
-    panel == "cube"
+    matches!(panel, "cube" | "ping" | "flight")
 }
 
 /// The Overlay controls window is where the others are opened; it is never locked and never remembered open.
@@ -125,7 +125,7 @@ pub fn locked() -> bool {
 pub fn set_locked(app: &AppHandle, locked: bool) {
     LOCKED.store(locked, Ordering::Relaxed);
     for panel in PANELS {
-        if is_controls(panel) || is_marker(panel) {
+        if is_controls(panel) {
             continue;
         }
         if let Some(window) = app.get_webview_window(&label(panel)) {
@@ -243,6 +243,10 @@ impl Store {
         }
         // The Cube marker is there from the first start too; it draws nothing until a Cube is near.
         entries.entry("cube".to_string()).or_insert(Entry { frame: None, open: true });
+        // So are the ping, in the corner where the game draws its own, and the flight time, which shows
+        // only while flying.
+        entries.entry("ping".to_string()).or_insert(Entry { frame: None, open: true });
+        entries.entry("flight".to_string()).or_insert(Entry { frame: None, open: true });
         Self {
             path,
             entries: Mutex::new(entries),
@@ -423,13 +427,13 @@ pub fn open(app: &AppHandle, store: &Store, panel: &'static str, manual: bool) -
         let _ = window.set_size(size);
         let _ = window.set_position(PhysicalPosition::new(frame.x, frame.y));
     } else if is_marker(panel) {
-        place_marker(app, &window);
+        place_marker(app, &window, panel);
     } else if let Some(place) = beside_meter(app, panel) {
         // Only the position is chosen; the size is the default one.
         let place = clamp(Frame { width: MIN_EDGE, height: MIN_EDGE, ..place }, &screens);
         let _ = window.set_position(PhysicalPosition::new(place.x, place.y));
     }
-    if is_marker(panel) || (locked() && !is_controls(panel)) {
+    if locked() && !is_controls(panel) {
         let _ = window.set_ignore_cursor_events(true);
     }
     if show {
@@ -508,16 +512,22 @@ pub fn overlay_show_main(app: AppHandle) {
     }
 }
 
-/// A first place for the Cube marker: top centre of the main screen, where it is seen without
-/// covering the fight.
-fn place_marker(app: &AppHandle, window: &WebviewWindow) {
+/// A first place for a marker: the Cube top centre, where it is seen without covering the fight; the
+/// ping in the bottom-right corner, where the game draws its own; the flight time low and central.
+fn place_marker(app: &AppHandle, window: &WebviewWindow, panel: &str) {
     let Some(monitor) = app.primary_monitor().ok().flatten() else {
         return;
     };
     let size = window.outer_size().unwrap_or(PhysicalSize::new(340, 120));
-    let x = monitor.position().x + (monitor.size().width as i32 - size.width as i32) / 2;
-    let y = monitor.position().y + (f64::from(monitor.size().height) * 0.12) as i32;
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    let work = monitor.work_area();
+    let (left, top) = (work.position.x, work.position.y);
+    let (width, height) = (work.size.width as i32, work.size.height as i32);
+    let (x, y) = match panel {
+        "ping" => (width - size.width as i32 - 16, height - size.height as i32 - 18),
+        "flight" => ((width - size.width as i32) / 2, (f64::from(height) * 0.66) as i32),
+        _ => ((width - size.width as i32) / 2, (f64::from(height) * 0.12) as i32),
+    };
+    let _ = window.set_position(PhysicalPosition::new(left + x, top + y));
 }
 
 pub fn close(app: &AppHandle, store: &Store, panel: &'static str) {
@@ -780,11 +790,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cube_is_a_marker_that_lets_clicks_through() {
-        assert!(is_marker("cube"));
-        for panel in PANELS.iter().filter(|panel| **panel != "cube") {
+    fn only_the_cube_ping_and_flight_are_markers_drawn_without_a_window() {
+        for marker in ["cube", "ping", "flight"] {
+            assert!(is_marker(marker), "{marker}");
+        }
+        for panel in PANELS.iter().filter(|panel| !["cube", "ping", "flight"].contains(panel)) {
             assert!(!is_marker(panel), "{panel}");
         }
+        assert!(locked(), "Luma starts locked: the windows let every click through");
         assert!(!auto_hide("cube"), "the marker draws nothing by itself when no Cube is near");
     }
 
@@ -824,7 +837,7 @@ mod tests {
         let directory = directory("store");
         let store = Store::load(&directory);
         // Only the Cube marker is open before anything was chosen: the skill table is in the main window.
-        assert_eq!(store.open_panels(), vec!["cube"]);
+        assert_eq!(store.open_panels(), vec!["cube", "flight", "ping"]);
         let frame = Frame { x: 100, y: 120, width: 300, height: 260 };
         store.set_open("pvp", true);
         store.remember("pvp", frame);
@@ -833,12 +846,14 @@ mod tests {
         assert!(!directory.join("overlays.json").exists(), "a change waits a second before it is written");
         store.flush(true);
         let again = Store::load(&directory);
-        assert_eq!(again.open_panels(), vec!["pvp", "cube"]);
+        assert_eq!(again.open_panels(), vec!["pvp", "cube", "flight", "ping"]);
         assert_eq!(again.entry("pvp").frame, Some(frame));
         assert_eq!(again.entry("tracker"), Entry::default());
         again.set_open("pvp", false);
         again.set_open("damage", false);
         again.set_open("cube", false);
+        again.set_open("flight", false);
+        again.set_open("ping", false);
         again.flush(true);
         assert!(Store::load(&directory).open_panels().is_empty(), "closing the breakdown is remembered");
 
@@ -848,12 +863,12 @@ mod tests {
         )
         .unwrap();
         let cleaned = Store::load(&directory);
-        assert_eq!(cleaned.open_panels(), vec!["pvp", "cube"]);
+        assert_eq!(cleaned.open_panels(), vec!["pvp", "cube", "flight", "ping"]);
         assert_eq!(cleaned.entry("pvp").frame, None, "a frame too small to be a window is dropped");
         fs::write(directory.join("overlays.json"), b"not json").unwrap();
-        assert_eq!(Store::load(&directory).open_panels(), vec!["cube"]);
+        assert_eq!(Store::load(&directory).open_panels(), vec!["cube", "flight", "ping"]);
         fs::write(directory.join("overlays.json"), vec![b' '; (MAX_FILE + 1) as usize]).unwrap();
-        assert_eq!(Store::load(&directory).open_panels(), vec!["cube"]);
+        assert_eq!(Store::load(&directory).open_panels(), vec!["cube", "flight", "ping"]);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -866,13 +881,13 @@ mod tests {
         )
         .unwrap();
         let first = Store::load(&directory);
-        assert_eq!(first.open_panels(), vec!["cube", "party"], "the skill table is in the main window now");
+        assert_eq!(first.open_panels(), vec!["cube", "party", "flight", "ping"], "the skill table is in the main window now");
         assert!(!first.entry("damage").open);
         assert_eq!(first.entry("damage").frame.map(|frame| frame.x), Some(484), "its place is kept for when it is wanted");
         // Opened again on purpose, it stays open on later starts.
         first.set_open("damage", true);
         first.flush(true);
-        assert_eq!(Store::load(&directory).open_panels(), vec!["damage", "cube", "party"]);
+        assert_eq!(Store::load(&directory).open_panels(), vec!["damage", "cube", "party", "flight", "ping"]);
         let _ = fs::remove_dir_all(directory);
     }
 }

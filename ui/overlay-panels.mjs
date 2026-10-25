@@ -186,13 +186,15 @@ function timersPanel({ events, locale, now }) {
 }
 const countdown = milliseconds => { const total = Math.max(0, Math.ceil(milliseconds / 1000)), hours = Math.floor(total / 3600); return hours ? `${hours}:${String(Math.floor(total % 3600 / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}` : `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`; };
 
-// The time left to fly: the points as a bar, and from how fast they run out the seconds that remain.
-function flightPanel({ state, locale }) {
-  const tr = locale !== 'en', flight = state.flight;
-  if (!flight) return `<p class="hint">${tr ? 'Uçuş puanı henüz gelmedi. Uçmaya başlayınca görünür.' : 'No flight points yet. They appear once you start to fly.'}</p>`;
-  const fraction = flight.max ? Math.min(1, flight.fp / flight.max) : null, left = flight.drain_per_s ? flight.fp / flight.drain_per_s : null;
-  const note = left !== null ? clock(left * 1000) : (tr ? 'dinleniyor' : 'resting');
-  return `<div class="flight" data-flying="${left !== null}" data-low="${left !== null && left < 10}"><div class="row"><small>${tr ? 'UÇUŞ' : 'FLIGHT'}</small><b>${fraction === null ? esc(short(flight.fp)) : `${Math.round(fraction * 100)}%`}</b><span>${esc(note)}</span></div><i class="bar wide"><u style="width:${((fraction ?? 1) * 100).toFixed(1)}%"></u></i>${flight.max ? `<small class="numbers">${esc(short(flight.fp))} / ${esc(short(flight.max))}</small>` : ''}</div>`;
+// The time left to fly, drawn straight on the screen like the Hidden Cube: it is there only while the
+// flight points are running out, with the seconds left, a bar and the points. While the windows are
+// being placed a sample shows.
+function flightPanel({ state, locale, marker = {} }) {
+  const tr = locale !== 'en', real = state.flight, flying = Boolean(real) && real.drain_per_s !== null;
+  if (!flying && marker.edit !== true) return '';
+  const flight = flying ? real : { fp: 62_000, max: 100_000, drain_per_s: 1_500 };
+  const fraction = flight.max ? Math.min(1, flight.fp / flight.max) : null, left = flight.fp / flight.drain_per_s;
+  return `<div class="flyer" data-low="${left < 10}" data-sample="${!flying}"><div class="fly-main"><b class="fly-time">${clock(left * 1000)}</b><span class="fly-label">${tr ? 'UÇUŞ' : 'FLIGHT'}</span></div><i class="bar wide"><u style="width:${((fraction ?? 1) * 100).toFixed(1)}%"></u></i><small class="fly-points">${fraction === null ? esc(short(flight.fp)) : `${Math.round(fraction * 100)}% · ${esc(short(flight.fp))} / ${esc(short(flight.max))}`}</small></div>`;
 }
 
 // The health of what you fight: the target in focus, then bosses, each with its bar, percent and
@@ -259,27 +261,36 @@ function rivalsPanel({ state, locale, now, label }) {
 export const MAP_RANGES = Object.freeze([400, 1000, 2500]);
 function mapPanel({ state, locale, now, mapRange = 1000 }) {
   const tr = locale !== 'en', selfId = liveServerActorId(state), range = MAP_RANGES.includes(mapRange) ? mapRange : 1000;
-  const frame = spatialFrame(state.spatial, { at: now, selfId, partyIds: state.party_member_ids });
-  if (!frame.available) return `<p class="hint">${tr ? 'Konumun henüz gelmedi. Hareket edince harita görünür.' : 'Your position has not arrived yet. The map shows once you move.'}</p>`;
-  const map = worldMap(frame.mapId), me = frame.self;
+  const data = state.spatial, positions = data.positions.filter(point => point.map_id === data.map_id);
+  // Your position comes only every few seconds (more rarely while walking): the last one stays on the
+  // map, dimmed once it is old, and goes only when you leave the place or it is half an hour old.
+  const me = selfId === null ? undefined : positions.filter(point => point.actor_id === selfId && point.present && point.epoch === data.epoch).sort((a, b) => b.at_ms - a.at_ms)[0];
+  if (!me || now < me.at_ms || now - me.at_ms > 1_800_000) return `<p class="hint">${tr ? 'Konumun henüz gelmedi. Hareket edince harita görünür.' : 'Your position has not arrived yet. The map shows once you move.'}</p>`;
+  const map = worldMap(data.map_id);
   const place = `${Math.round(me.x / 100)}, ${Math.round(me.y / 100)} m`;
-  if (!map) return `<p class="hint">${tr ? `Bu alanın haritası yok (alan ${frame.mapId ?? '?'}).` : `This area has no map (area ${frame.mapId ?? '?'}).`}</p><p class="hint">${esc(place)}</p>`;
+  if (!map) return `<p class="hint">${tr ? `Bu alanın haritası yok (alan ${data.map_id ?? '?'}).` : `This area has no map (area ${data.map_id ?? '?'}).`}</p><p class="hint">${esc(place)}</p>`;
   const at = mapPoint(map, me.x, me.y);
   if (!at) return `<p class="hint">${tr ? 'Konum harita dışında.' : 'The position is off the map.'}</p><p class="hint">${esc(place)}</p>`;
-  const across = (map.maxX - map.minX) / 100;
-  const dots = frame.markers.filter(marker => marker.kind !== 'self' && Math.abs(marker.dx) <= range * .55 && Math.abs(marker.dy) <= range * .55).slice(0, 60).map(marker => {
-    const kind = marker.kind === 'party' ? 'party' : marker.kind === 'player' ? 'player' : 'npc';
-    return `<i class="dot ${kind}" data-stale="${marker.stale}" style="left:${(50 + marker.dx / range * 100).toFixed(2)}%;top:${(50 + marker.dy / range * 100).toFixed(2)}%" title="${esc(marker.name)}"></i>`;
-  }).join('');
-  const turn = heading(state.spatial.track, selfId);
+  const age = now - me.at_ms, old = age > 15_000, across = (map.maxX - map.minX) / 100;
+  const names = new Map(data.actors.map(actor => [`${actor.actor_id}:${actor.generation}`, actor]));
+  const allies = new Set((Array.isArray(state.party_member_ids) ? state.party_member_ids : []).map(String));
+  const latest = new Map();
+  for (const point of positions) if (point.actor_id !== selfId && point.present && point.epoch === me.epoch && point.at_ms <= now && now - point.at_ms <= 15_000 && (!latest.has(point.actor_id) || point.at_ms >= latest.get(point.actor_id).at_ms)) latest.set(point.actor_id, point);
+  const dots = [...latest.values()].map(point => ({ point, dx: (point.x - me.x) / 100, dy: (point.y - me.y) / 100, meta: names.get(`${point.actor_id}:${point.generation}`) || {} }))
+    .filter(row => Math.abs(row.dx) <= range * .55 && Math.abs(row.dy) <= range * .55).slice(0, 60).map(({ point, dx, dy, meta }) => {
+      const kind = allies.has(point.actor_id) ? 'party' : meta.kind === 'player' ? 'player' : 'npc';
+      return `<i class="dot ${kind}" data-stale="${now - point.at_ms > 5000}" style="left:${(50 + dx / range * 100).toFixed(2)}%;top:${(50 + dy / range * 100).toFixed(2)}%" title="${esc(meta.name || '')}"></i>`;
+    }).join('');
+  const turn = heading(data.track, selfId);
   const arrow = turn === null ? '<i class="me still"></i>' : `<svg class="me" viewBox="0 0 100 100" style="transform:translate(-50%,-50%) rotate(${turn}deg)" aria-hidden="true"><path d="M50 6 80 90 50 70 20 90z"/></svg>`;
-  return `<div class="map" data-range="${range}"><div class="map-view" title="${tr ? 'Yakınlaştırmak için tıkla' : 'Click to change the zoom'}"><img class="world" src="${esc(map.image)}" alt="" draggable="false" style="width:${(across / range * 100).toFixed(2)}%;transform:translate(-${(at.u * 100).toFixed(3)}%,-${(at.v * 100).toFixed(3)}%)">${dots}${arrow}</div><div class="map-foot"><b>${esc(map.name)}</b><span>${range < 1000 ? `${range} m` : `${range / 1000} km`}</span><time>${esc(place)}</time></div></div>`;
+  const ago = old ? ` · ${age < 90_000 ? `${Math.round(age / 1000)} ${tr ? 'sn önce' : 's ago'}` : `${Math.round(age / 60_000)} ${tr ? 'dk önce' : 'min ago'}`}` : '';
+  return `<div class="map" data-range="${range}"><div class="map-view" data-old="${old}" title="${tr ? 'Yakınlaştırmak için tıkla' : 'Click to change the zoom'}"><img class="world" src="${esc(map.image)}" alt="" draggable="false" style="width:${(across / range * 100).toFixed(2)}%;transform:translate(-${(at.u * 100).toFixed(3)}%,-${(at.v * 100).toFixed(3)}%)">${dots}${arrow}</div><div class="map-foot"><b>${esc(map.name)}</b><span>${range < 1000 ? `${range} m` : `${range / 1000} km`}</span><time>${esc(place + ago)}</time></div></div>`;
 }
 
 // The connection as a small pill: bars that fill with a good one, and the round-trip time.
-function pingPanel({ state, locale, now }) {
+function pingPanel({ state, locale, now, marker = {} }) {
   const ping = latencyPresentation(state.capture?.status === 'capturing' ? state.capture.network_latency : { status: 'unavailable' }, { now, locale });
-  const ms = ping.fresh ? ping.rtt_ms : null;
+  const ms = ping.fresh ? ping.rtt_ms : marker.edit === true ? 42 : null;
   const level = ms === null ? 0 : ms <= 60 ? 4 : ms <= 100 ? 3 : ms <= 160 ? 2 : 1;
   const tone = ms === null ? 'idle' : ms <= 100 ? 'good' : ms <= 160 ? 'fair' : 'poor';
   return `<div class="ping" data-tone="${tone}" title="${esc(ping.detail)}"><span class="signal">${[1, 2, 3, 4].map(step => `<i data-on="${step <= level}" style="height:${4 + step * 3}px"></i>`).join('')}</span><b>${ms === null ? '—' : ms}</b><small>ms</small></div>`;

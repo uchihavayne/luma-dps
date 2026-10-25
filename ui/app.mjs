@@ -39,7 +39,7 @@ import { resourceStatus } from './resources.mjs';
 import { teamSnapshot, renderTeam, automaticTeamState, renderAutomaticTeam } from './team.mjs';
 import { renderCombatInsights, renderEffectAttribution, renderBossProjection } from './combat-insights.mjs';
 import { renderRunHistory } from './run-history.mjs';
-import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates } from './runtime-tools.mjs';
+import { HOTKEY_ACTIONS, renderHotkeys, renderUpdates, updatePresentation, updatePrompt } from './runtime-tools.mjs';
 import { renderLatencyHistory } from './latency-history.mjs';
 import { overlayRect, overlayGesture, fullscreenLayout, isFullscreenDashboard } from './overlay.mjs';
 import { worldTargetPresentation, targetVital, targetSummary, targetBoardChoices, targetHeaderTarget } from './bosses.mjs';
@@ -439,6 +439,7 @@ function applyAppearance() {
   $('#meter').dataset.detailRows = String(prefs.hudDetailRows);
   $('#meter').dataset.largeType = String(prefs.textScale > 1.25);
   for (const name of HUD_PANELS) $('#meter').dataset[`hud${name[0].toUpperCase()}${name.slice(1)}`] = String(hudPanelVisible(prefs, name));
+  $('#meter').dataset.clean = String(prefs.cleanLook);
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
   scheduleRosterFit();
@@ -1176,7 +1177,7 @@ function overlayOptionsContent(tr) {
 
 function controlsContent() {
   const tr = prefs.locale === 'tr';
-  const options = [['fullscreenOverlay', tr ? 'Tam ekran görünümünü aç' : 'Enable fullscreen view'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['showSkillBoard', tr ? 'Yeteneklerimi ana pencerede göster (hasar tablosu)' : 'Show my skills in the main window (damage table)'], ['compactStrip', tr ? 'Pencere ve HUD için tek satır kompakt görünüm' : 'One-line compact view for the window and HUD']];
+  const options = [['fullscreenOverlay', tr ? 'Tam ekran görünümünü aç' : 'Enable fullscreen view'], ['onlyAboveGame', tr ? 'Yalnız AION2 ve Luma öndeyken üstte tut' : 'Keep on top only above AION2 and Luma'], ['clickThroughWhenLocked', tr ? 'Kilitliyken tıklamaları oyuna geçir' : 'Pass clicks through while locked'], ['fadeWhenIdle', tr ? 'Savaş dışında görünümü soldur' : 'Fade outside combat'], ['hidePlayerNames', tr ? 'Ana listede diğer oyuncuların adlarını gizle' : 'Hide other player names in the main roster'], ['showSkillBoard', tr ? 'Yeteneklerimi ana pencerede göster (hasar tablosu)' : 'Show my skills in the main window (damage table)'], ['cleanLook', tr ? 'Temiz görünüm: düğmeler yalnızca üzerine gelince, uyarı kartları gizli' : 'Clean look: buttons only on hover, notice cards hidden'], ['compactStrip', tr ? 'Pencere ve HUD için tek satır kompakt görünüm' : 'One-line compact view for the window and HUD']];
   return `${captureDiagnosticsContent()}<h3 class="section-title">${tr ? 'Pencere davranışı' : 'Window behavior'}</h3><label class="field"><span>${tr ? 'Tam ekran düzeni' : 'Fullscreen layout'}</span><select name="fullscreenLayout"><option value="dashboard" ${fullscreenLayout(prefs) === 'dashboard' ? 'selected' : ''}>${tr ? 'Ekranı dolduran panel' : 'Full-screen dashboard'}</option><option value="hud" ${fullscreenLayout(prefs) === 'hud' ? 'selected' : ''}>${tr ? 'Saydam ekran üzerinde küçük HUD' : 'Small HUD on a transparent screen'}</option></select></label>${options.map(([name, label]) => `<label class="check-field"><input type="checkbox" name="${name}" ${prefs[name] ? 'checked' : ''}>${label}</label>`).join('')}${overlayOptionsContent(tr)}<p class="help">${tr ? 'Tıklamaları geçirmek için kilit açma kısayolu çalışır durumda olmalı. Ayarlar açıldığında pencere tekrar tıklanabilir olur.' : 'Click-through requires a working unlock shortcut. Opening settings restores interaction.'}</p><p class="help">${tr ? 'Tam ekran seçeneği ekranı dolduran paneli açar. Küçük HUD seçeneğinde panelin dışındaki tıklamalar oyuna gider; başlıktan sürükleyip köşeden boyutlandırabilirsin. F11 veya Ctrl+Alt+Shift+F5 ile pencereye dön.' : 'The fullscreen option opens the dashboard. With the small HUD, clicks outside the panel reach the game; drag its header or resize its corner. F11 or Ctrl+Alt+Shift+F5 returns to window mode.'}</p><details class="appearance-details"><summary>${tr ? 'Kısayollar' : 'Shortcuts'}</summary>${renderHotkeys(hotkeyState, { locale: prefs.locale, native, busy: hotkeyPending })}</details>${captureSaveContent(tr)}`;
 }
 
@@ -1184,7 +1185,7 @@ async function readRuntimeState() {
   if (!native) return;
   const results = await Promise.allSettled([invoke('get_hotkey_state'), invoke('get_update_state')]);
   if (results[0].status === 'fulfilled') hotkeyState = results[0].value;
-  if (results[1].status === 'fulfilled') updateState = results[1].value;
+  if (results[1].status === 'fulfilled') { updateState = results[1].value; renderUpdatePrompt(); }
   if (drawer === 'settings' && ['controls', 'about'].includes(settingsTab) && !$('#drawer-content').contains(document.activeElement)) refreshDrawer();
 }
 
@@ -1202,8 +1203,34 @@ async function runUpdate(actionName) {
   updatePending = true;
   try { const command = { 'check-update': 'check_updates', 'download-update': 'download_update', 'install-update': 'install_update' }[actionName]; updateState = await invoke(command); }
   catch (error) { updateState = { ...updateState, status: 'error', error: String(error).slice(0, 320) }; }
-  finally { updatePending = false; if (drawer === 'settings') refreshDrawer(); }
+  finally { updatePending = false; if (drawer === 'settings') refreshDrawer(); renderUpdatePrompt(); }
 }
+
+// A new version asks first: download it? Then install it and restart? "Later" keeps quiet about that
+// version and step for a day.
+const UPDATE_SNOOZE_KEY = 'luma.updateSnooze', DAY_MS = 86_400_000;
+function updateSnoozed(prompt) {
+  try { const saved = JSON.parse(localStorage.getItem(UPDATE_SNOOZE_KEY) || 'null'); return Boolean(saved) && saved.version === prompt.version && saved.stage === prompt.stage && Date.now() < saved.until; } catch { return false; }
+}
+function renderUpdatePrompt() {
+  const host = $('#update-prompt');
+  let prompt = native ? updatePrompt(updateState, { locale: prefs.locale }) : null;
+  if (prompt && updateSnoozed(prompt)) prompt = null;
+  host.hidden = !prompt;
+  if (prompt && host._html !== prompt.html) { host.innerHTML = prompt.html; host._html = prompt.html; host.dataset.stage = prompt.stage; }
+}
+$('#update-prompt').addEventListener('click', event => {
+  const action = event.target.closest('[data-update-prompt]')?.dataset.updatePrompt;
+  if (action === 'update-download') runUpdate('download-update');
+  else if (action === 'update-install') runUpdate('install-update');
+  else if (action === 'update-later') {
+    const prompt = updatePrompt(updateState, { locale: prefs.locale });
+    if (prompt) { try { localStorage.setItem(UPDATE_SNOOZE_KEY, JSON.stringify({ version: prompt.version, stage: prompt.stage, until: Date.now() + DAY_MS })); } catch {} }
+    renderUpdatePrompt();
+  }
+});
+// The meter stays open for days: ask the release feed again every six hours (unless that is switched off).
+setInterval(() => { if (native && prefs.autoCheckUpdates && !updatePending && ['idle', 'current', 'error'].includes(updatePresentation(updateState).status)) runUpdate('check-update'); }, 6 * 3_600_000);
 
 function rotationContent() {
   return `${source()}${playerPicker()}<div class="button-row">${button('refresh-insights', 'refreshCurve', curvePending || snapshot ? 'disabled' : '', true)}</div>${renderCombatInsights(retainedRecord(), insightOptions())}${renderEffectAttribution(retainedRecord(), insightOptions())}${renderBossProjection(retainedRecord(), { locale: prefs.locale, now: snapshot?.ended_ms || Date.now() })}`;
@@ -2537,7 +2564,7 @@ $('#drawer-content').addEventListener('change', async event => {
   if (name === 'obsScope') { obsScope = element.value; return; }
   if (name === 'obsLanEnabled') { obsLanEnabled = element.checked; return; }
   if (name === 'obsPort') { obsPort = element.value; return; }
-  if (['onlyAboveGame', 'clickThroughWhenLocked', 'fadeWhenIdle', 'hidePlayerNames', 'showSkillBoard', 'compactStrip', 'autoCheckUpdates'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
+  if (['onlyAboveGame', 'clickThroughWhenLocked', 'fadeWhenIdle', 'hidePlayerNames', 'showSkillBoard', 'cleanLook', 'compactStrip', 'autoCheckUpdates'].includes(name)) { savePreferences({ [name]: element.checked }); return; }
   if (name === 'obsHideNames') { obsHideNames = element.checked; return; }
   if (name?.startsWith('color-')) { savePreferences({ theme: 'custom', customColors: { ...prefs.customColors, [name.slice(6)]: element.value } }); $$('.theme-swatch').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.theme === 'custom'))); return; }
   if (name === 'recordMetric') { recordMetric = element.value; refreshDrawer(name); return; }
@@ -2655,7 +2682,7 @@ $('#drawer-content').addEventListener('click', async event => {
     return;
   }
   if (actionName === 'toggle-cube') { await toggleCubeListening(); return; }
-  if (actionName === 'cube-marker-edit') { try { await invoke('set_overlay', { panel: 'cube', open: true }); await invoke('cube_marker_edit', { enabled: true }); toast(prefs.locale === 'tr' ? 'İşareti sürükle, bitince “Bitti”ye bas.' : 'Drag the marker, then press Done.'); } catch (error) { toast(`${t('failed')}: ${String(error).slice(0, 120)}`, true); } return; }
+  if (actionName === 'cube-marker-edit') { try { await invoke('set_overlay', { panel: 'cube', open: true }); await invoke('overlay_controls', { open: true }); toast(prefs.locale === 'tr' ? 'İşaretleri sürükle, bitince “Bitti”ye bas.' : 'Drag the markers, then press Done.'); } catch (error) { toast(`${t('failed')}: ${String(error).slice(0, 120)}`, true); } return; }
   if (actionName === 'reset-cube-reference') { if (!cubeState.enabled) await cubeCommand('reset_cube_reference', {}); return; }
   if (actionName === 'open-alerts' || actionName === 'open-training') { snapshot = null; openDrawer('analysis', actionName === 'open-alerts' ? 'alerts' : 'training'); }
   if (actionName === 'retry-history') { const pending = historyCache?.retry(); refreshDrawer(); await pending; if (drawer === 'analysis' && tab === 'history') refreshDrawer(); }
@@ -2858,7 +2885,7 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-fullscreen-error', event => { if (event.payload) toast(String(event.payload).slice(0, 200), true); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-preference-patch', event => { const patch = event.payload && typeof event.payload === 'object' ? event.payload : {}; const allowed = ['overlayScale', 'overlayRate', 'overlaySnap', 'opacity', 'combatDetection']; savePreferences(Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)))); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
-  try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); renderUpdatePrompt(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(await invoke('get_preferences'))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
   await refreshState();
   readRuntimeState();

@@ -19,6 +19,21 @@ export function updatePresentation(value = {}) {
   const version = typeof value.version === 'string' ? value.version.slice(0, 40) : typeof value.available_version === 'string' ? value.available_version.slice(0, 40) : '';
   return { status, version, notes: typeof value.notes === 'string' ? value.notes.slice(0, 6000) : '', error: typeof value.error === 'string' ? value.error.slice(0, 320) : '', verified: value.publisher_verified === true, downloaded: value.downloaded === true || status === 'downloaded', busy: ['checking', 'downloading', 'installing'].includes(status) };
 }
+// What a new version asks: first whether to download it, then (once it is here and its publisher
+// signature checked by the shell) whether to install it and restart. Null when there is nothing to ask,
+// or when the player said "later" for this version.
+export function updatePrompt(value, { locale = 'tr', snoozed = false } = {}) {
+  const view = updatePresentation(value && typeof value === 'object' ? value : {}), tr = locale === 'tr';
+  const stage = view.downloaded ? 'downloaded' : view.status === 'available' ? 'available' : ['downloading', 'installing'].includes(view.status) ? 'busy' : null;
+  if (!stage || (snoozed && stage !== 'busy')) return null;
+  const version = esc(view.version);
+  const title = stage === 'busy' ? (tr ? 'Güncelleme hazırlanıyor…' : 'Preparing the update…')
+    : stage === 'downloaded' ? (tr ? `Sürüm ${version} indirildi` : `Version ${version} downloaded`) : (tr ? `Yeni sürüm ${version} var` : `Version ${version} is available`);
+  const question = stage === 'available' ? (tr ? 'İndirmek ister misin?' : 'Do you want to download it?') : stage === 'downloaded' ? (tr ? 'Şimdi kurup programı yeniden başlatalım mı?' : 'Install it now and restart?') : '';
+  const buttons = stage === 'available' ? [['update-download', tr ? 'İndir' : 'Download', true], ['update-later', tr ? 'Sonra' : 'Later', false]]
+    : stage === 'downloaded' ? [['update-install', tr ? 'Kur ve yeniden başlat' : 'Install and restart', true], ['update-later', tr ? 'Sonra' : 'Later', false]] : [];
+  return { stage, version: view.version, html: `<strong>${title}</strong>${question ? `<span>${question}</span>` : ''}${buttons.length ? `<div class="update-actions">${buttons.map(([action, label, primary]) => `<button type="button" class="${primary ? 'action-button' : 'text-button'}" data-update-prompt="${action}">${esc(label)}</button>`).join('')}</div>` : ''}` };
+}
 export function renderUpdates(value, { locale = 'tr', native = false, busy = false } = {}) {
   const tr = locale === 'tr', view = updatePresentation(value), names = tr ? { idle: 'Kontrol edilmeye hazır', checking: 'Kontrol ediliyor…', available: 'Yeni sürüm mevcut', current: 'Güncel', downloading: 'İndiriliyor…', downloaded: 'Kurulmaya hazır', installing: 'Yeniden başlatılıyor…', error: 'Güncelleme tamamlanamadı' } : { idle: 'Ready to check', checking: 'Checking…', available: 'Update available', current: 'Up to date', downloading: 'Downloading…', downloaded: 'Ready to install', installing: 'Restarting…', error: 'Update could not complete' };
   const disabled = !native || busy || view.busy;

@@ -292,3 +292,20 @@ body[data-panel=ping] .panel-body { padding: 8px 12px; justify-content: center; 
 .ctl-foot button { flex: 1; padding: 7px 4px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .06); color: var(--text); font-size: 11px; }
 .ctl-foot button[aria-pressed=true] { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); }
 .ctl-foot button.primary { background: var(--accent); border-color: transparent; color: #0b1410; font-weight: 700; font-size: 12px; }
+
+/* Ping and flight time are drawn on the screen like the Cube marker: no card, only the numbers. */
+body.marker .ping, body.marker .flyer { text-shadow: 0 1px 3px #000d, 0 0 9px #000a; }
+body[data-panel=ping] .panel-body, body[data-panel=flight] .panel-body { justify-content: center; align-items: center; }
+body[data-panel=flight] .panel-body { align-items: stretch; padding: 0 8px; }
+.flyer { display: grid; justify-items: center; gap: 5px; color: #fff; }
+.flyer .fly-main { display: flex; align-items: baseline; gap: 8px; }
+.flyer .fly-time { font-size: 36px; line-height: 1; font-variant-numeric: tabular-nums; }
+.flyer .fly-label { font-size: 10px; font-weight: 700; letter-spacing: .16em; color: var(--accent); }
+.flyer .bar.wide { width: 100%; height: 8px; border-radius: 4px; background: rgba(0, 0, 0, .5); box-shadow: 0 0 0 1px rgba(255, 255, 255, .16); }
+.flyer .bar.wide u { border-radius: 4px; }
+.flyer .fly-points { font-size: 11px; color: rgba(255, 255, 255, .88); font-variant-numeric: tabular-nums; }
+.flyer[data-low=true] .fly-time { color: var(--danger); }
+.flyer[data-low=true] .bar u { background: var(--danger); }
+.flyer[data-sample=true], .ping[data-tone] { opacity: 1; }
+body.editing .edit-bar { top: 4px; right: 6px; bottom: auto; }
+.map-view[data-old=true] .me { opacity: .55; }

@@ -21,7 +21,7 @@ const $ = selector => document.querySelector(selector);
 const DEMO_CUBE = { enabled: false, network: { cubes: 2, distance_m: 42, vertical_m: 3, direction_deg: 35, fix_age_s: 2, look: 'gold', bearing_deg: 90, live: true, age_s: 12 } };
 let locale = params.get('lang') === 'en' ? 'en' : 'tr';
 let names = {}, caps = {}, events = [], shown = null, scale = 1, rateMs = 250, optionsSent = '', mapRange = 1000, locked = false, holding = false, controlsOpen = [], controlsOptions = {}, markerPrefs = { enabled: true, needKeys: false }, editing = false;
-const marker = panel === 'cube';
+const marker = ['cube', 'ping', 'flight'].includes(panel);
 document.body.classList.toggle('marker', marker);
 document.body.dataset.panel = panel;
 let raw = demo ? DEMO_STATE : {}, cubeRaw = demo ? DEMO_CUBE : {}, state = normalizeState(raw), fresh = true, lastEvent = 0;
@@ -32,7 +32,7 @@ function applyTitle() {
   $('#panel-close').setAttribute('aria-label', locale === 'en' ? 'Close' : 'Kapat');
   $('#panel-reload').setAttribute('aria-label', locale === 'en' ? 'Refresh' : 'Yenile'); $('#panel-reload').title = locale === 'en' ? 'Refresh' : 'Yenile';
   $('#panel-resize').setAttribute('aria-label', locale === 'en' ? 'Resize' : 'Boyutlandır');
-  $('#edit-hint').textContent = locale === 'en' ? 'Drag the marker where you want it' : 'İşareti istediğin yere sürükle';
+  $('#edit-hint').textContent = `${title} · ${locale === 'en' ? 'drag it where you want it' : 'istediğin yere sürükle'}`;
   $('#edit-done').textContent = locale === 'en' ? 'Done' : 'Bitti';
 }
 
@@ -100,13 +100,16 @@ async function listen(name, handler) { try { await tauri.event?.listen(name, han
 $('#panel-drag').addEventListener('pointerdown', event => { if (native && event.button === 0 && !event.target.closest('button')) invoke('overlay_drag').catch(() => {}); });
 // While the Cube marker is being placed, a press anywhere on it drags it; Done gives the clicks back to the game.
 document.addEventListener('pointerdown', event => { if (native && marker && editing && event.button === 0 && !event.target.closest('button')) invoke('overlay_drag').catch(() => {}); });
-$('#edit-done').addEventListener('click', () => { if (native) invoke('cube_marker_edit', { enabled: false }).catch(() => {}); });
+$('#edit-done').addEventListener('click', () => { if (native) invoke('overlay_controls', { open: false }).catch(() => {}); });
 $('#panel-content').addEventListener('click', event => { if (panel === 'map' && event.target.closest('.map-view')) { mapRange = MAP_RANGES[(MAP_RANGES.indexOf(mapRange) + 1) % MAP_RANGES.length]; render(); } });
 const reloadWindow = () => location.reload();
 $('#panel-reload').addEventListener('click', reloadWindow);
 function setLocked(value) {
   locked = value === true;
   document.body.classList.toggle('locked', locked && panel !== 'controls' && !marker);
+  // An unlocked marker is being placed: it shows a sample, a dashed edge, and a press drags it.
+  editing = marker && !locked;
+  document.body.classList.toggle('editing', editing);
   render();
 }
 // The controls window changes a few look settings; the meter window saves them.
