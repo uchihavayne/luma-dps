@@ -319,3 +319,5 @@ body.locked .hint { display: none; }
 body.locked .panel-content { text-shadow: 0 1px 3px #000d; }
 body.locked .panel-content :is(.hero, .tile, .time-row, .line, .timer, .cd, .effect, .member, .seat, .skill, .target, .slot, .recap, .group, .alert, .stats > div, .map-view) { background-color: color-mix(in srgb, #0b0f14 72%, transparent); }
 body.locked[data-panel=map] .map-foot { text-shadow: 0 1px 3px #000, 0 0 8px #000; }
+
+.ctl-foot button.support { border-color: color-mix(in srgb, #ffdd00 50%, transparent); background: color-mix(in srgb, #ffdd00 12%, transparent); color: #ffdd00; font-weight: 600; }

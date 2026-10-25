@@ -33,6 +33,8 @@ pub struct Change {
     pub loot: bool,
     /// The game said this increase is the reward for beating a player.
     pub pvp: bool,
+    /// The game's own reason for the increase, as received.
+    pub reason: u8,
 }
 
 pub fn is_currency(item: u32) -> bool {
@@ -142,6 +144,7 @@ pub fn changes(frame: &[u8]) -> Vec<Change> {
             count: if kind == REMOVE { 0 } else { stack.count },
             loot: LOOT_REASONS.contains(&increase),
             pvp: increase == PVP_REWARD,
+            reason: increase,
         });
     }
     rows

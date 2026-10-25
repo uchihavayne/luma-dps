@@ -45,12 +45,13 @@ function damagePanel({ state, locale, label }) {
   return `<div class="dmg-head"><b>${esc(dpsText(view.total / view.seconds))}</b><small>DPS</small><time>${clock(elapsed)}</time></div><div class="skill-lines">${rows}</div>${view.more ? `<small class="more">+${view.more} ${tr ? 'yetenek daha' : 'more skills'}</small>` : ''}`;
 }
 
+const gainsText = (gains, tr) => gains.length ? gains.map(gain => `+${gain.delta} (${tr ? 'sebep' : 'reason'} ${gain.reason}${gain.counted ? `, ${tr ? 'sayıldı' : 'counted'}` : ''})`).join(' · ') : (tr ? 'Henüz Abyss Puanı artışı yok.' : 'No Abyss Points rise yet.');
 function pvpPanel({ state, locale, label }) {
   const tr = locale !== 'en', pvp = state.pvp, recap = deathRecap(pvp.last_death, { locale, label });
   const stat = (value, caption, title = '') => `<div${title ? ` title="${esc(title)}"` : ''}><b>${esc(value)}</b><small>${caption}</small></div>`;
   const rows = recap ? recap.skills.map(row => `<div class="skill" style="--share:${row.share.toFixed(3)}"><span class="name">${esc(row.name)}</span><span>${row.hits}×</span><span>${Math.round(row.share * 100)}%</span><span>${esc(short(row.damage))}</span></div>`).join('') : '';
   const assists = tr ? 'Asist, oyunun skor bildirimi ve parti ya da oda listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party or room list.';
-  return `<div class="stats">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? assists : '')}${stat(`+${groupedNumber(pvp.points, locale)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', tr ? 'Oyuncu öldürmenin ödülü olarak oyunun verdiği Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points the game gave as the reward for beating players; points from monsters are not counted.')}</div>`
+  return `<div class="stats">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? assists : '')}${stat(`+${groupedNumber(pvp.points, locale)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', `${tr ? 'Oyuncu öldürmenin ödülü olarak gelen Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points that came as the reward for beating players; points from monsters are not counted.'}\n${gainsText(pvp.gains, tr)}`)}</div>`
     + (recap ? `<div class="recap"><strong>${esc(recap.kind)}</strong><span>${esc(recap.line)}</span><small>${tr ? 'Son 10 sn alınan hasar' : 'Damage taken in the last 10 s'}: ${esc(short(recap.taken))}</small></div>${rows}`
       : `<p class="hint">${tr ? 'Henüz bir oyuncuyla savaşmadın.' : 'No player fought yet.'}</p>`);
 }
@@ -312,6 +313,7 @@ function controlsPanel({ controls, locale }) {
 ${segment('seconds', [[5, '5 s'], [10, '10 s'], [20, '20 s'], [30, '30 s'], [60, '60 s']], option.seconds ?? 10)}
 <div class="ctl-foot"><button type="button" data-action="lock" aria-pressed="${locked}">${locked ? (tr ? 'Kilidi aç' : 'Unlock') : (tr ? 'Kilitle' : 'Lock')}</button><button type="button" data-action="reload">${tr ? 'Yenile' : 'Refresh'}</button><button type="button" data-action="open-app">${tr ? 'Uygulamada aç' : 'Open app'}</button></div>
 <div class="ctl-foot"><button type="button" data-action="settings">${tr ? 'Ayarlar' : 'Settings'}</button><button type="button" data-action="analysis">${tr ? 'Analiz' : 'Analysis'}</button></div>
+<div class="ctl-foot"><button type="button" class="support" data-action="support">☕ Buy me a coffee</button></div>
 <div class="ctl-foot"><button type="button" class="primary" data-action="done">${tr ? 'Bitti' : 'Done'}</button></div></div>`;
 }
 

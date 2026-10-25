@@ -1,6 +1,6 @@
 // A detached panel window. It shows one panel and only reads: the meter's state and the Cube state
 // arrive the same way the meter gets them, and nothing here saves a preference.
-import { normalizePreferences, normalizeState } from './model.mjs';
+import { normalizePreferences, normalizeState, withSystemLocale } from './model.mjs';
 import { allEvents } from './events.mjs';
 import { cubePresentation } from './cube.mjs';
 import { skillLabel } from './skill-names.mjs';
@@ -106,7 +106,7 @@ async function pull() {
 }
 async function pullPreferences() {
   try {
-    const prefs = normalizePreferences(await invoke('get_preferences'));
+    const prefs = normalizePreferences(withSystemLocale(await invoke('get_preferences')));
     locale = prefs.locale === 'en' ? 'en' : 'tr';
     names = prefs.idNames;
     caps = prefs.idCaps;
@@ -160,6 +160,7 @@ $('#panel-content').addEventListener('click', async event => {
   else if (toggle === 'overlaySnap') changePreference('overlaySnap', controlsOptions.snap !== true);
   else if (action === 'reload') invoke('overlay_reload').catch(() => {});
   else if (action === 'open-app') invoke('overlay_show_main').catch(() => {});
+  else if (action === 'support') invoke('open_url', { url: 'https://buymeacoffee.com/12hrsofficp' }).catch(() => {});
   else if (action === 'settings' || action === 'analysis') invoke('overlay_main_action', { action }).catch(() => {});
   else if (action === 'done') invoke('overlay_controls', { open: false }).catch(() => {});
   else if (action === 'lock') invoke('overlay_lock', { locked: !locked }).catch(() => {});

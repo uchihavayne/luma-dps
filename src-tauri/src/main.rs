@@ -4177,6 +4177,7 @@ fn main() {
             overlays::overlay_controls,
             overlays::overlay_lock,
             overlays::overlay_visible,
+            overlays::main_interactive,
             overlays::overlay_locked,
             overlays::overlay_reload,
             overlays::overlay_preference,
@@ -4434,6 +4435,14 @@ fn main() {
                             &handle,
                             state.get("encounter_active").and_then(Value::as_bool) == Some(true),
                         );
+                        let panel_open = shared.panel_open.load(Ordering::Relaxed);
+                        let (blocked, legacy) = shared.preferences.lock().ok().map_or((false, false), |preferences| {
+                            (
+                                panel_open || fullscreen_overlay_enabled(&preferences),
+                                cursor_pass_through(&preferences, panel_open, true).unwrap_or(false),
+                            )
+                        });
+                        overlays::sync_main_click_through(&handle, blocked, legacy);
                         // Every window parses what is sent, so send a state only when it changed (and not
                         // faster than the update rate), or as a heartbeat: nothing is sent to idle windows.
                         let now = now_ms();

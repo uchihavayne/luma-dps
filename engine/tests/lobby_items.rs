@@ -5,7 +5,7 @@
 use luma_engine::{
     items::{self, Change, Stack},
     lobby::{self, Room, RoomEvent, RoomMember},
-    packets::Event,
+    packets::{self, Event},
     MeterEngine,
 };
 
@@ -291,10 +291,10 @@ fn the_item_list_reads_through_equipment_details_and_changes_say_what_grew() {
     assert_eq!(
         changes,
         vec![
-            Change { key: 4, item: 530_000_001, count: 14, loot: true, pvp: false },
-            Change { key: 3, item: 930_100_003, count: 0, loot: false, pvp: false },
-            Change { key: 9, item: 531_900_001, count: 2, loot: true, pvp: false },
-            Change { key: 4, item: 530_000_001, count: 15, loot: false, pvp: false },
+            Change { key: 4, item: 530_000_001, count: 14, loot: true, pvp: false, reason: 5 },
+            Change { key: 3, item: 930_100_003, count: 0, loot: false, pvp: false, reason: 0 },
+            Change { key: 9, item: 531_900_001, count: 2, loot: true, pvp: false, reason: 58 },
+            Change { key: 4, item: 530_000_001, count: 15, loot: false, pvp: false, reason: 13 },
         ]
     );
     // What was read before a broken entry is kept.
@@ -366,4 +366,47 @@ fn abyss_points_from_beating_players_are_counted_and_a_monster_kill_is_not() {
     // The session reset clears it.
     engine.reset();
     assert_eq!(engine.live_state(1900).pvp.points, 0);
+}
+
+/// A death notice (`04 8d`): victim, skill, killer, then the killer's server, nickname, guild, emblem,
+/// monster model, action, reason and kind.
+fn death_frame(victim: u32, killer: u32) -> Vec<u8> {
+    let mut frame = Frame::new([0x04, 0x8d]);
+    frame.varint(victim).i32(1).varint(killer).u16(0).text("").text("").u16(0).varint(0).i32(0).u8(0).u8(1);
+    frame.out
+}
+
+#[test]
+fn abyss_points_that_follow_your_player_kill_count_whatever_reason_the_game_gives() {
+    let mut engine = MeterEngine::default();
+    engine.ingest_event(Event::Identity { id: 1, name: "Me".into(), class: Some(14), own: true }, 0);
+    engine.ingest_event(Event::Identity { id: 2, name: "Enemy".into(), class: Some(14), own: false }, 0);
+    engine.observe_game_frame(&inventory(&[(3, 930_100_003, 6000, false)]), 1000);
+    // No kill yet: a rise with an unmarked reason is not a player's reward.
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6100, false, 0)]), 1100);
+    assert_eq!(engine.live_state(1200).pvp.points, 0);
+    // You beat a player; the reward comes a moment later with whatever reason the game gives it.
+    engine.observe_death(&packets::death_record(&death_frame(2, 1)).expect("a death notice"), 2000);
+    assert_eq!(engine.live_state(2100).pvp.kills, 1);
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6250, false, 0)]), 2500);
+    assert_eq!(engine.live_state(2600).pvp.points, 150);
+    // A monster's reward in the same moment (marked as loot) is not counted.
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6265, false, 82)]), 3000);
+    assert_eq!(engine.live_state(3100).pvp.points, 150);
+    // Long after the kill an unmarked rise is not either; the game's own PvP reason always is.
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6300, false, 0)]), 20_000);
+    assert_eq!(engine.live_state(20_100).pvp.points, 150);
+    engine.observe_game_frame(&modification(&[(1, 3, 930_100_003, 6400, false, 62)]), 30_000);
+    assert_eq!(engine.live_state(30_100).pvp.points, 250);
+    // The last rises are kept with their reasons and whether they were counted, to trace a wrong count.
+    let gains = engine.live_state(30_200).pvp.gains;
+    let seen: Vec<_> = gains.iter().map(|gain| (gain.delta, gain.reason, gain.counted)).collect();
+    assert_eq!(seen, vec![(100, 0, false), (150, 0, true), (15, 82, false), (35, 0, false), (100, 62, true)]);
+    // It needs no full item list at the start: the first rise teaches the stack, the next are counted.
+    let mut late = MeterEngine::default();
+    late.ingest_event(Event::Identity { id: 1, name: "Me".into(), class: Some(14), own: true }, 0);
+    late.ingest_event(Event::Identity { id: 2, name: "Enemy".into(), class: Some(14), own: false }, 0);
+    late.observe_game_frame(&modification(&[(1, 3, 930_100_003, 500, false, 0)]), 100);
+    late.observe_game_frame(&modification(&[(1, 3, 930_100_003, 560, false, 62)]), 200);
+    assert_eq!(late.live_state(300).pvp.points, 60);
 }

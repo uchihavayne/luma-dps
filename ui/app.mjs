@@ -15,7 +15,7 @@ import { classIcon } from './class-icons.mjs';
 import { GAME_REFERENCE_NOTICE } from './reference-notices.mjs';
 import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, capRoster, rosterFit, unnamedSourcesNotice } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
-import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
+import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, withSystemLocale, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
 import { playerBarColor } from './model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus, petCollectionOwner, petCollectionEpoch, acceptsPetCollectionSnapshot, petCollectionProgress } from './model.mjs';
@@ -80,6 +80,7 @@ if (spatialDemo) {
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
 // Luma starts locked: the meter is drawn bare, with no window around it. Alt+E unlocks it for editing.
+let mainInteractive = null;
 let overlayLocked = window.__TAURI__?.core?.invoke ? true : new URLSearchParams(location.search).get('bare') === '1';
 let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, fitRequested = 0, rosterContext = '';
 let skillsFromTargetBoard = false;
@@ -443,6 +444,7 @@ function applyAppearance() {
   for (const name of HUD_PANELS) $('#meter').dataset[`hud${name[0].toUpperCase()}${name.slice(1)}`] = String(hudPanelVisible(prefs, name));
   $('#meter').dataset.clean = String(prefs.cleanLook);
   $('#meter').dataset.look = prefs.cleanLook && overlayLocked && !drawer && !toolsOpen ? 'bare' : 'frame';
+  syncMainInteractive();
   $('#drag-region').style.cursor = prefs.locked || isFullscreenDashboard(prefs) ? 'default' : 'grab';
   syncOverlayGeometry();
   scheduleRosterFit();
@@ -548,7 +550,7 @@ const preferenceCommitter = native ? createPreferenceCommitter(prefs, {
     toast(`${t('failed')}: ${String(error).slice(0, 100)}`, true);
   },
 }) : null;
-const initialPreferences = native ? preferenceCommitter.load(async () => normalizePreferences(await invoke('get_preferences'))) : null;
+const initialPreferences = native ? preferenceCommitter.load(async () => normalizePreferences(withSystemLocale(await invoke('get_preferences')))) : null;
 
 function savePreferences(patch = {}) {
   prefs = normalizePreferences({ ...prefs, ...patch });
@@ -619,7 +621,7 @@ function toolsMenuContent() {
       <label class="check-field"><input type="checkbox" data-tools-field="showTargetHealth">${pair('Hedef canını göster', 'Show target health')}</label>
       <label class="check-field"><input type="checkbox" data-tools-field="hudDetailRows">${pair('Satır ayrıntıları · sınıf, yüzde ve cooldown', 'Row details · class, share and cooldown')}</label>
     </details>
-    <div class="tools-links tools-more">${item('training', t('trainingTitle'))}${item('diagnostics', pair('Durum ve tanı', 'Status and diagnostics'))}</div>
+    <div class="tools-links tools-more">${item('training', t('trainingTitle'))}${item('diagnostics', pair('Durum ve tanı', 'Status and diagnostics'))}<button type="button" class="tools-support" data-tools-action="support">☕ Buy me a coffee</button></div>
     </div>`;
 }
 
@@ -1046,6 +1048,9 @@ async function validateRasterDimensions(data) {
 }
 
 const field = (name, label, type = 'text', value = '', extra = '') => `<label class="field"><span>${t(label)}</span><input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
+const SUPPORT_URL = 'https://buymeacoffee.com/12hrsofficp';
+// Luma is free: a card with the way to buy its maker a coffee (the shell opens only this one address).
+const supportCard = () => `<div class="support-card"><div><strong>☕ Buy me a coffee</strong><span>${prefs.locale === 'tr' ? 'Luma ücretsiz. Beğendiysen geliştiriciye bir kahve ısmarlayabilirsin.' : 'Luma is free. If you like it, you can buy its maker a coffee.'}</span></div><button type="button" class="support-button" data-action="support">☕ Buy me a coffee ↗</button></div>`;
 const button = (actionName, label, extra = '', secondary = false) => `<button type="button" class="action-button${secondary ? ' secondary' : ''}" data-action="${actionName}" ${extra}>${t(label)}</button>`;
 const source = label => `<span class="tag">${label || sourceLabel()}</span>`;
 const empty = key => `<p class="help">${t(key)}</p>`;
@@ -1184,8 +1189,8 @@ function captureSaveContent(tr) {
 // Look and feel of the separate windows: how big they are, how often they redraw, whether they
 // settle on a grid once let go. Every window reads these on its own.
 function overlayOptionsContent(tr) {
-  const scales = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6], rates = [250, 500, 1000], limits = [0, 5, 8, 10, 15, 20];
-  return `<h3 class="section-title">${tr ? 'Oyuncu listesi' : 'Player list'}</h3><label class="field"><span>${tr ? 'Listede en çok kişi (kalabalıkta en çok DPS yapanlar, bir de sen)' : 'Most players listed (the ones with the most DPS in a crowd, and you)'}</span><select name="rosterLimit">${limits.map(value => `<option value="${value}" ${prefs.rosterLimit === value ? 'selected' : ''}>${value === 0 ? (tr ? 'Hepsi' : 'Everyone') : value}</option>`).join('')}</select></label>`
+  const scales = [0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6], rates = [250, 500, 1000];
+  return `<h3 class="section-title">${tr ? 'Oyuncu listesi' : 'Player list'}</h3><label class="field"><span>${tr ? 'Listede en çok kaç kişi görünsün (kalabalıkta en çok DPS yapanlar, bir de sen). İstediğin sayıyı yaz: 1, 3, 10…; 0 = herkes' : 'How many players to list at most (the ones with the most DPS in a crowd, and you). Type any number: 1, 3, 10…; 0 = everyone'}</span><input type="number" name="rosterLimit" min="0" max="50" step="1" value="${prefs.rosterLimit}" inputmode="numeric"></label>`
     + `<h3 class="section-title">${tr ? 'Ayrı pencereler' : 'Separate windows'}</h3><label class="field"><span>${tr ? 'Pencere ölçeği' : 'Window scale'}</span><select name="overlayScale">${scales.map(value => `<option value="${value}" ${Math.abs(prefs.overlayScale - value) < 0.03 ? 'selected' : ''}>${Math.round(value * 100)}%</option>`).join('')}</select></label><label class="field"><span>${tr ? 'Yenileme hızı' : 'Update rate'}</span><select name="overlayRate">${rates.map(value => `<option value="${value}" ${prefs.overlayRate === value ? 'selected' : ''}>${value} ms</option>`).join('')}</select></label><label class="check-field"><input type="checkbox" name="overlaySnap" ${prefs.overlaySnap ? 'checked' : ''}>${tr ? 'Bırakınca pencereleri ızgaraya oturt' : 'Snap windows to a grid when let go'}</label>`;
 }
 
@@ -1232,6 +1237,7 @@ function renderUpdatePrompt() {
   if (prompt && updateSnoozed(prompt)) prompt = null;
   host.hidden = !prompt;
   if (prompt && host._html !== prompt.html) { host.innerHTML = prompt.html; host._html = prompt.html; host.dataset.stage = prompt.stage; }
+  syncMainInteractive();
 }
 $('#update-prompt').addEventListener('click', event => {
   const action = event.target.closest('[data-update-prompt]')?.dataset.updatePrompt;
@@ -1261,7 +1267,7 @@ function runsContent() {
 }
 
 function settingsContent(section = settingsTab) {
-  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, controls: controlsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${button('support', 'support')}<label class="check-field"><input type="checkbox" name="autoCheckUpdates" ${prefs.autoCheckUpdates ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Açılışta güncellemeleri kontrol et' : 'Check for updates on launch'}</label>${renderUpdates(updateState, { locale: prefs.locale, native, busy: updatePending })}` }[settingsSection(section)])();
+  return ({ appearance: appearanceSettingsContent, character: characterContent, calendar: eventContent, combatSettings: combatSettingsContent, streaming: obsContent, controls: controlsContent, hiddenCube: cubeContent, about: () => `<div class="about-card"><strong>LUMA <span>DPS</span></strong>${appVersion ? `<span class="tag">${esc(appVersion)}</span>` : ''}</div><p class="help">${t('aboutHelp')}</p><p class="help">${t('keyboardHelp')}</p>${supportCard()}<label class="check-field"><input type="checkbox" name="autoCheckUpdates" ${prefs.autoCheckUpdates ? 'checked' : ''}>${prefs.locale === 'tr' ? 'Açılışta güncellemeleri kontrol et' : 'Check for updates on launch'}</label>${renderUpdates(updateState, { locale: prefs.locale, native, busy: updatePending })}` }[settingsSection(section)])();
 }
 
 function cubeCompassMarkup() {
@@ -1382,7 +1388,7 @@ async function setCubeListening(enabled, { source = 'game' } = {}) {
       // A failed stop may only mean the setting could not be saved. The native
       // stop still runs, and its in-memory preference is authoritative here.
       try {
-        const actual = normalizePreferences(await invoke('get_preferences'));
+        const actual = normalizePreferences(withSystemLocale(await invoke('get_preferences')));
         cubeAutoListenIntent = actual.cubeAutoListen;
         prefs = normalizePreferences({ ...prefs, cubeAutoListen: actual.cubeAutoListen });
       } catch (error) {
@@ -1646,6 +1652,13 @@ function renderSkillBoard() {
   if (signature !== skillBoardSignature) { skillBoardSignature = signature; scheduleRosterFit(); }
 }
 document.addEventListener('click', event => { if (native && event.target.closest('[data-overlay-controls]')) invoke('overlay_controls', { open: true }).catch(() => {}); });
+// While the meter is bare it has nothing to click, so the shell lets every click through it to the game;
+// it takes clicks back for its card, a question to answer or a drawer.
+function syncMainInteractive() {
+  if (!native) return;
+  const wanted = $('#meter').dataset.look !== 'bare' || !$('#update-prompt').hidden;
+  if (wanted !== mainInteractive) { mainInteractive = wanted; invoke('main_interactive', { interactive: wanted }).catch(() => { mainInteractive = null; }); }
+}
 const toggleSkillBoard = () => savePreferences({ skillBoardCollapsed: !prefs.skillBoardCollapsed });
 $('#compact-summary').addEventListener('click', toggleSkillBoard);
 $('#compact-summary').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleSkillBoard(); } });
@@ -1684,7 +1697,7 @@ function renderPvp() {
   const stat = (value, label, title = '') => `<div${title ? ` title="${esc(title)}"` : ''}><b>${value}</b><small>${label}</small></div>`;
   const rows = recap ? recap.skills.map(row => `<div class="skill-row" style="--share:${row.share.toFixed(3)}"><span class="skill-name" title="${esc(row.name)}">${esc(row.name)}</span><span class="skill-rate">${row.hits}×</span><span class="skill-share">${(row.share * 100).toFixed(0)}%</span><span class="skill-total">${esc(num(row.damage))}</span></div>`).join('') : '';
   const html = `<div class="skill-head"><strong>PvP</strong><span>${tr ? 'bu oturum' : 'this session'}</span><button type="button" class="icon-button" data-pvp-popover="close" aria-label="${tr ? 'Kapat' : 'Close'}">×</button></div>
-    <div class="pvp-grid">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? (tr ? 'Asist, oyunun skor bildirimi ve parti listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party list.') : '')}${stat(`+${num(pvp.points)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', tr ? 'Oyuncu öldürmenin ödülü olarak oyunun verdiği Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points the game gave as the reward for beating players; points from monsters are not counted.')}</div>
+    <div class="pvp-grid">${stat(pvp.kills, tr ? 'ÖLDÜRME' : 'KILLS')}${stat(pvp.deaths, tr ? 'ÖLÜM' : 'DEATHS')}${stat(pvp.assists ?? '—', tr ? 'ASİST' : 'ASSISTS', pvp.assists === null ? (tr ? 'Asist, oyunun skor bildirimi ve parti listesindeki karakter kimliğin gelince görünür.' : 'Assists appear once the game score arrives and your character is in a party list.') : '')}${stat(`+${num(pvp.points)}`, tr ? 'ABYSS PUANI' : 'ABYSS PTS', `${tr ? 'Oyuncu öldürmenin ödülü olarak gelen Abyss Puanı; canavar kesmekten gelen sayılmaz.' : 'Abyss Points that came as the reward for beating players; points from monsters are not counted.'}\n${pvp.gains.length ? pvp.gains.map(gain => `+${gain.delta} (${tr ? 'sebep' : 'reason'} ${gain.reason}${gain.counted ? `, ${tr ? 'sayıldı' : 'counted'}` : ''})`).join(' · ') : (tr ? 'Henüz Abyss Puanı artışı yok.' : 'No Abyss Points rise yet.')}`)}</div>
     ${recap ? `<div class="pvp-recap"><strong>${esc(recap.kind)}</strong><span>${esc(recap.line)}</span><small>${tr ? 'Son 10 sn alınan hasar' : 'Damage taken in the last 10 s'}: ${esc(num(recap.taken))}</small></div>${rows}` : `<p class="help">${tr ? 'Henüz bir oyuncuyla savaşmadın.' : 'No player fought yet.'}</p>`}`;
   if (host._html !== html) { host.innerHTML = html; host._html = html; }
 }
@@ -2401,6 +2414,7 @@ $('#tools-menu').addEventListener('click', async event => {
   await closeTools();
   const existing = { settings: 'settings-button', training: 'training-button', fullscreen: 'fullscreen-button', compact: 'compact-button', lock: 'lock-button', diagnostics: 'modules-button' }[actionName];
   if (actionName === 'close') return;
+  if (actionName === 'support') { if (native) action('open_url', { url: SUPPORT_URL }).catch(() => {}); else window.open(SUPPORT_URL, '_blank', 'noopener,noreferrer'); return; }
   if (actionName.startsWith('template-')) { applyTemplate(actionName.slice('template-'.length)); return; }
   if (actionName === 'diagnostics') { openDrawer('settings', 'controls'); readCaptureDiagnostics(); return; }
   if (existing) { $(`#${existing}`).click(); return; }
@@ -2567,7 +2581,7 @@ $('#drawer-content').addEventListener('change', async event => {
   if (drawer === 'settings' && element.form?.id) dirtySettingsForms.add(element.form.id);
   if (name === 'showCubeLocator') { savePreferences({ showCubeLocator: element.checked }); return; }
   if (name === 'cubeNeedKeys') { savePreferences({ cubeNeedKeys: element.checked }); return; }
-  if (name === 'rosterLimit') { savePreferences({ rosterLimit: Number(element.value) }); return; }
+  if (name === 'rosterLimit') { const typed = Math.trunc(Number(element.value)); if (element.value.trim() !== '' && Number.isFinite(typed)) savePreferences({ rosterLimit: Math.min(50, Math.max(0, typed)) }); return; }
   if (name === 'overlayScale') { savePreferences({ overlayScale: Number(element.value) }); return; }
   if (name === 'overlayRate') { savePreferences({ overlayRate: Number(element.value) }); return; }
   if (name === 'overlaySnap') { savePreferences({ overlaySnap: element.checked }); return; }
@@ -2750,7 +2764,7 @@ $('#drawer-content').addEventListener('click', async event => {
   if (actionName === 'export-theme') download('luma-theme.json', exportTheme(prefs));
   if (actionName === 'import-theme') $('#theme-file').click();
   if (actionName === 'delete-event') { const events = prefs.events.filter(event => event.id !== id); savePreferences({ events, activeEventId: id === prefs.activeEventId ? '' : prefs.activeEventId }); refreshDrawer(); }
-  if (actionName === 'support') { if (native) action('open_url', { url: 'https://buymeacoffee.com/12hrsofficp' }).catch(() => {}); else window.open('https://buymeacoffee.com/12hrsofficp', '_blank', 'noopener,noreferrer'); }
+  if (actionName === 'support') { if (native) action('open_url', { url: SUPPORT_URL }).catch(() => {}); else window.open(SUPPORT_URL, '_blank', 'noopener,noreferrer'); }
   if (actionName === 'export-current') {
     const s = analysisState(); if (!s.total_damage && !s.players.length) { toast(t('missingHistory')); return; }
     try { const fullRecord = native && !snapshot ? await action('get_current_encounter') : s; if (fullRecord) await exportReport([{ ...fullRecord, name: fullRecord.name || fullRecord.targets?.[0]?.name || 'Encounter', provenance: snapshot ? snapshot.provenance : demo ? 'demo' : 'received' }]); else toast(t('missingHistory')); } catch {}
@@ -2916,7 +2930,7 @@ if (native) {
   try { await window.__TAURI__.event?.listen('luma-preference-patch', event => { const patch = event.payload && typeof event.payload === 'object' ? event.payload : {}; const allowed = ['overlayScale', 'overlayRate', 'overlaySnap', 'opacity', 'combatDetection']; savePreferences(Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)))); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); renderUpdatePrompt(); }); } catch {}
-  try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(await invoke('get_preferences'))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(withSystemLocale(await invoke('get_preferences')))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
   await refreshState();
   readRuntimeState();
   readCaptureDiagnostics();

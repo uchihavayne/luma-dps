@@ -10,6 +10,10 @@ export function normalizePvp(value) {
     kills: Math.min(count(input.kills), 99_999), deaths: Math.min(count(input.deaths), 99_999),
     // Abyss Points from beating players this session (never from monsters).
     points: Math.min(count(input.points), 999_999_999),
+    // The last rises of the Abyss Points with the game's reason for each, to trace a wrong count.
+    gains: (Array.isArray(input.gains) ? input.gains : []).slice(-6).filter(gain => gain && typeof gain === 'object').map(gain => ({ at_ms: count(gain.at_ms), delta: Math.min(count(gain.delta), 999_999_999), reason: Math.min(count(gain.reason), 255), counted: gain.counted === true })),
+    // The last rises of the Abyss Points with the game's reason for each, to trace a wrong count.
+    gains: (Array.isArray(input.gains) ? input.gains : []).slice(-6).filter(gain => gain && typeof gain === 'object').map(gain => ({ at_ms: count(gain.at_ms), delta: Math.min(count(gain.delta), 999_999_999), reason: Math.min(count(gain.reason), 255), counted: gain.counted === true })),
     // Null until the game's score has been matched to the local character.
     assists: Number.isSafeInteger(input.assists) && input.assists >= 0 ? Math.min(input.assists, 255) : null,
     last_death: recap ? {

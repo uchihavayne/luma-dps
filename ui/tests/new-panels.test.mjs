@@ -270,7 +270,56 @@ test('a crowd at a world boss is cut to the ten with the most DPS, and you stay 
   assert.equal(capRoster(crowd, { limit: 0 }).rows.length, 16, '0 shows everyone');
   for (const junk of [undefined, null, 'x', {}]) assert.deepEqual(capRoster(junk).rows, []);
   assert.equal(capRoster([{ id: '1' }, { id: '2', dps: null }, { id: '3', dps: 5 }], { limit: 1 }).rows[0].id, '3', 'a row with no DPS yet is the weakest');
-  // The preference is a closed list that falls back to ten.
+  // The player types any number from 0 (everyone) to 50; anything else is ten.
   assert.equal(normalizePreferences({}).rosterLimit, 10);
-  for (const [input, expected] of [[0, 0], [5, 5], [20, 20], [7, 10], ['15', 15], ['x', 10], [-3, 10]]) assert.equal(normalizePreferences({ rosterLimit: input }).rosterLimit, expected, String(input));
+  for (const [input, expected] of [[0, 0], [1, 1], [2, 2], [3, 3], [7, 7], [20, 20], [50, 50], ['15', 15], [51, 10], [-3, 10], [2.5, 10], ['x', 10], ['', 10], [null, 10], [undefined, 10]]) assert.equal(normalizePreferences({ rosterLimit: input }).rosterLimit, expected, String(input));
+});
+
+test('there is a Buy me a coffee button where a player looks: the About card, the tools menu and the Overlay controls, all to the one address the shell allows', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const app = await readFile(new URL('../app.mjs', import.meta.url), 'utf8'), shell = await readFile(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
+  const url = 'https://buymeacoffee.com/12hrsofficp';
+  assert.match(app, new RegExp(`const SUPPORT_URL = '${url.replaceAll('/', '\/')}'`));
+  assert.ok(shell.includes(`url != "${url}"`), 'the shell opens exactly this address');
+  assert.match(app, /class="support-card"/); assert.match(app, /data-tools-action="support"/); assert.match(app, /data-action="support">☕ Buy me a coffee/);
+  const controls = renderPanel('controls', { state: normalizeState({}), locale: 'en', now: NOW, controls: {} });
+  assert.match(controls, /data-action="support">☕ Buy me a coffee</);
+  const overlay = await readFile(new URL('../overlay-window.mjs', import.meta.url), 'utf8');
+  assert.ok(overlay.includes(`open_url', { url: '${url}' }`));
+});
+
+test('a first start speaks the system language and a chosen language is never overridden', async () => {
+  const { withSystemLocale } = await import('../model.mjs');
+  assert.equal(withSystemLocale({}, 'tr-TR').locale, 'tr'); assert.equal(withSystemLocale({}, 'TR').locale, 'tr');
+  for (const language of ['en-US', 'de-DE', 'ko-KR', '', null]) assert.equal(withSystemLocale({}, language).locale, 'en', String(language));
+  assert.equal(withSystemLocale({ locale: 'tr' }, 'en-US').locale, 'tr'); assert.equal(withSystemLocale({ locale: 'en' }, 'tr-TR').locale, 'en');
+  assert.equal(withSystemLocale({ locale: 'fr' }, 'tr-TR').locale, 'tr', 'an unknown saved value is a start without a choice');
+  assert.equal(withSystemLocale(null, 'en-US').locale, 'en'); assert.equal(withSystemLocale([], 'en-US').locale, 'en');
+  const saved = { width: 400 }; withSystemLocale(saved, 'en-US'); assert.deepEqual(saved, { width: 400 }, 'the input is not changed');
+});
+
+test('every window speaks English when asked to: no Turkish letter or common Turkish word in its output', async () => {
+  const { PANELS } = await import('../overlay-panels.mjs');
+  const { DEMO_STATE } = await import('../demo.mjs');
+  const { cubePresentation } = await import('../cube.mjs');
+  const now = Date.now(), turkish = /\S*[çğıöşüÇĞİÖŞÜ]\S*|\b(bekleniyor|henüz|oyunda|Bilet|Hedef|Uçuş|Harita|savaş|önce|Hazır|Kilit|Yenile|Bitti|Ayarlar|Analiz|Pencere|sürükle|oyuncu|Yetenek|Etkinlik|Gecikme|Küp|Anahtar)\b/gi;
+  const cube = cubePresentation({ network: { cubes: 2, distance_m: 42, vertical_m: 3, direction_deg: 35, fix_age_s: 2, look: 'gold', bearing_deg: 90, live: true, age_s: 12 } }, { now, locale: 'en' });
+  for (const raw of [DEMO_STATE, {}]) for (const panel of PANELS) for (const edit of [false, true]) {
+    const html = renderPanel(panel, { state: normalizeState(raw), now, locale: 'en', events: allEvents({}), cube, controls: { open: [], options: {}, locked: false }, marker: { edit }, label: id => `Skill ${id}` });
+    const hits = html.replace(/<[^>]*>/g, ' ').match(turkish);
+    assert.equal(hits, null, `${panel}${edit ? ' (placing)' : ''}: ${hits?.slice(0, 4).join(' | ')}`);
+  }
+});
+
+test('the PvP numbers show the last Abyss Points rises with the game\'s reason, to trace a wrong count', () => {
+  const gains = [{ at_ms: 1, delta: 150, reason: 0, counted: true }, { at_ms: 2, delta: 15, reason: 82, counted: false }];
+  const state = normalizeState({ pvp: { kills: 1, points: 150, gains } });
+  assert.deepEqual(state.pvp.gains.map(gain => [gain.delta, gain.reason, gain.counted]), [[150, 0, true], [15, 82, false]]);
+  const html = renderPanel('pvp', { state, now: NOW, locale: 'en', label });
+  assert.match(html, /\+150 \(reason 0, counted\) · \+15 \(reason 82\)/);
+  assert.match(renderPanel('pvp', { state: normalizeState({}), now: NOW, locale: 'en', label }), /No Abyss Points rise yet/);
+  const many = Array.from({ length: 12 }, (_, index) => ({ at_ms: index, delta: index + 1, reason: 0, counted: false }));
+  assert.equal(normalizeState({ pvp: { gains: many } }).pvp.gains.length, 6);
+  for (const junk of [null, 'x', [null, 'y', 3], {}]) assert.deepEqual(normalizeState({ pvp: { gains: junk } }).pvp.gains, []);
+  assert.deepEqual(normalizeState(normalizeState({ pvp: { gains } })).pvp.gains, normalizeState({ pvp: { gains } }).pvp.gains);
 });

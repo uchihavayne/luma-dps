@@ -107,6 +107,14 @@ export function validBackground(value) {
   return typeof value === 'string' && value.length <= 1400000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value) ? value : '';
 }
 
+// The language of a first start: Turkish on a Turkish system, English everywhere else. Only when no
+// language was ever chosen; a chosen one (saved with the other preferences) is never overridden.
+export function withSystemLocale(saved, language = globalThis.navigator?.language) {
+  const input = saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  if (input.locale === 'tr' || input.locale === 'en') return input;
+  return { ...input, locale: String(language || '').toLowerCase().startsWith('tr') ? 'tr' : 'en' };
+}
+
 export function normalizePreferences(input = {}) {
   const p = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const events = (Array.isArray(p.events) ? p.events : []).slice(0, 20).map((event, i) => ({
@@ -145,7 +153,7 @@ export function normalizePreferences(input = {}) {
     petPins: [...new Set((Array.isArray(p.petPins) ? p.petPins : []).slice(0, 100).filter(value => Number.isSafeInteger(value) && value >= 1000 && value <= 99999))].slice(0, PET_PIN_LIMIT),
     radarOpen: p.radarOpen === true, radarRange: [20, 50, 100, 200].includes(p.radarRange) ? p.radarRange : 100,
     petGoal: oneOf(p.petGoal, ['next', 'max'], 'max'), petAutoTrack: p.petAutoTrack !== false, showPetTracker: p.showPetTracker !== false, petTrackerCollapsed: p.petTrackerCollapsed === true,
-    onlyAboveGame: p.onlyAboveGame === true, clickThroughWhenLocked: p.clickThroughWhenLocked === true, fadeWhenIdle: p.fadeWhenIdle === true, hidePlayerNames: p.hidePlayerNames === true, showSkillBoard: p.showSkillBoard !== false, skillBoardCollapsed: p.skillBoardCollapsed === true, cleanLook: p.cleanLook !== false, rosterLimit: oneOf(Number(p.rosterLimit), [0, 5, 8, 10, 15, 20], 10), overlayScale: Math.round(bounded(p.overlayScale, 0.8, 1.6, 1) * 20) / 20, overlayRate: oneOf(Number(p.overlayRate), [250, 500, 1000], 250), overlaySnap: p.overlaySnap === true, compactStrip: p.compactStrip === true, autoCheckUpdates: p.autoCheckUpdates !== false,
+    onlyAboveGame: p.onlyAboveGame === true, clickThroughWhenLocked: p.clickThroughWhenLocked === true, fadeWhenIdle: p.fadeWhenIdle === true, hidePlayerNames: p.hidePlayerNames === true, showSkillBoard: p.showSkillBoard !== false, skillBoardCollapsed: p.skillBoardCollapsed === true, cleanLook: p.cleanLook !== false, rosterLimit: Number.isInteger(Number(p.rosterLimit)) && Number(p.rosterLimit) >= 0 && Number(p.rosterLimit) <= 50 && p.rosterLimit !== null && p.rosterLimit !== '' ? Number(p.rosterLimit) : 10, overlayScale: Math.round(bounded(p.overlayScale, 0.8, 1.6, 1) * 20) / 20, overlayRate: oneOf(Number(p.overlayRate), [250, 500, 1000], 250), overlaySnap: p.overlaySnap === true, compactStrip: p.compactStrip === true, autoCheckUpdates: p.autoCheckUpdates !== false,
     fullscreenOverlay: p.fullscreenOverlay === true, fullscreenLayout: oneOf(p.fullscreenLayout, ['dashboard', 'hud'], 'dashboard'), overlayX: bounded(p.overlayX, 0, 20000, 24), overlayY: bounded(p.overlayY, 0, 20000, 24), overlayWidth: bounded(p.overlayWidth, 280, 1200, 420), overlayHeight: bounded(p.overlayHeight, 200, 1200, 340),
     hotkeys: (Array.isArray(p.hotkeys) && p.hotkeys.length ? p.hotkeys : ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen', 'overlay-controls'].map((action, index) => ({ action, shortcut: index === 7 ? 'Alt+E' : `Ctrl+Alt+Shift+F${[7, 8, 9, 10, 11, 6, 5][index]}`, enabled: true }))).slice(0, 8).filter(row => row && ['toggle-visibility', 'toggle-lock', 'toggle-pause', 'reset', 'settings', 'copy-summary', 'toggle-fullscreen', 'overlay-controls'].includes(row.action)).map(row => ({ action: row.action, shortcut: str(row.shortcut, 80), enabled: row.enabled !== false })),
     calendarVersion: 1, calendarRegion: oneOf(p.calendarRegion, ['EU'], 'EU'), builtInReminders,

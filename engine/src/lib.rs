@@ -214,6 +214,20 @@ pub struct TimelinePlayer {
 }
 /// The local player's PvP session: kills and deaths since the meter was last reset, and what the
 /// last death looked like.
+/// One rise of the Abyss Points stack, with the game's reason for it and whether it was counted as the
+/// reward for beating a player; the last few are shown so a wrong count can be traced.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PointGain {
+    pub at_ms: u64,
+    pub delta: u64,
+    pub reason: u8,
+    pub counted: bool,
+}
+/// A gain of Abyss Points this soon after you beat a player is that player's reward, whatever reason the
+/// game gives it, unless the game says it is loot (a monster's).
+const PVP_REWARD_WINDOW_MS: u64 = 6_000;
+const MAX_POINT_GAINS: usize = 6;
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PvpState {
@@ -224,6 +238,7 @@ pub struct PvpState {
     pub assists: Option<u32>,
     /// Abyss Points this session from rewards the game gives for beating players: never from monsters.
     pub points: u64,
+    pub gains: Vec<PointGain>,
     pub last_death: Option<DeathRecap>,
 }
 /// One member of the party finder room.
@@ -638,6 +653,8 @@ pub struct MeterEngine {
     incoming_max: HashMap<u32, u64>,
     pvp_kills: u32,
     pvp_points: u64,
+    last_pvp_kill_ms: u64,
+    point_gains: VecDeque<PointGain>,
     pvp_deaths: u32,
     last_death: Option<DeathRecap>,
     /// Damage the local player took lately: when, which skill, how much.
@@ -739,6 +756,8 @@ impl Default for MeterEngine {
             incoming_max: HashMap::new(),
             pvp_kills: 0,
             pvp_points: 0,
+            last_pvp_kill_ms: 0,
+            point_gains: VecDeque::new(),
             pvp_deaths: 0,
             last_death: None,
             recent_taken: std::collections::VecDeque::new(),
@@ -2505,6 +2524,8 @@ impl MeterEngine {
     pub fn reset(&mut self) {
         self.pvp_kills = 0;
         self.pvp_points = 0;
+        self.last_pvp_kill_ms = 0;
+        self.point_gains.clear();
         self.pvp_deaths = 0;
         self.berserk.clear();
         self.kills.clear();
@@ -2674,11 +2695,11 @@ impl MeterEngine {
             self.currencies.clear();
             self.stacks_known = true;
             for stack in stacks {
-                self.remember_stack(stack.key, stack.item, stack.count, false, false);
+                self.remember_stack(stack.key, stack.item, stack.count, false, false, 0, now);
             }
         }
         for change in items::changes(payload) {
-            self.remember_stack(change.key, change.item, change.count, change.loot, change.pvp);
+            self.remember_stack(change.key, change.item, change.count, change.loot, change.pvp, change.reason, now);
         }
         for member in packets::party_vitals(payload) {
             if self.party.len() >= 24 && !self.party.contains_key(&member.key) {
@@ -2712,12 +2733,23 @@ impl MeterEngine {
 
     /// A stack of items changed. Loot is counted only as the growth of a stack the full list
     /// already showed, so a reconnect or a move between bags never counts as loot.
-    fn remember_stack(&mut self, key: u64, item: u32, count: u64, loot: bool, pvp: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn remember_stack(&mut self, key: u64, item: u32, count: u64, loot: bool, pvp: bool, reason: u8, now: u64) {
         let before = self.stacks.get(&key).map_or(0, |(_, held)| *held);
-        // Abyss Points the game itself marks as the reward for beating a player. A monster's are marked as
-        // loot (a different reason), so killing monsters in the Abyss never adds to this.
-        if pvp && item == items::ABYSS_POINTS && self.stacks_known && count > before {
-            self.pvp_points = self.pvp_points.saturating_add(count - before);
+        // Abyss Points that are the reward for beating a player: the game's own reason says so, or the rise
+        // comes just after a kill of yours and is not marked as loot (a monster's reward is). It needs the
+        // stack to have been seen before, to know by how much it rose; no full item list is needed.
+        if item == items::ABYSS_POINTS && self.stacks.contains_key(&key) && count > before {
+            let delta = count - before;
+            let after_kill = self.last_pvp_kill_ms != 0 && now >= self.last_pvp_kill_ms && now - self.last_pvp_kill_ms <= PVP_REWARD_WINDOW_MS;
+            let counted = pvp || after_kill && !loot;
+            if counted {
+                self.pvp_points = self.pvp_points.saturating_add(delta);
+            }
+            if self.point_gains.len() == MAX_POINT_GAINS {
+                self.point_gains.pop_front();
+            }
+            self.point_gains.push_back(PointGain { at_ms: now, delta, reason, counted });
         }
         if loot && self.stacks_known && count > before {
             if self.looted.len() < 512 || self.looted.contains_key(&item) {
@@ -2917,6 +2949,7 @@ impl MeterEngine {
                 .is_some_and(|row| row.player && !row.npc && !row.pet)
         {
             self.pvp_kills = self.pvp_kills.saturating_add(1);
+            self.last_pvp_kill_ms = now;
         }
         // A monster counts when it died by you or by something you had hit.
         if let Some(model) = self
@@ -4346,6 +4379,7 @@ impl MeterEngine {
             pvp: PvpState {
                 kills: self.pvp_kills,
                 points: self.pvp_points,
+                gains: self.point_gains.iter().cloned().collect(),
                 deaths: self.pvp_deaths,
                 assists: self.own_assists(),
                 last_death: self.last_death.clone(),

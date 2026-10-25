@@ -10,7 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -31,6 +31,13 @@ static LAST_MOVE: AtomicU64 = AtomicU64::new(0);
 /// While locked (how Luma starts) the detached windows let every click through to the game and show
 /// no title bar; unlocked (the editing state, Alt+E) they can be moved, resized and closed.
 static LOCKED: AtomicBool = AtomicBool::new(true);
+/// Whether the meter window itself has something to click (its card, the update question, a drawer).
+/// Bare, it has not: it lets every click through to the game, so it never blocks one.
+static MAIN_CLICKABLE: AtomicBool = AtomicBool::new(false);
+/// What the meter window was last told, and when, so it is told again now and then in case another
+/// path changed it.
+static MAIN_PASS: AtomicU8 = AtomicU8::new(0);
+static MAIN_PASS_AT: AtomicU64 = AtomicU64::new(0);
 /// A window that is only shown while you fight, and for a while after.
 const GRACE_MS: u64 = 15_000;
 static LAST_ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +137,29 @@ pub fn set_locked(app: &AppHandle, locked: bool) {
         }
     }
     let _ = app.emit("luma-overlay-lock", locked);
+}
+
+/// What the meter window should do with clicks: pass them through while locked and bare, take them
+/// otherwise. `blocked` is true while something else needs them (a drawer, full screen) and `legacy` while
+/// the old lock-and-click-through setting asks for the window to pass them.
+pub fn sync_main_click_through(app: &AppHandle, blocked: bool, legacy: bool) {
+    let want = locked() && !MAIN_CLICKABLE.load(Ordering::Relaxed) && !blocked;
+    let state = if want { 1 } else { 2 };
+    let now = clock();
+    let previous = MAIN_PASS.swap(state, Ordering::Relaxed);
+    if previous == state && !(want && now.saturating_sub(MAIN_PASS_AT.load(Ordering::Relaxed)) > 2_000) {
+        return;
+    }
+    MAIN_PASS_AT.store(now, Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_ignore_cursor_events(want || legacy);
+    }
+}
+
+/// The meter says whether it has something to click.
+#[tauri::command]
+pub fn main_interactive(interactive: bool) {
+    MAIN_CLICKABLE.store(interactive, Ordering::Relaxed);
 }
 
 /// Windows that only show while you fight: the damage breakdown.

@@ -551,3 +551,12 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 #meter[data-clean=true][data-look=bare] #players .player { margin-bottom: 4px; }
 #meter[data-clean=true][data-look=bare] .player-bar { opacity: .5; }
 #meter[data-clean=true][data-look=frame] { outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -3px; }
+
+/* Support: Luma is free; a card and two small buttons for buying its maker a coffee. */
+.support-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, #ffdd00 45%, transparent); border-radius: 12px; background: color-mix(in srgb, #ffdd00 8%, transparent); }
+.support-card > div { display: grid; gap: 2px; min-width: 0; }
+.support-card strong { font-size: 13px; }
+.support-card span { color: var(--muted); font-size: 11px; }
+.support-button { flex: none; padding: 7px 12px; border: 0; border-radius: 9px; background: #ffdd00; color: #1a1500; font-weight: 700; cursor: pointer; }
+.support-button:hover, .support-button:focus-visible { filter: brightness(1.08); outline: none; }
+.tools-more > .tools-support { color: #ffdd00; }
