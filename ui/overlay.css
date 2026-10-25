@@ -103,11 +103,11 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 .target[data-boss=true] .bar u { background: var(--danger); }
 .target[data-stale=true] .bar { opacity: .55; }
 .target[data-dead=true] { opacity: .55; }
-.tiles { display: flex; flex-wrap: wrap; gap: 5px; }
-.tile { position: relative; width: 44px; height: 44px; border-radius: 8px; overflow: hidden; background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
-.tile .game-icon { position: absolute; inset: 2px; width: 40px; height: 40px; border-radius: 6px; }
-.tile i { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(8, 10, 14, .72); }
-.tile b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; text-shadow: 0 1px 3px #000; font-variant-numeric: tabular-nums; }
+.slots { display: flex; flex-wrap: wrap; gap: 5px; }
+.slot { position: relative; width: 44px; height: 44px; border-radius: 8px; overflow: hidden; background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+.slot .game-icon { position: absolute; inset: 2px; width: 40px; height: 40px; border-radius: 6px; }
+.slot i { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(8, 10, 14, .72); }
+.slot b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; text-shadow: 0 1px 3px #000; font-variant-numeric: tabular-nums; }
 .map { display: grid; gap: 5px; }
 .map-view { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 10px; background: #0b0f14; cursor: zoom-in; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
 .map-view .world { position: absolute; left: 50%; top: 50%; max-width: none; height: auto; transform-origin: 0 0; user-select: none; pointer-events: none; }
@@ -126,7 +126,7 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 .rival header b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rival header small { color: var(--danger); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .rival[data-ally=true] header small { color: var(--accent); }
-.tile[data-ready=true] { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent); }
+.slot[data-ready=true] { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent); }
 
 /* Party and room */
 .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -216,12 +216,13 @@ html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
 
 /* Tickets with their icons */
 .gem { display: grid; width: 40px; height: 40px; place-items: center; background: none; clip-path: none; }
-.tiles { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); }
+.tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .tile { grid-template-columns: 30px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 0 8px; }
 .tile .icon { grid-column: 1; grid-row: 1 / 3; overflow: visible; }
 .tile b { grid-column: 2; font-size: 16px; }
 .tile b small { margin-left: 3px; font-size: 10px; font-weight: 400; color: var(--muted); }
-.tile .label { grid-column: 2; grid-row: 2; }
+.tile .label { grid-column: 2; grid-row: 1; font-size: 11px; color: var(--text); }
+.tile b { grid-row: 2; }
 .time-row { align-items: center; gap: 8px; }
 .time-row .name { flex: 1; }
 
@@ -309,3 +310,4 @@ body[data-panel=flight] .panel-body { align-items: stretch; padding: 0 8px; }
 .flyer[data-sample=true], .ping[data-tone] { opacity: 1; }
 body.editing .edit-bar { top: 4px; right: 6px; bottom: auto; }
 .map-view[data-old=true] .me { opacity: .55; }
+.tile .label { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.2; }

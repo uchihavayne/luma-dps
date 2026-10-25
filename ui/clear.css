@@ -513,10 +513,20 @@ html[data-surface=light] #meter[data-layout=cupertino] .player-share { text-shad
 /* The dock's Cube is the game's picture. */
 .cube-nav-art { display: block; width: 22px; height: 22px; flex: 0 0 auto; object-fit: contain; filter: drop-shadow(0 1px 3px #000a); }
 .cube-nav-kind[data-look=''] > .cube-nav-art, .cube-nav-art:not([src]) { display: none; }
+/* The old sound compass and its button in the header are gone. */
+#cube-entry, .cube-navigator { display: none !important; }
 
-/* Clean look: the window shows its numbers, not its controls. The buttons come back while the pointer
-   is over the meter (or a key reaches one); the notice cards that repeat the "!" status are hidden,
-   and what the "!" says is one click away in the tools menu. */
-#meter[data-clean=true] > .notice, #meter[data-clean=true] #roster-unnamed { display: none; }
-#meter[data-clean=true]:not(:hover):not(:focus-within) .topbar > button:not(#compact-status) { display: none; }
-#meter[data-clean=true]:not(:hover):not(:focus-within) .topbar { border-bottom-color: transparent; }
+/* Clean look: one flat, tidy card, the same whether or not the pointer is on it. No frame line, no
+   notice cards (what the "!" says is one click away in the tools menu); a slim header, your damage per
+   second large under the target, the list, your skills, and a footer with only what is used. */
+#meter[data-clean=true] { border: 0; border-radius: 12px; box-shadow: none; background: color-mix(in srgb, #0c1016 calc(var(--opacity) * 100%), transparent); }
+#meter[data-clean=true]::before, #meter[data-clean=true]::after { display: none; }
+#meter[data-clean=true] #roster-unnamed, #meter[data-clean=true] #target-pet-pin:not([data-status=matched]) { display: none; }
+#meter[data-clean=true] > .topbar { height: 34px; flex: 0 0 34px; padding: 0 8px 0 12px; border-bottom: 1px solid rgba(255, 255, 255, .06); }
+#meter[data-clean=true]:not(.compact-strip) > .metrics { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 14px; margin: 0; padding: 8px 12px 9px; border-bottom: 1px solid rgba(255, 255, 255, .06); }
+#meter[data-clean=true] .primary-metric { --metric-max: 28px; }
+#meter[data-clean=true] .secondary-metric { --metric-max: 18px; text-align: right; }
+#meter[data-clean=true] .secondary-metric strong { color: var(--muted); }
+#meter[data-clean=true] .metrics strong { margin-top: 2px; }
+#meter[data-clean=true] > .roster-controls { margin-top: 4px; }
+#meter[data-clean=true] #compact-summary, #meter[data-clean=true] #clear-roster-summary, #meter[data-clean=true] #roster-summary { display: none; }

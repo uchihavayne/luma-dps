@@ -221,10 +221,10 @@ function actionBarPanel({ state, locale, now, label }) {
   const ready = row => row.kind === 'confirmed' || row.kind === 'available-charge';
   const rows = (me?.cooldowns || []).filter(row => row.kind !== 'unknown').sort((a, b) => Number(a.skill_id) - Number(b.skill_id)).slice(0, 18);
   if (!rows.length) return `<p class="hint">${tr ? 'Beceri bilgisi henüz gelmedi. Bir beceri kullanınca çubuk dolar.' : 'No skill seen yet. The bar fills as you use skills.'}</p>`;
-  return `<div class="tiles">${rows.map(row => {
+  return `<div class="slots">${rows.map(row => {
     const left = ready(row) || row.remaining_ms === null ? null : row.remaining_ms, share = left !== null && row.cooldown_ms > 0 ? Math.min(1, left / row.cooldown_ms) : 0;
     const seconds = left === null ? '' : left < 10_000 ? (left / 1000).toFixed(1) : String(Math.ceil(left / 1000));
-    return `<div class="tile" data-ready="${left === null}" title="${esc(label(row.skill_id))}">${iconImg(skillIconPath(Number(row.skill_id)), 40)}<i style="height:${(share * 100).toFixed(1)}%"></i><b>${esc(seconds)}</b></div>`;
+    return `<div class="slot" data-ready="${left === null}" title="${esc(label(row.skill_id))}">${iconImg(skillIconPath(Number(row.skill_id)), 40)}<i style="height:${(share * 100).toFixed(1)}%"></i><b>${esc(seconds)}</b></div>`;
   }).join('')}</div>`;
 }
 
@@ -250,9 +250,9 @@ function rivalsPanel({ state, locale, now, label }) {
     const person = people.get(actor.id), ally = allies.has(actor.id);
     const tiles = actor.tiles.sort((a, b) => a.left - b.left || a.skill - b.skill).slice(0, 10).map(tile => {
       const seconds = tile.left < 10_000 ? (tile.left / 1000).toFixed(1) : String(Math.ceil(tile.left / 1000));
-      return `<div class="tile" data-ready="false" title="${esc(label(tile.skill))}">${iconImg(skillIconPath(tile.skill), 40)}<i style="height:${(Math.min(1, tile.left / tile.total) * 100).toFixed(1)}%"></i><b>${esc(seconds)}</b></div>`;
+      return `<div class="slot" data-ready="false" title="${esc(label(tile.skill))}">${iconImg(skillIconPath(tile.skill), 40)}<i style="height:${(Math.min(1, tile.left / tile.total) * 100).toFixed(1)}%"></i><b>${esc(seconds)}</b></div>`;
     }).join('');
-    return `<section class="rival" data-ally="${ally}"><header><b>${esc(person?.name || `#${actor.id}`)}</b><small>${esc([person?.class_name, ally ? (tr ? 'Müttefik' : 'Ally') : (tr ? 'Rakip' : 'Opponent')].filter(Boolean).join(' · '))}</small></header><div class="tiles">${tiles}</div></section>`;
+    return `<section class="rival" data-ally="${ally}"><header><b>${esc(person?.name || `#${actor.id}`)}</b><small>${esc([person?.class_name, ally ? (tr ? 'Müttefik' : 'Ally') : (tr ? 'Rakip' : 'Opponent')].filter(Boolean).join(' · '))}</small></header><div class="slots">${tiles}</div></section>`;
   }).join('');
 }
 

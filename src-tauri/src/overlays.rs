@@ -93,16 +93,13 @@ pub fn default_size(panel: &str) -> (u32, u32) {
     }
 }
 
-/// The narrowest a panel may be: below it a row loses its names.
+/// The narrowest a panel may be.
 pub fn min_width(panel: &str) -> u32 {
+    // A window's content is scaled to its size, so it may be made small; only the controls keep a floor.
     match panel {
-        "damage" => 300,
-        "party" | "tickets" => 330,
-        "cooldowns" => 280,
-        "pvp" | "vitals" | "tracker" | "effects" | "timers" | "bosshp" | "rivals" | "map" => 270,
         "ping" => 120,
-        "controls" => 320,
-        _ => 240,
+        "controls" => 220,
+        _ => 150,
     }
 }
 
@@ -234,6 +231,17 @@ impl Store {
         let mut entries: BTreeMap<String, Entry> = entries;
         // The skill table now lives in the main window, so the separate damage breakdown is only an
         // extra. It was open by default before: close it once, and the player may open it again.
+        // The ping and the flight time were ordinary windows before they became markers: their old
+        // places mean nothing, so they start from their own once (bottom-right for the ping).
+        let markers = directory.join("overlays-markers-moved.done");
+        if !markers.exists() {
+            for panel in ["ping", "flight"] {
+                if let Some(entry) = entries.get_mut(panel) {
+                    entry.frame = None;
+                }
+            }
+            let _ = fs::write(&markers, b"1");
+        }
         let moved = directory.join("overlays-skills-in-main.done");
         if !moved.exists() {
             if let Some(entry) = entries.get_mut("damage") {
@@ -762,7 +770,7 @@ mod tests {
             assert!((MIN_EDGE..=MAX_EDGE).contains(&width) && (MIN_EDGE / 2..=MAX_EDGE).contains(&height));
             assert!(width >= min_width(panel), "{panel} opens narrower than its least");
         }
-        assert!(min_width("party") >= 320 && min_width("tickets") >= 320, "names need room");
+        assert!(min_width("party") <= 200 && min_width("tickets") <= 200, "a window can be made small: its content scales");
         for other in ["main", "overlay-", "overlay-main", "overlay-pvp2", "OVERLAY-pvp", ""] {
             assert_eq!(panel_of(other), None, "{other}");
         }

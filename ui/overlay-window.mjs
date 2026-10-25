@@ -52,26 +52,32 @@ function render() {
   const content = $('#panel-content');
   // A slider that is being dragged is not redrawn under the hand.
   if (holding && panel === 'controls') return;
-  if (content._html !== html) { content.innerHTML = html; content._html = html; }
-  requestAnimationFrame(fit);
+  if (content._html !== html) { content.innerHTML = html; content._html = html; contentRevision += 1; }
+  requestAnimationFrame(scaleToFit);
 }
 
-// The window is as tall as its content, so every row shows and nothing has to be resized by hand.
-// What it needs is compared with how tall it really is, so a window that was made smaller by hand
-// is made big enough again once the hand lets go.
-let askedAt = 0, resizedAt = 0;
-addEventListener('resize', () => { if (Date.now() - askedAt > 800) resizedAt = Date.now(); });
-function fit() {
-  if (!native || marker) return;
-  // Layout pixels; the page is zoomed by the window's scale, so on screen it is that much more.
-  const needed = Math.ceil($('#panel-drag').offsetHeight + $('#panel-content').offsetHeight + 18);
-  const floor = panel === 'ping' ? 60 : 100;
-  const wanted = Math.min(900 / scale, Math.max(floor / scale, needed));
-  const now = Date.now();
-  if (Math.abs(innerHeight - wanted) < 4 || now - askedAt < 400 || now - resizedAt < 700) return;
-  askedAt = now;
-  invoke('overlay_fit', { height: wanted * scale }).catch(() => {});
+// A window can be made any size by hand: its content is laid out at a width of its own and scaled to
+// the room it has, so made smaller it shrinks and still shows every row, made bigger it grows. Nothing
+// is cut, scrolled away or pulled back.
+const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map: 300, cooldowns: 300, actions: 300, rivals: 300 };
+let contentRevision = 0, fittedKey = '';
+function scaleToFit() {
+  if (marker) return;
+  const body = $('#panel-body'), content = $('#panel-content'), look = getComputedStyle(body);
+  const room = { width: body.clientWidth - parseFloat(look.paddingLeft) - parseFloat(look.paddingRight), height: body.clientHeight - parseFloat(look.paddingTop) - parseFloat(look.paddingBottom) };
+  if (!(room.width > 0 && room.height > 0)) return;
+  const key = `${panel}:${contentRevision}:${Math.round(room.width)}x${Math.round(room.height)}`;
+  if (key === fittedKey) return;
+  fittedKey = key;
+  const design = DESIGN_WIDTH[panel] ?? 290;
+  content.style.zoom = '1'; content.style.width = `${design}px`; content.style.alignSelf = 'center';
+  const natural = Math.max(1, content.offsetHeight);
+  const zoom = Math.min(2.2, Math.max(0.45, Math.min(room.width / design, room.height / natural)));
+  content.style.zoom = String(zoom);
+  // Only at the smallest scale may anything be left to scroll to.
+  body.style.overflowY = zoom <= 0.46 ? 'auto' : 'hidden';
 }
+new ResizeObserver(() => requestAnimationFrame(scaleToFit)).observe($('#panel-body'));
 
 async function pull() {
   try { raw = await invoke('get_state'); fresh = true; lastEvent = Date.now(); } catch {}

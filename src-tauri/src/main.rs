@@ -1099,7 +1099,13 @@ impl Preferences {
         self.extra.remove("bossIds");
     }
 
+    /// The sound-based Cube locator is no longer part of the app (the Cube is read from the game's own
+    /// notices), so nothing listens to audio in the background, whatever an older preference says.
     fn automatic_cube_capture(&self) -> Option<(&'static str, f32)> {
+        const SOUND_LOCATOR_REMOVED: bool = true;
+        if SOUND_LOCATOR_REMOVED {
+            return None;
+        }
         self.cube_auto_listen.then(|| {
             let threshold = self
                 .extra
@@ -1950,12 +1956,12 @@ mod shell_tests {
     #[test]
     fn cube_automatic_listening_migrates_legacy_settings_and_respects_explicit_stop() {
         let default = Preferences::default();
-        assert_eq!(default.automatic_cube_capture(), Some(("game", 0.82)));
+        assert_eq!(default.automatic_cube_capture(), None, "no background listening any more");
         let legacy: Preferences = serde_json::from_value(serde_json::json!({
             "cubeSource": "system", "cubeThreshold": 0.73
         }))
         .unwrap();
-        assert_eq!(legacy.automatic_cube_capture(), Some(("game", 0.73)));
+        assert_eq!(legacy.automatic_cube_capture(), None);
         let stopped: Preferences = serde_json::from_value(serde_json::json!({
             "cubeAutoListen": false, "cubeSource": "system"
         }))
@@ -1974,7 +1980,7 @@ mod shell_tests {
                 "cubeThreshold": invalid
             }))
             .unwrap();
-            assert_eq!(preferences.automatic_cube_capture(), Some(("game", 0.82)));
+            assert_eq!(preferences.automatic_cube_capture(), None);
         }
     }
 
@@ -3577,6 +3583,14 @@ fn resize_by(
         .map_err(|e| e.to_string())
 }
 
+/// How tall the meter should be for what it holds: not under its least, not past the screen.
+fn fitted_height(requested: f64, available: f64) -> Result<f64, String> {
+    if !requested.is_finite() || !available.is_finite() {
+        return Err("Invalid meter height".into());
+    }
+    Ok(requested.ceil().clamp(MIN_METER_HEIGHT, available.floor().max(MIN_METER_HEIGHT)))
+}
+
 fn roster_height_limit(requested: f64, available: f64) -> Result<f64, String> {
     if !requested.is_finite()
         || !(200.0..=800.0).contains(&requested)
@@ -3590,7 +3604,16 @@ fn roster_height_limit(requested: f64, available: f64) -> Result<f64, String> {
 
 #[cfg(test)]
 mod roster_height_tests {
-    use super::roster_height_limit;
+    use super::{fitted_height, roster_height_limit};
+
+    #[test]
+    fn the_meter_is_as_tall_as_what_it_holds_within_the_screen() {
+        assert_eq!(fitted_height(333.2, 900.0).unwrap(), 334.0);
+        assert_eq!(fitted_height(120.0, 900.0).unwrap(), 200.0, "never under the least");
+        assert_eq!(fitted_height(1500.0, 900.0).unwrap(), 900.0, "never past the screen");
+        assert_eq!(fitted_height(1500.0, 150.0).unwrap(), 200.0);
+        assert!(fitted_height(f64::NAN, 900.0).is_err() && fitted_height(300.0, f64::INFINITY).is_err());
+    }
 
     #[test]
     fn roster_height_keeps_readable_rows_inside_the_monitor() {
@@ -3603,6 +3626,42 @@ mod roster_height_tests {
         assert!(roster_height_limit(300.0, f64::NAN).is_err());
         assert!(roster_height_limit(300.0, 100.0).is_err());
     }
+}
+
+/// The meter is as tall as what it holds (header, list, skill table, footer), so no invisible window is
+/// left over the game. Not in the compact strip, in full screen or while a panel is open.
+#[tauri::command]
+fn fit_main_height(
+    window: WebviewWindow,
+    shared: State<Arc<Shared>>,
+    height: f64,
+) -> Result<(), String> {
+    let preferences = shared
+        .preferences
+        .lock()
+        .map_err(|_| "Preferences unavailable")?;
+    if shared.panel_open.load(Ordering::Relaxed)
+        || fullscreen_overlay_enabled(&preferences)
+        || compact_strip(&preferences)
+    {
+        return Ok(());
+    }
+    drop(preferences);
+    let factor = window.scale_factor().map_err(|error| error.to_string())?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| error.to_string())?;
+    let available = monitor.as_ref().map_or(800.0, |monitor| {
+        monitor.work_area().size.height as f64 / factor - 8.0
+    });
+    let target = fitted_height(height, available)?;
+    let size = window.inner_size().map_err(|error| error.to_string())?;
+    if (size.height as f64 / factor - target).abs() < 3.0 {
+        return Ok(());
+    }
+    window
+        .set_size(tauri::LogicalSize::new(size.width as f64 / factor, target))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -4081,6 +4140,7 @@ fn main() {
             start_drag,
             resize_by,
             set_roster_min_height,
+            fit_main_height,
             close_window,
             set_panel_open,
             open_url,

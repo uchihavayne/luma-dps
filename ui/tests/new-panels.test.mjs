@@ -210,3 +210,20 @@ test('a new version asks first to download, then to install and restart, and "la
   for (const quiet of [{}, { status: 'current' }, { status: 'checking' }, { status: 'error', error: 'x' }, undefined, null]) assert.equal(updatePrompt(quiet), null);
   assert.doesNotMatch(updatePrompt({ status: 'available', version: '<img src=x onerror=1>' }).html, /<img/);
 });
+
+test('a ticket tile keeps its name and count: the action bar slots have a class of their own', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../overlay.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(css, /(^|\n)\.tile \{[^}]*(width|height): 44px/, 'a ticket tile must not be squeezed into an icon square');
+  assert.match(css, /(^|\n)\.slot \{[^}]*width: 44px/);
+  const html = renderPanel('tickets', { state: normalizeState({ resources: { tickets: [{ id: 4, count: 3, max: 14, observed_at_ms: Date.now() }] } }), now: Date.now(), locale: 'en', names: { 'ticket:4': 'Shugo Festival Reward' } });
+  assert.doesNotMatch(html, /class="slot"/);
+  const bar = renderPanel('actions', { state: normalizeState({}), now: NOW, locale: 'en', label });
+  assert.doesNotMatch(bar, /class="tile"/);
+});
+test('the window sizes are small enough to shrink by hand but not below a usable corner', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../overlay-window.mjs', import.meta.url), 'utf8');
+  assert.match(source, /function scaleToFit\(\)/); assert.doesNotMatch(source, /overlay_fit/, 'the window is never resized to its content');
+  assert.match(source, /Math\.max\(0\.45,/);
+});

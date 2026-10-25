@@ -79,7 +79,7 @@ if (spatialDemo) {
 }
 let drawer = '', tab = 'overview', selectedPlayer = '', restoreFocus = null, skillSort = 'damage', reportFormat = 'html', reportAnonymize = false;
 let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
-let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, rosterContext = '';
+let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, fitRequested = 0, rosterContext = '';
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
 let deferredRosterRefresh = false;
@@ -1004,12 +1004,17 @@ function scheduleRosterFit() {
       if (fit.enabled) for (const [key, value] of Object.entries({ height: fit.rowHeight, gap: fit.gap, font: fit.font, icon: fit.icon, rate: fit.rateWidth, damage: fit.damageWidth })) meter.style.setProperty(`--fit-${key}`, `${value}px`);
     }
     if (fit.enabled && fit.fits) list.scrollTop = 0;
-    if (drawer || prefs.fullscreenOverlay || prefs.compactStrip) { rosterMinimum = null; return; }
+    if (drawer || prefs.fullscreenOverlay || prefs.compactStrip) { rosterMinimum = null; fitRequested = 0; return; }
     const minimum = fit.enabled ? Math.max(200, Math.min(800, Math.ceil(meter.getBoundingClientRect().height - available + fit.minimum + 1))) : 200;
     if (demo && sampleFrame) meter.style.minHeight = `${minimum}px`;
     if (native && minimum !== rosterMinimum) {
       rosterMinimum = minimum;
       invoke('set_roster_min_height', { height: minimum }).catch(() => { rosterMinimum = null; });
+    }
+    // The card is as tall as what it holds, so no invisible window is left over the game.
+    if (native && active) {
+      const natural = Math.ceil(meter.getBoundingClientRect().height - list.clientHeight + otherHeight + players.offsetHeight + 6);
+      if (Math.abs(natural - fitRequested) > 6) { fitRequested = natural; invoke('fit_main_height', { height: natural }).catch(() => { fitRequested = 0; }); }
     }
     scheduleOverlayRegions();
   });
@@ -1255,7 +1260,17 @@ function cubeCompassMarkup() {
   return `<div class="cube-compass cube-settings-compass" data-cube-compass role="img" aria-label="${t('cubeCompass')}">${svg}<span class="cube-compass-left">${t('cubeLeft')}</span><span class="cube-compass-right">${t('cubeRight')}</span></div>`;
 }
 
+// The Hidden Cube settings are the marker's. The sound locator and its compass are no longer part of the
+// app; their old controls stay out of sight (hidden, not drawn) only so nothing that updates them breaks.
 function cubeContent() {
+  const tr = prefs.locale === 'tr';
+  return `<h3 class="section-title">Hidden Cube</h3><p class="help">${tr ? 'Küp yakınlaşınca oyunun kendi küp resmi, yönü, uzaklığı ve süresiyle ekranda belirir; pencere değildir, tıklamaları oyuna geçirir. Oyunun gönderdiği küp bildirimlerinden okunur, ses dinlenmez.' : 'When a Cube is near, the game\'s own cube picture appears on the screen with its direction, distance and age. It is not a window: clicks go through to the game. It is read from the Cube notices the game sends; no sound is listened to.'}</p>
+    <label class="check-field"><input name="showCubeLocator" type="checkbox" ${prefs.showCubeLocator ? 'checked' : ''}>${tr ? 'Hidden Cube işaretini göster' : 'Show the Hidden Cube marker'}</label>
+    <label class="check-field"><input name="cubeNeedKeys" type="checkbox" ${prefs.cubeNeedKeys ? 'checked' : ''}>${tr ? 'Yalnızca elimde Hidden Cube anahtarı varken göster' : 'Only show it while I hold a Hidden Cube key'}</label>
+    <div class="button-row"><button type="button" class="action-button" data-action="cube-marker-edit" ${!native ? 'disabled' : ''}>${tr ? 'Küp işaretinin yerini ayarla (Alt+E)' : 'Place the Cube marker (Alt+E)'}</button></div><div hidden>${cubeLegacyContent()}</div>`;
+}
+
+function cubeLegacyContent() {
   const disabled = !native || cubePending || cubeState.enabled;
   const source = cubeState.enabled ? cubeState.source : prefs.cubeSource;
   return `<h3 class="section-title">${t('cubeTitle')}</h3><p class="help">${t('cubeIntro')}</p>${!native ? `<p class="settings-hint">${t('cubePreview')}</p>` : ''}
@@ -1278,10 +1293,12 @@ function cubeContent() {
 
 function renderCubeLive() {
   const view = cubePresentation(cubeState, { now: cubeDemo ? cubeState.last_detection_ms : Date.now(), locale: prefs.locale, live: native, readError: cubeReadError });
-  const navigatorVisible = prefs.displayModules.cube && cubeDockVisible(view, prefs);
+  // The sound compass beside the list is gone: the Hidden Cube is the marker drawn on the screen.
+  const navigatorVisible = false;
   $('#meter').dataset.cubeDock = String(navigatorVisible);
   $('#meter').dataset.cubeSize = prefs.cubeNavigatorSize;
   $('#cube-navigator').hidden = !navigatorVisible;
+  $('#cube-entry').hidden = true;
   $('#cube-navigator').dataset.status = view.status;
   $('#cube-entry').dataset.listening = String(cubeState.enabled);
   $('#cube-entry').dataset.status = view.status;
