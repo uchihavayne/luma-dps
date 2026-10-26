@@ -17,6 +17,7 @@ import { groupedNumber, partyFraction, powerText, roomSummary, spanText, ticketR
 import { skillRows } from './skills.mjs';
 import { latencyPresentation } from './telemetry.mjs';
 import { automaticTeamState } from './team.mjs';
+import { agoText, characterChoices, characterResources } from './ticket-characters.mjs';
 
 export const PANELS = Object.freeze(['damage', 'pvp', 'vitals', 'cube', 'party', 'tickets', 'tracker', 'cooldowns', 'currencies', 'effects', 'timers', 'flight', 'bosshp', 'actions', 'rivals', 'map', 'ping', 'controls']);
 export const PANEL_TITLES = Object.freeze({
@@ -119,17 +120,31 @@ function hourglass(left) {
   return `<time>${esc(spanText(left))}</time>`;
 }
 
-// Odyle is a card with its bar; the other tickets are tiles with their icon, what is left and the most
-// they hold; tickets that hold hours are lines.
-function ticketsPanel({ state, locale, now, names, caps, shown }) {
-  const tr = locale !== 'en', status = resourceStatus(state.resources, now), rows = ticketRows(state.resources, { names, caps, now, locale, shown, member: status.membership_active });
-  if (!rows.length) return `<p class="hint">${tr ? 'Bilet bilgisi oyundan henüz gelmedi. Karakter seçerken ya da oyuna girerken gelir.' : 'No ticket data from the game yet. It arrives when you log in.'}</p>`;
-  const hero = rows.find(row => row.hero), times = rows.filter(row => row.kind === 'time' && !row.hero), tiles = rows.filter(row => row.kind === 'count' && !row.hero);
+// Odyle is a card with its bar; every other ticket is a tile with its icon, its name and what is left (or
+// the hours that are left), so the window is columns that follow its width, not one tall stack. The
+// characters played before are chips: picking one shows what Luma last saw of it.
+function ticketsPanel({ state, locale, now, names, caps, shown, tickets: memory = {} }) {
+  const tr = locale !== 'en', live = state.live_team_identity?.local?.name ?? '', choices = characterChoices(memory.known, live);
+  const picked = choices.find(choice => !choice.live && choice.name === memory.selected), kept = picked ? characterResources(memory.known[picked.name], now) : null;
+  const resources = kept ? kept.resources : state.resources;
+  const status = resourceStatus(resources, now), rows = ticketRows(resources, { names, caps, now, locale, shown, member: status.membership_active });
+  // Chips can be pressed only while the windows are unlocked; locked, the window only says whose tickets these are.
+  const chips = choices.length > 1 && memory.unlocked === true ? `<div class="chars" role="group">${choices.map(choice => `<button type="button" class="char" data-char="${choice.live ? '' : esc(choice.name)}" aria-pressed="${picked ? picked.name === choice.name : choice.live}" title="${esc(choice.live ? (tr ? 'Oynadığın karakter' : 'The character you play') : `${tr ? 'Son görülen' : 'Last seen'} ${agoText(Math.max(0, now - choice.seen), locale)}`)}">${esc(choice.name)}</button>`).join('')}</div>` : '';
+  const seen = kept ? `<small class="seen">${memory.unlocked === true ? '' : `${esc(picked.name)} · `}${tr ? 'Son görülen' : 'Last seen'} ${esc(agoText(kept.age_ms, locale))}${kept.projected ? ` · ${tr ? 'Odyle tahmini' : 'Odyle estimated'} (+${kept.gained})` : ''}</small>` : '';
+  const head = `${chips}${seen}`;
+  if (!rows.length) {
+    const hint = `<p class="hint">${tr ? 'Bilet bilgisi oyundan henüz gelmedi. Karakter seçerken ya da oyuna girerken gelir.' : 'No ticket data from the game yet. It arrives when you log in.'}</p>`;
+    return head ? `<div class="board">${head}${hint}</div>` : hint;
+  }
+  const hero = rows.find(row => row.hero), others = rows.filter(row => !row.hero);
+  const tiles = [...others.filter(row => row.kind === 'count'), ...others.filter(row => row.kind === 'time')];
   const capacity = hero ? (status.base_capacity ?? hero.cap) : null;
-  const card = hero ? `<div class="hero"><div class="hero-top"><span class="gem" aria-hidden="true">${iconImg(ticketIconPath(hero.id), 40)}</span><b>${hero.count}</b>${hero.bonus ? `<em>+${hero.bonus}</em>` : ''}${capacity ? `<small>/ ${capacity}</small>` : ''}<span class="refill">${hero.left_ms ? `<small>${tr ? 'Sonraki dolum' : 'Next refill'}</small>${hourglass(hero.left_ms)}` : ''}</span></div>${capacity ? `<i class="bar"><u style="width:${Math.min(100, hero.count / capacity * 100).toFixed(1)}%"></u></i>` : ''}<small class="hero-name">${esc(hero.name)}${hero.rule ? ` · ${esc(hero.rule)}` : ''}</small></div>` : '';
-  const grid = tiles.length ? `<div class="tiles">${tiles.map(row => `<div class="tile" data-full="${row.cap !== null && row.count >= row.cap}" title="${esc([row.category, row.name, row.rule, `#${row.id}`].filter(Boolean).join(' · '))}"><span class="icon">${iconImg(ticketIconPath(row.id), 30)}</span><b>${row.count}${row.bonus ? `<em>+${row.bonus}</em>` : ''}${row.cap !== null ? `<small>/${row.cap}</small>` : ''}</b><span class="label">${esc(row.name)}</span></div>`).join('')}</div>` : '';
-  const lines = times.length ? `<div class="times">${times.map(row => `<div class="time-row" title="${esc([row.category, row.name, `#${row.id}`].filter(Boolean).join(' · '))}"><span class="icon">${iconImg(ticketIconPath(row.id), 22)}</span><span class="name">${esc(row.name)}</span><b>${esc(spanText(row.left_ms))}</b></div>`).join('')}</div>` : '';
-  return `${card}${grid}${lines}`;
+  const card = hero ? `<div class="hero"><div class="hero-top"><span class="gem" aria-hidden="true">${iconImg(ticketIconPath(hero.id), 40)}</span><b>${kept?.projected ? '~' : ''}${hero.count}</b>${hero.bonus ? `<em>+${hero.bonus}</em>` : ''}${capacity ? `<small>/ ${capacity}</small>` : ''}<span class="refill">${hero.left_ms ? `<small>${tr ? 'Sonraki dolum' : 'Next refill'}</small>${hourglass(hero.left_ms)}` : ''}</span></div>${capacity ? `<i class="bar"><u style="width:${Math.min(100, hero.count / capacity * 100).toFixed(1)}%"></u></i>` : ''}<small class="hero-name">${esc(hero.name)}${hero.rule ? ` · ${esc(hero.rule)}` : ''}</small></div>` : '';
+  const tile = row => row.kind === 'time'
+    ? `<div class="tile time" data-full="false" title="${esc([row.category, row.name, `#${row.id}`].filter(Boolean).join(' · '))}"><span class="icon">${iconImg(ticketIconPath(row.id), 30)}</span><b>${esc(spanText(row.left_ms))}</b><span class="label">${esc(row.name)}</span></div>`
+    : `<div class="tile" data-full="${row.cap !== null && row.count >= row.cap}" title="${esc([row.category, row.name, row.rule, `#${row.id}`].filter(Boolean).join(' · '))}"><span class="icon">${iconImg(ticketIconPath(row.id), 30)}</span><b>${row.count}${row.bonus ? `<em>+${row.bonus}</em>` : ''}${row.cap !== null ? `<small>/${row.cap}</small>` : ''}</b><span class="label">${esc(row.name)}</span></div>`;
+  const grid = tiles.length ? `<div class="tiles">${tiles.map(tile).join('')}</div>` : '';
+  return `<div class="board">${head}<div class="board-body">${card}${grid}</div></div>`;
 }
 
 function trackerPanel({ state, locale, names }) {

@@ -10,6 +10,7 @@ import { focusedTarget } from './bosses.mjs';
 import { normalizeHudPanels } from './hud.mjs';
 import { normalizePvp } from './pvp.mjs';
 import { normalizeCombat, normalizeCombatDetection, normalizeFlight, normalizeFrenzy, normalizeOwnHealth } from './combat.mjs';
+import { normalizeTicketCharacters } from './ticket-characters.mjs';
 import { normalizeCurrencies, normalizeIdCaps, normalizeIdNames, normalizeParty, normalizeRoom, normalizeTicketShow, normalizeTracker } from './session-data.mjs';
 
 export const THEMES = Object.freeze({
@@ -78,7 +79,7 @@ export const DEFAULTS = Object.freeze({
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
-  alerts: { dpsGoal: 0, eventLeadMinutes: 5, sound: false, incomingWarnings: true, bossCasts: true, ownHealth: false }, combatDetection: Object.freeze({ source: 'hits', seconds: 10 }), idNames: Object.freeze({}), idCaps: Object.freeze({}), ticketShow: null, importedHistory: [],
+  alerts: { dpsGoal: 0, eventLeadMinutes: 5, sound: false, incomingWarnings: true, bossCasts: true, ownHealth: false }, combatDetection: Object.freeze({ source: 'hits', seconds: 10 }), idNames: Object.freeze({}), idCaps: Object.freeze({}), ticketShow: null, ticketCharacters: Object.freeze({}), ticketCharacter: '', importedHistory: [],
   damageScope: 'personal', rosterScope: 'observed', rowColorMode: 'performance', characterName: '', layout: 'cupertino', density: 'compact', showClass: true, showShares: true, showTeamCooldowns: true, rowMetric: 'both',
   numberPrecision: 2,
   summaryMetric: 'both', autoTargetRoster: true, recordNotifications: 'party',
@@ -171,6 +172,8 @@ export function normalizePreferences(input = {}) {
     idNames: normalizeIdNames(p.idNames),
     idCaps: normalizeIdCaps(p.idCaps),
     ticketShow: normalizeTicketShow(p.ticketShow),
+    ticketCharacters: normalizeTicketCharacters(p.ticketCharacters),
+    ticketCharacter: typeof p.ticketCharacter === 'string' ? p.ticketCharacter.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 24) : '',
     importedHistory: (Array.isArray(p.importedHistory) ? p.importedHistory : []).slice(0, 30).map(normalizeEncounter).filter(Boolean),
   };
 }

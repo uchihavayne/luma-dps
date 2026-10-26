@@ -546,7 +546,7 @@ pub fn overlay_reload(app: AppHandle) {
 /// The controls window changes a few look-and-feel preferences; the meter window saves them.
 #[tauri::command]
 pub fn overlay_preference(app: AppHandle, patch: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
-    const ALLOWED: [&str; 5] = ["overlayScale", "overlayRate", "overlaySnap", "opacity", "combatDetection"];
+    const ALLOWED: [&str; 6] = ["overlayScale", "overlayRate", "overlaySnap", "opacity", "combatDetection", "ticketCharacter"];
     let patch: serde_json::Map<String, serde_json::Value> = patch.into_iter().filter(|(key, _)| ALLOWED.contains(&key.as_str())).collect();
     if patch.is_empty() {
         return Err("Nothing to change".into());

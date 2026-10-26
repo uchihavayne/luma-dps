@@ -6,6 +6,7 @@ import { applyTheme } from './overlay-theme.mjs';
 import { cubePresentation } from './cube.mjs';
 import { skillLabel } from './skill-names.mjs';
 import { DEMO_STATE } from './demo.mjs';
+import { normalizeTicketCharacters } from './ticket-characters.mjs';
 import { MAP_RANGES, PANEL_TITLES, panelName, renderPanel } from './overlay-panels.mjs';
 
 const params = new URLSearchParams(location.search);
@@ -21,11 +22,11 @@ const $ = selector => document.querySelector(selector);
 // The browser preview (?demo=1) shows fixtures; the app shows nothing until the game has said something.
 const DEMO_CUBE = { enabled: false, network: { cubes: 2, distance_m: 42, vertical_m: 3, direction_deg: 35, fix_age_s: 2, look: 'gold', bearing_deg: 90, live: true, age_s: 12 } };
 let locale = params.get('lang') === 'en' ? 'en' : 'tr';
-let names = {}, caps = {}, events = [], shown = null, scale = 1, rateMs = 250, optionsSent = '', mapRange = 1000, locked = false, holding = false, controlsOpen = [], controlsOptions = {}, markerPrefs = { enabled: true, needKeys: false }, editing = false;
+let names = {}, caps = {}, ticketMemory = { known: {}, selected: '' }, events = [], shown = null, scale = 1, rateMs = 250, optionsSent = '', mapRange = 1000, locked = false, holding = false, controlsOpen = [], controlsOptions = {}, markerPrefs = { enabled: true, needKeys: false }, editing = false;
 const marker = ['cube', 'ping', 'flight'].includes(panel);
 document.body.classList.toggle('marker', marker);
 document.body.dataset.panel = panel;
-let raw = demo ? DEMO_STATE : {}, cubeRaw = demo ? DEMO_CUBE : {}, state = normalizeState(raw), fresh = true, lastEvent = 0;
+let raw = demo ? { ...DEMO_STATE, live_team_identity: { local: { actor_id: 3, name: 'Mira', class_name: 'Ranger', identity_source: 'server' } } } : {}, cubeRaw = demo ? DEMO_CUBE : {}, state = normalizeState(raw), fresh = true, lastEvent = 0;
 
 function applyTitle() {
   const title = PANEL_TITLES[panel][locale === 'en' ? 1 : 0];
@@ -49,7 +50,7 @@ function render() {
   if (demo && panel === 'map') { raw = demoMapState(Date.now()); fresh = true; }
   if (fresh) { state = normalizeState(raw); fresh = false; }
   const now = Date.now();
-  const html = renderPanel(panel, { state, cube: cubePresentation(cubeRaw, { now, locale, live: !demo }), locale, now, names, caps, events, shown, mapRange, controls: { open: controlsOpen, options: controlsOptions, locked }, marker: { ...markerPrefs, edit: editing }, label: skillLabel });
+  const html = renderPanel(panel, { state, cube: cubePresentation(cubeRaw, { now, locale, live: !demo }), locale, now, names, caps, events, shown, tickets: { ...ticketMemory, unlocked: !locked }, mapRange, controls: { open: controlsOpen, options: controlsOptions, locked }, marker: { ...markerPrefs, edit: editing }, label: skillLabel });
   const content = $('#panel-content');
   // A slider that is being dragged is not redrawn under the hand.
   if (holding && panel === 'controls') return;
@@ -66,6 +67,9 @@ function render() {
 // the room it has, so made smaller it shrinks and still shows every row, made bigger it grows. Nothing
 // is cut, scrolled away or pulled back.
 const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map: 300, cooldowns: 300, actions: 300, rivals: 300 };
+// A window whose content flows into columns can be laid out narrower than the design, so a narrow window
+// gets one column of tiles instead of a layout wider than itself.
+const NARROWEST = { tickets: 150 };
 let contentRevision = 0, fittedKey = '', grewAt = 0, markerShown = null;
 // The content is laid out as wide as the window allows and scaled as large as still shows all of it:
 // a wide window gets more columns, a narrow one a smaller scale, and neither leaves an empty margin.
@@ -79,14 +83,14 @@ function scaleToFit() {
   const key = `${panel}:${contentRevision}:${Math.round(room.width)}x${Math.round(room.height)}`;
   if (key === fittedKey) return;
   fittedKey = key;
-  const design = DESIGN_WIDTH[panel] ?? 290, narrowest = Math.round(design * 0.85);
+  const design = DESIGN_WIDTH[panel] ?? 290, narrowest = Math.round(design * 0.85), floor = NARROWEST[panel] ?? narrowest;
   const heightAt = width => { content.style.zoom = '1'; content.style.width = `${width}px`; return Math.max(1, content.offsetHeight); };
-  const fits = scale => heightAt(Math.max(narrowest, room.width / scale)) * scale <= room.height + 0.5;
+  const fits = scale => heightAt(Math.max(floor, room.width / scale)) * scale <= room.height + 0.5;
   const high = Math.max(0.6, Math.min(1.6, room.width / narrowest));
   let zoom = 0.6;
   if (fits(high)) zoom = high;
   else if (fits(0.6)) { let low = 0.6, up = high; for (let step = 0; step < 8; step += 1) { const mid = (low + up) / 2; if (fits(mid)) low = mid; else up = mid; } zoom = low; }
-  const layout = Math.max(narrowest, room.width / zoom), natural = heightAt(layout);
+  const layout = Math.max(floor, room.width / zoom), natural = heightAt(layout);
   content.style.width = `${layout}px`; content.style.zoom = String(zoom); content.style.alignSelf = 'center';
   // Smaller than a readable scale never happens: what is left over scrolls, and the window grows once to
   // show it all at full scale.
@@ -112,6 +116,7 @@ async function pullPreferences() {
     names = prefs.idNames;
     caps = prefs.idCaps;
     shown = prefs.ticketShow;
+    ticketMemory = { known: prefs.ticketCharacters, selected: prefs.ticketCharacter };
     events = panel === 'timers' ? allEvents(prefs) : [];
     rateMs = prefs.overlayRate;
     scale = marker || panel === 'controls' ? 1 : prefs.overlayScale;
@@ -151,6 +156,14 @@ function changePreference(key, value) {
   render();
 }
 async function readOpen() { try { controlsOpen = await invoke('list_overlays'); } catch {} }
+// A character chip in the Tickets window (pressable while the windows are unlocked) picks whose tickets to show.
+$('#panel-content').addEventListener('click', event => {
+  const chip = panel === 'tickets' ? event.target.closest('[data-char]') : null;
+  if (!chip) return;
+  ticketMemory = { ...ticketMemory, selected: chip.dataset.char };
+  if (native) invoke('overlay_preference', { patch: { ticketCharacter: chip.dataset.char } }).catch(() => {});
+  render();
+});
 $('#panel-content').addEventListener('click', async event => {
   const button = panel === 'controls' ? event.target.closest('button') : null;
   if (!button || !native) return;
@@ -181,6 +194,15 @@ $('#panel-close').addEventListener('click', () => { if (native) invoke('set_over
 $('#panel-resize').addEventListener('pointerdown', event => { if (native && event.button === 0) { event.preventDefault(); invoke('overlay_resize').catch(() => {}); } });
 
 applyTitle();
+// The browser preview: two remembered characters (?char=Nox picks one) and ?locked=1 for the bare look.
+if (demo) {
+  const hours = 3_600_000, then = Date.now();
+  ticketMemory = { selected: params.get('char') || '', known: normalizeTicketCharacters({
+    Nox: { seen: then - 7 * hours, member: then + 86_400_000, tickets: [[60_000_001, 450, 10, 0], [1, 3, 0, 0], [4, 14, 0, 0], [101, 1, 0, 0], [3, 0, 0, 6 * hours], [9, 0, 0, 7 * hours]] },
+    Sol: { seen: then - 30 * hours, member: false, tickets: [[60_000_001, 555, 0, 0], [1, 9, 5, 0], [8, 2, 0, 0]] },
+  }) };
+  if (params.get('locked') === '1') setLocked(true);
+}
 if (native) {
   // A hidden window's timer runs about once a second, so a marker that is waiting looks as soon as the state arrives.
   listen('luma-state', event => { raw = event.payload; fresh = true; lastEvent = Date.now(); if (marker && markerShown === false) render(); });

@@ -111,13 +111,13 @@ test('the tickets panel is a card for Odyle, tiles for counted tickets and lines
   // The names, the most each holds and the refill rule come from the catalog.
   assert.match(html, /Odyle Energy · \+15 her 3 sa<\/small>/);
   assert.match(html, /title="Shugo Festival Reward Key · \+3 günlük · #1"><span class="icon"><img[^>]*><\/span><b>9<em>\+5<\/em><small>\/21<\/small><\/b><span class="label">Shugo Festival Reward Key<\/span>/);
-  assert.match(html, /class="time-row"[^>]*><span class="icon"><img[^>]*><\/span><span class="name">Lower Abyss<\/span><b>3h 36m<\/b>/);
+  assert.match(html, /class="tile time"[^>]*><span class="icon"><img[^>]*><\/span><b>3h 36m<\/b><span class="label">Lower Abyss<\/span>/);
   // A ticket outside the usual list stays out unless the player chose it, and then a name and a cap they typed win.
   assert.doesNotMatch(html, /#12/);
   const chosen = renderPanel('tickets', { state: normalizeState({ resources }), now: NOW, shown: [12, 1], names: { 'ticket:12': 'Daily <dungeon>' }, caps: { 'ticket:12': 14 } });
   assert.match(chosen, /data-full="true"[^>]*>.*<b>14<small>\/14<\/small><\/b><span class="label">Daily &lt;dungeon&gt;<\/span>/s);
   // A usual ticket with nothing in it is still listed: a time ticket at zero says 0m.
-  assert.match(html, /Upper Abyss Usage Time<\/span><b>0m<\/b>/);
+  assert.match(html, /<b>0m<\/b><span class="label">Upper Abyss Usage Time<\/span>/);
   assert.match(renderPanel('tickets', { state: normalizeState({}), locale: 'en' }), /No ticket data/);
   assert.match(renderPanel('tickets', { state: normalizeState({ resources: { ...resources, awaiting_identity: true } }), now: NOW }), /Bilet bilgisi/);
 });

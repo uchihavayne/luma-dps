@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The Tickets window shows the characters you played before as chips. Luma remembers each character's tickets the last time the game sent them, and picking a chip shows them with when they were last seen; Odyle is carried forward by its refill rule (+15 every 3 hours, up to 560 or 840 for a member) and marked as an estimate. The chips can be pressed while the windows are unlocked (Alt+E); locked, the window names the character it shows.
+- The Tickets window is laid out in columns that follow its width instead of one tall stack: Odyle is a card, every other ticket (hours included) is a tile, a narrow window gets one column, a wider one more, and a wide one puts the card beside the tiles. A narrow window no longer overflows sideways.
+
 ## 0.26.1 · 26 October 2026
 
 - Every window wears the chosen theme, font and opacity, and Luma closes when the game closes.

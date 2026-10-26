@@ -17,6 +17,7 @@ import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, 
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, withSystemLocale, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
+import { rememberCharacter } from './ticket-characters.mjs';
 import { playerBarColor } from './model.mjs';
 import { DISPLAY_MODULES, displayModulePreset, petOnlyDisplay, visibleAnalysisSections, visibleSettingsSections, recentPetTarget, petTargetStatus, petCollectionOwner, petCollectionEpoch, acceptsPetCollectionSnapshot, petCollectionProgress } from './model.mjs';
 import { importEncounterCollection, exportEncounterCsv, exportEncounterHtml, exportEncounterJson } from './reports.mjs';
@@ -2133,7 +2134,19 @@ function odyleContent() {
   return `<h3 class="section-title">${t('autoOdyle')} ${source(demo ? t('sourceDemo') : t('serverObserved'))}</h3>${value.available ? `<div class="odyle-card"><div><span>${t('odyleRegular')}</span><strong>${fullNumber(value.base)} <small>/ ${value.base_capacity ?? '—'}</small></strong></div><div><span>${t('odyleBonus')}</span><strong>+${fullNumber(value.bonus)}</strong></div><div class="odyle-total"><span>${t('odyleTotal')}</span><strong>${fullNumber(value.total)}</strong></div></div><p class="help">${t('observedTime')}: ${esc(dateText(value.observed_at_ms))}${value.base_capacity === null ? '' : `<br>${t('odyleCapacity')}`}</p>` : `<p class="help">${t('odyleWaiting')}</p>`}`;
 }
 
+// The tickets of the character being played are kept, so the Tickets window can show them later, when
+// another character is being played. Saved only when they changed.
+let ticketMemoryAt = 0;
+function rememberTicketCharacter() {
+  const now = Date.now();
+  if (!native || now - ticketMemoryAt < 3000) return;
+  ticketMemoryAt = now;
+  const next = rememberCharacter(prefs.ticketCharacters, state, now);
+  if (next !== prefs.ticketCharacters) savePreferences({ ticketCharacters: next });
+}
+
 function renderLiveTools() {
+  rememberTicketCharacter();
   const value = automaticOdyle(), team = automaticTeamState(state), strip = $('#live-tools');
   strip.hidden = false;
   $('#odyle-chip').hidden = !prefs.displayModules.odyle || !value.available && !(prefs.layout === 'cupertino' && hudPanelVisible(prefs, 'odyle'));
@@ -2927,7 +2940,7 @@ if (native) {
   try { invoke('overlay_locked').then(value => { overlayLocked = value === true; applyAppearance(); scheduleRosterFit(); }).catch(() => {}); } catch {}
   try { await window.__TAURI__.event?.listen('luma-overlay-lock', event => { overlayLocked = event.payload === true; applyAppearance(); scheduleRosterFit(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-main-action', event => { if (event.payload === 'settings') openDrawer('settings', 'controls'); else if (event.payload === 'analysis') openDrawer('analysis', 'overview'); }); } catch {}
-  try { await window.__TAURI__.event?.listen('luma-preference-patch', event => { const patch = event.payload && typeof event.payload === 'object' ? event.payload : {}; const allowed = ['overlayScale', 'overlayRate', 'overlaySnap', 'opacity', 'combatDetection']; savePreferences(Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)))); }); } catch {}
+  try { await window.__TAURI__.event?.listen('luma-preference-patch', event => { const patch = event.payload && typeof event.payload === 'object' ? event.payload : {}; const allowed = ['overlayScale', 'overlayRate', 'overlaySnap', 'opacity', 'combatDetection', 'ticketCharacter']; savePreferences(Object.fromEntries(Object.entries(patch).filter(([key]) => allowed.includes(key)))); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-hotkey-state', event => { hotkeyState = event.payload; if (drawer === 'settings' && settingsTab === 'controls') refreshDrawer(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-update-state', event => { updateState = event.payload; if (drawer === 'settings' && settingsTab === 'about') refreshDrawer(); renderUpdatePrompt(); }); } catch {}
   try { await window.__TAURI__.event?.listen('luma-preferences', () => { preferenceCommitter.load(async () => normalizePreferences(withSystemLocale(await invoke('get_preferences')))).then(result => { if (result.untouched) { prefs = result.preferences; applyAppearance(); renderMeter(); } }).catch(() => {}); }); } catch {}
