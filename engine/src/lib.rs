@@ -1175,8 +1175,11 @@ impl MeterEngine {
                     }
                 }
                 if !position.local_only || self.own_id == Some(position.actor_id) {
-                    if let (true, Some(z)) = (self.own_id == Some(position.actor_id), position.z) {
-                        self.cubes.apply(cube::Event::Fix { pos: [position.x, position.y, z] }, now);
+                    // Any position of the player's own counts, one that carries no height keeps the last one.
+                    if self.own_id == Some(position.actor_id) {
+                        if let Some(z) = position.z.or_else(|| self.cubes.height()) {
+                            self.cubes.apply(cube::Event::Fix { pos: [position.x, position.y, z] }, now);
+                        }
                     }
                     self.spatial.observe(position, now);
                     self.dirty();
@@ -2323,6 +2326,7 @@ impl MeterEngine {
         self.streams.expire(now);
         if now.saturating_sub(self.orphans_checked_ms) >= 1000 {
             self.orphans_checked_ms = now;
+            self.rebind_named_effects();
             self.bind_orphans();
         }
         if !self.paused && self.started.is_some() && self.idle_for(now) {
@@ -3067,6 +3071,28 @@ impl MeterEngine {
     /// class whose name matches exactly one identified player (the same home server when both are
     /// known) belongs to that player, so its damage joins the player's row. A real player who is
     /// later identified with a class is released again by the identity record itself.
+    /// Match every unowned, classless named entity again: what was out of reach when an effect was
+    /// announced (its caster's class arriving later, a same-named player leaving) is made when it comes
+    /// within reach. Owned and classed entities are untouched.
+    fn rebind_named_effects(&mut self) {
+        let unowned: Vec<u64> = self
+            .identities
+            .iter()
+            .filter(|(_, row)| {
+                row.player
+                    && !row.npc
+                    && !row.pet
+                    && !row.removed
+                    && row.class.is_none()
+                    && row.owner.is_none()
+                    && row.name.is_some()
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in unowned {
+            self.bind_named_effects(id);
+        }
+    }
     fn bind_named_effects(&mut self, id: u64) {
         let Some(me) = self
             .identities
@@ -3099,6 +3125,19 @@ impl MeterEngine {
                 (Some(owner), None) => Some(owner),
                 _ => None,
             };
+            // The server an effect reports is not always the one its caster reported. When exactly one
+            // identified player has that name, no other player can be meant, so the server does not decide.
+            let owner = owner.or_else(|| {
+                let mut named = self
+                    .identities
+                    .iter()
+                    .filter(|(other, row)| **other != id && identified(row))
+                    .map(|(other, _)| *other);
+                match (named.next(), named.next()) {
+                    (Some(only), None) => Some(only),
+                    _ => None,
+                }
+            });
             if let Some(row) = self.identities.get_mut(&id) {
                 row.owner = owner;
             }
@@ -4102,6 +4141,7 @@ impl MeterEngine {
         // A finished encounter that is still on screen belongs to the past: build this record
         // from the current one only.
         let previous = self.completed.take();
+        self.rebind_named_effects();
         self.bind_orphans();
         // The cached totals were built for the shown result; rebuild them for this encounter.
         self.dirty();

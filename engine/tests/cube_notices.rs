@@ -74,15 +74,84 @@ fn the_direction_follows_the_last_walk_and_fades_when_it_is_old() {
     feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
     me(&mut engine, -50_205.0 - 6_000.0, 126_283.0 - 4_000.0, 15_449.0, 1_000);
     me(&mut engine, -50_205.0 - 3_000.0, 126_283.0 - 4_000.0, 15_449.0, 3_000);
-    let cube = engine.cube_radar(3_100).cubes.remove(0);
+    let cube = engine.cube_radar(3_000).cubes.remove(0);
     assert_eq!(cube.distance_m, Some(50));
     assert!((cube.direction_deg.unwrap() - 53).abs() <= 1, "{:?}", cube.direction_deg);
-    // Behind and to the left are negative or large, and an old walk gives nothing.
-    me(&mut engine, -50_205.0 + 3_000.0, 126_283.0 + 4_000.0, 15_449.0, 5_000);
-    let cube = engine.cube_radar(5_100).cubes.remove(0);
-    assert!(cube.direction_deg.unwrap().abs() > 90, "{:?}", cube.direction_deg);
-    me(&mut engine, -50_205.0 + 3_000.0, 126_283.0 + 4_000.0, 15_449.0, 40_000);
+    // Walking away from it, the Cube is behind: the angle is large. An old walk gives nothing.
+    me(&mut engine, -53_205.0 - 1_200.0, 122_283.0 - 1_600.0, 15_449.0, 5_000);
+    let cube = engine.cube_radar(5_000).cubes.remove(0);
+    assert!(cube.direction_deg.unwrap().abs() > 150, "{:?}", cube.direction_deg);
+    me(&mut engine, -53_205.0 - 1_200.0, 122_283.0 - 1_600.0, 15_449.0, 40_000);
     assert_eq!(engine.cube_radar(40_100).cubes[0].direction_deg, None);
+}
+
+#[test]
+fn a_turn_shows_after_a_few_steps_and_a_teleport_is_never_a_walk() {
+    let mut engine = engine();
+    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
+    // Walking towards the Cube (-y), then a step of a metre: too little to be a new direction.
+    me(&mut engine, -50_205.0, 126_283.0 + 8_000.0, 15_449.0, 1_000);
+    me(&mut engine, -50_205.0, 126_283.0 + 7_000.0, 15_449.0, 2_000);
+    me(&mut engine, -50_205.0 + 100.0, 126_283.0 + 7_000.0, 15_449.0, 2_500);
+    assert!(engine.cube_radar(2_500).cubes[0].direction_deg.unwrap().abs() <= 1, "a step of a metre is not a turn");
+    // Two metres to the side is: the Cube was straight ahead of the old way, and is now to the left of the new one.
+    me(&mut engine, -50_205.0 + 100.0 + 200.0, 126_283.0 + 7_000.0, 15_449.0, 3_000);
+    let turned = engine.cube_radar(3_000).cubes[0].direction_deg.unwrap();
+    assert!((turned + 90).abs() <= 8, "{turned}");
+    assert_eq!(engine.cube_radar(3_000).heading_age_ms, Some(0));
+    assert_eq!(engine.cube_radar(5_000).heading_age_ms, Some(2_000));
+    // A map load, a gate or a teleport: 800 m in one second. The way the player was going means nothing after it.
+    me(&mut engine, -50_205.0 + 80_000.0, 126_283.0, 15_449.0, 4_000);
+    let radar = engine.cube_radar(4_000);
+    assert_eq!((radar.heading_age_ms, radar.cubes.first().and_then(|cube| cube.direction_deg)), (None, None));
+    assert!(!radar.estimated, "no speed is carried over a teleport");
+}
+
+#[test]
+fn the_position_is_carried_forward_at_the_speed_the_player_was_moving_and_says_so() {
+    let mut engine = engine();
+    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
+    // Running at 10 m/s straight at the Cube, 40 m away at the second fix.
+    me(&mut engine, -50_205.0, 126_283.0 + 6_000.0, 15_449.0, 1_000);
+    me(&mut engine, -50_205.0, 126_283.0 + 4_000.0, 15_449.0, 3_000);
+    let radar = engine.cube_radar(3_000);
+    assert_eq!((radar.cubes[0].distance_m, radar.estimated), (Some(40), false));
+    // A third of a second on it is not yet called an estimate; a second on it is, and the Cube is 10 m nearer.
+    let radar = engine.cube_radar(3_300);
+    assert_eq!((radar.cubes[0].distance_m, radar.estimated), (Some(37), false));
+    let radar = engine.cube_radar(4_000);
+    assert_eq!((radar.cubes[0].distance_m, radar.estimated, radar.fix_age_ms), (Some(30), true, Some(1_000)));
+    // It stops being carried forward after three seconds: the player may have stopped.
+    assert_eq!(engine.cube_radar(6_000).cubes[0].distance_m, Some(10));
+    assert_eq!(engine.cube_radar(20_000).cubes[0].distance_m, Some(10));
+    // Standing still is not a speed: nothing is carried forward.
+    me(&mut engine, -50_205.0, 126_283.0 + 4_000.0, 15_449.0, 21_000);
+    me(&mut engine, -50_205.0, 126_283.0 + 4_000.0, 15_449.0, 23_000);
+    let radar = engine.cube_radar(25_000);
+    assert_eq!((radar.cubes[0].distance_m, radar.estimated), (Some(40), false));
+    // Fixes too far apart in time give no speed either.
+    me(&mut engine, -50_205.0, 126_283.0 + 1_000.0, 15_449.0, 33_000);
+    assert_eq!((engine.cube_radar(35_000).cubes[0].distance_m, engine.cube_radar(35_000).estimated), (Some(10), false));
+}
+
+#[test]
+fn the_players_own_movement_notice_is_a_position_even_without_a_height() {
+    let mut engine = engine();
+    feed(&mut engine, &frame([0x34, 0x36], &hex(SPAWN)), 0);
+    me(&mut engine, -50_205.0, 126_283.0 + 6_000.0, 15_449.0, 1_000);
+    // A movement notice for the player carries no height: the last one is kept.
+    engine.ingest_event(
+        Event::Position(Observation { actor_id: 9180, x: -50_205.0, y: 126_283.0 + 5_000.0, z: None, source: "server-position".into(), local_only: false }),
+        1_500,
+    );
+    let radar = engine.cube_radar(1_500);
+    assert_eq!((radar.cubes[0].distance_m, radar.cubes[0].vertical_m, radar.fix_age_ms), (Some(50), Some(0), Some(0)));
+    // Someone else's movement is not the player's position.
+    engine.ingest_event(
+        Event::Position(Observation { actor_id: 77, x: -50_205.0, y: 126_283.0, z: None, source: "server-position".into(), local_only: false }),
+        1_600,
+    );
+    assert_eq!(engine.cube_radar(1_500).cubes[0].distance_m, Some(50));
 }
 
 #[test]

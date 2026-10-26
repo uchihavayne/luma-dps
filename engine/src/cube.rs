@@ -55,9 +55,22 @@ const MAX_LEARNED: usize = 32;
 pub const FIX_MAX_AGE_MS: u64 = 30_000;
 /// The server's send radius is about 100 m; a notice that is still held far beyond it is stale.
 const STALE_CM: f32 = 25_000.0;
-/// Heading comes from the last stretch walked between two fixes, and fades once it is old.
-const MOVED_CM: f32 = 300.0;
+/// Heading comes from the last stretch walked between two fixes (a metre and a half is enough, so a turn
+/// shows after a few steps), and fades once it is old.
+const MOVED_CM: f32 = 150.0;
 const HEADING_MAX_AGE_MS: u64 = 30_000;
+/// Between two fixes the player cannot have covered more than this per second, flight included: a longer
+/// jump is a teleport, a gate or a map load, and the old heading no longer means anything after it.
+const MAX_SPEED_CM_S: f32 = 3_500.0;
+/// Slower than a slow walk is standing still.
+const MIN_SPEED_CM_S: f32 = 60.0;
+/// The speed is measured from two fixes this close together, and the position is carried forward at that
+/// speed for a few seconds, so the distance keeps changing between the sparse fixes while the player runs
+/// or flies and is not left standing at the last fix.
+const VELOCITY_PAIR_MAX_MS: u64 = 6_000;
+const EXTRAPOLATE_MAX_MS: u64 = 3_000;
+/// Carried forward by at least this much, the position is an estimate and is said to be.
+const ESTIMATE_AFTER_MS: u64 = 500;
 /// An opened Cube stays listed this long, marked as taken.
 const TAKEN_SHOWN_MS: u64 = 8_000;
 const LIVE_SPAWN: u8 = 6;
@@ -207,6 +220,8 @@ pub struct Tracker {
     objects: BTreeMap<u64, Object>,
     me: Option<Fix>,
     heading: Option<([f32; 2], u64)>,
+    /// Centimetres per second between the last two fixes, when the player was moving at a believable speed.
+    velocity: Option<[f32; 3]>,
     /// Local clock minus the server clock, from the latest map frame.
     clock_offset: Option<i64>,
 }
@@ -237,6 +252,10 @@ pub struct CubeView {
 pub struct Radar {
     pub cubes: Vec<CubeView>,
     pub fix_age_ms: Option<u64>,
+    /// How long ago the direction of the last walk was set; unknown without one.
+    pub heading_age_ms: Option<u64>,
+    /// The position was carried forward from the last fix at the speed the player was moving.
+    pub estimated: bool,
 }
 
 impl Tracker {
@@ -338,12 +357,29 @@ impl Tracker {
             .retain(|_, object| object.taken_at.is_none_or(|at| now.saturating_sub(at) < 60_000));
     }
 
+    /// The player's height as last seen, for a position that carries none.
+    pub fn height(&self) -> Option<f32> {
+        self.me.map(|fix| fix.pos[2])
+    }
+
     fn fix(&mut self, pos: [f32; 3], now: u64) {
+        self.velocity = None;
         if let Some(last) = self.me.filter(|last| last.at_ms <= now) {
             let (dx, dy) = (pos[0] - last.pos[0], pos[1] - last.pos[1]);
             let moved = dx.hypot(dy);
-            if moved >= MOVED_CM && now - last.at_ms <= HEADING_MAX_AGE_MS {
-                self.heading = Some(([dx / moved, dy / moved], now));
+            let elapsed = now - last.at_ms;
+            let seconds = elapsed as f32 / 1000.0;
+            if elapsed > 0 && moved / seconds > MAX_SPEED_CM_S {
+                // A teleport or a map load: the way the player was heading says nothing about the way on.
+                self.heading = None;
+            } else {
+                if moved >= MOVED_CM && elapsed <= HEADING_MAX_AGE_MS {
+                    self.heading = Some(([dx / moved, dy / moved], now));
+                }
+                let speed = if elapsed > 0 { moved / seconds } else { 0.0 };
+                if elapsed > 0 && elapsed <= VELOCITY_PAIR_MAX_MS && speed >= MIN_SPEED_CM_S {
+                    self.velocity = Some([dx / seconds, dy / seconds, (pos[2] - last.pos[2]) / seconds]);
+                }
             }
         }
         self.me = Some(Fix { pos, at_ms: now });
@@ -353,10 +389,21 @@ impl Tracker {
         let me = self
             .me
             .filter(|fix| fix.at_ms <= now && now - fix.at_ms <= FIX_MAX_AGE_MS);
-        let heading = self
-            .heading
-            .filter(|(_, at)| *at <= now && now - at <= HEADING_MAX_AGE_MS)
-            .map(|(unit, _)| unit);
+        let heading_at = self.heading.filter(|(_, at)| *at <= now && now - at <= HEADING_MAX_AGE_MS);
+        let heading = heading_at.map(|(unit, _)| unit);
+        // Where the player is now: the last fix, carried forward a little at the speed it was moving.
+        let ahead_ms = me.map_or(0, |fix| (now - fix.at_ms).min(EXTRAPOLATE_MAX_MS));
+        let estimated = self.velocity.is_some() && ahead_ms >= ESTIMATE_AFTER_MS;
+        let me = me.map(|fix| match self.velocity {
+            Some(velocity) if ahead_ms > 0 => {
+                let seconds = ahead_ms as f32 / 1000.0;
+                Fix {
+                    pos: [fix.pos[0] + velocity[0] * seconds, fix.pos[1] + velocity[1] * seconds, fix.pos[2] + velocity[2] * seconds],
+                    at_ms: fix.at_ms,
+                }
+            }
+            _ => fix,
+        });
         let mut cubes: Vec<_> = self
             .objects
             .iter()
@@ -412,6 +459,8 @@ impl Tracker {
         Radar {
             cubes,
             fix_age_ms: me.map(|fix| now - fix.at_ms),
+            heading_age_ms: heading_at.map(|(_, at)| now - at),
+            estimated,
         }
     }
 }

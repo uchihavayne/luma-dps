@@ -1,6 +1,9 @@
 export const CUBE_REFERENCE_MAX_BYTES = 8 * 1024 * 1024;
 export const CUBE_MATCH_LIFETIME_MS = 3000;
 export const CUBE_DIRECTION_LIFETIME_MS = 900;
+// The arrow is turned by the player's last walk while that walk is this fresh (seconds); after it the player may
+// have turned, so the arrow falls back to the map direction, which is always true.
+export const CUBE_WALK_FRESH_S = 8;
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const bounded = (value, minimum, maximum, fallback) => finite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
@@ -16,6 +19,7 @@ export function normalizeCubeNetwork(value) {
   return {
     cubes, distance_m: any ? whole(input.distance_m, 0, 500) : null, vertical_m: any ? whole(input.vertical_m, -500, 500) : null,
     direction_deg: any ? whole(input.direction_deg, -180, 180) : null, fix_age_s: any ? whole(input.fix_age_s, 0, 60) : null,
+    heading_age_s: any ? whole(input.heading_age_s, 0, 60) : null, estimated: any && input.estimated === true,
     opening: any && input.opening === true,
     look: any && ['red', 'gold'].includes(input.look) ? input.look : null, bearing_deg: any ? whole(input.bearing_deg, -180, 180) : null,
     live: any && input.live === true, age_s: any ? whole(input.age_s, 0, 604800) : null, taken: any && input.taken === true,
@@ -87,10 +91,14 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
   const old = net.fix_age_s !== null && net.fix_age_s > 10;
   const height = net.vertical_m === null ? null : Math.abs(net.vertical_m) < 3 ? tr ? 'aynı yükseklikte' : 'same height'
     : `${Math.abs(net.vertical_m)} m ${net.vertical_m > 0 ? tr ? 'yukarıda' : 'above' : tr ? 'aşağıda' : 'below'}`;
+  // Turned by the last walk while it is fresh; otherwise the map direction, north up: an arrow that is always there.
   const degrees = net.direction_deg;
-  const walkSide = degrees === null ? null : Math.abs(degrees) <= 30 ? tr ? 'önünde' : 'ahead' : Math.abs(degrees) > 150 ? tr ? 'arkanda' : 'behind you'
+  const relative = degrees !== null && (net.heading_age_s === null || net.heading_age_s <= CUBE_WALK_FRESH_S);
+  const compass = !relative && net.bearing_deg !== null;
+  const angle = !netNear ? null : relative ? degrees : compass ? (((90 - net.bearing_deg) % 360) + 540) % 360 - 180 : null;
+  const walkSide = !relative ? null : Math.abs(degrees) <= 30 ? tr ? 'önünde' : 'ahead' : Math.abs(degrees) > 150 ? tr ? 'arkanda' : 'behind you'
     : degrees > 0 ? tr ? 'sağında' : 'to your right' : tr ? 'solunda' : 'to your left';
-  const metres = net.distance_m === null ? null : `${old ? '~' : ''}${net.distance_m} m`;
+  const metres = net.distance_m === null ? null : `${old || net.estimated ? '~' : ''}${net.distance_m} m`;
   const kind = net.look === 'gold' ? tr ? 'Altın Küp' : 'Gold Cube' : net.look === 'red' ? tr ? 'Kırmızı Küp' : 'Red Cube' : tr ? 'Küp' : 'Cube';
   const winds = tr ? ['doğuda', 'kuzeydoğuda', 'kuzeyde', 'kuzeybatıda', 'batıda', 'güneybatıda', 'güneyde', 'güneydoğuda'] : ['to the east', 'to the northeast', 'to the north', 'to the northwest', 'to the west', 'to the southwest', 'to the south', 'to the southeast'];
   const wind = net.bearing_deg === null ? null : winds[((Math.round(net.bearing_deg / 45) % 8) + 8) % 8];
@@ -105,7 +113,7 @@ export function cubePresentation(input, { now = Date.now(), locale = 'tr', live 
   const quietInput = !readError && state.enabled && status === 'listening' && !state.audio_present && state.sample_rate > 0 && state.received_audio_frames >= state.sample_rate * 2;
   const short = matched ? `${{ left: '←', right: '→', center: '↔', unknown: '◇' }[direction]} ${prefix}` : `${prefix} · ${tr ? { off: 'kapalı', waiting_game: 'bekliyor', listening: 'ara', error: 'hata' }[status] : { off: 'off', waiting_game: 'wait', listening: 'listen', error: 'error' }[status]}`;
   return {
-    network: { near: netNear, distance: netNear ? metres ?? (tr ? 'Menzilde' : 'In range') : '—', detail, summary, label: netLabel, nearLabel, kind: netNear ? kind : '', look: netNear ? net.look : null, taken: netNear && net.taken, age: netNear ? born : null, wind, angle: netNear ? degrees : null, side: netNear ? walkSide : null },
+    network: { near: netNear, distance: netNear ? metres ?? (tr ? 'Menzilde' : 'In range') : '—', detail, summary, label: netLabel, nearLabel, kind: netNear ? kind : '', look: netNear ? net.look : null, taken: netNear && net.taken, age: netNear ? born : null, wind, angle, compass: netNear && compass, estimated: netNear && net.estimated, side: netNear ? walkSide : null },
     status, matched, direction, label: labels[status], short, quietInput, sensitive: matched && state.analysis_window_ms >= 1024,
     // A stereo balance establishes a side, not a calibrated world bearing.
     // Balanced audio cannot prove that a Cube is in front of the player.

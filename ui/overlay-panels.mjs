@@ -87,9 +87,10 @@ function cubePanel({ cube, state, locale, marker = {} }) {
   if (!sample && (!enabled || !net.near || (needKeys && keys === 0))) return '';
   const view = sample ? { look: 'gold', taken: false, kind: tr ? 'Altın Küp' : 'Gold Cube', distance: '42 m', side: tr ? 'sağında' : 'to your right', detail: tr ? '3 m yukarıda · kuzeydoğuda' : '3 m above · to the northeast', age: null, angle: 40 } : net;
   const look = view.look === 'red' ? 'red' : 'gold';
-  const pointer = view.angle === null || view.taken ? '' : `<svg class="pointer" viewBox="0 0 100 100" style="transform:rotate(${Number(view.angle)}deg)" aria-hidden="true"><path d="M50 0 63 19 50 12 37 19z"/></svg>`;
+  // The window turns the arrow (the shortest way round) from `data-angle`; on the map direction a small N shows which way is up.
+  const pointer = view.angle === null || view.taken ? '' : `<svg class="pointer" data-angle="${Number(view.angle)}" data-mode="${view.compass ? 'compass' : 'walk'}" viewBox="0 0 100 100" aria-hidden="true"><path d="M50 0 63 19 50 12 37 19z"/></svg>${view.compass ? `<span class="north" aria-hidden="true">${tr ? 'K' : 'N'}</span>` : ''}`;
   const detail = view.taken ? '' : [view.side, view.detail].filter(Boolean).join(' · ');
-  const meta = [view.taken ? null : view.age, keys === null ? null : `${tr ? 'Anahtar' : 'Keys'} ${keys}`].filter(Boolean).join(' · ');
+  const meta = [view.taken ? null : view.age, view.compass && !view.taken ? (tr ? 'ok yukarı = kuzey' : 'arrow up = north') : null, keys === null ? null : `${tr ? 'Anahtar' : 'Keys'} ${keys}`].filter(Boolean).join(' · ');
   return `<div class="marker" data-look="${look}" data-taken="${Boolean(view.taken)}"><span class="marker-art"><span class="glow"></span>${iconImg(cubeIconPath(look), 56)}${pointer}</span><span class="marker-text"><small class="kind">${esc(view.taken ? (tr ? `${view.kind} · açıldı` : `${view.kind} · opened`) : view.kind)}</small><b class="dist">${esc(view.distance)}</b>${detail ? `<span class="detail">${esc(detail)}</span>` : ''}${meta ? `<span class="meta">${esc(meta)}</span>` : ''}</span></div>`;
 }
 

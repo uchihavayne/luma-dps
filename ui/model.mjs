@@ -44,6 +44,14 @@ export const LAYOUTS = Object.freeze({
   focus: { name: 'Focus', description: { tr: 'Kişisel ölçüm ön planda', en: 'Personal measurement in focus' } },
   glass: { name: 'Prism', description: { tr: 'Yumuşak ışık, hafif yüzeyler', en: 'Soft light, light surfaces' } },
 });
+// The four looks of the meter. Each is the Luma Clear layout dressed differently (the colours still come
+// from the theme chosen); an empty style means one of the classic layouts above is in use.
+export const STYLES = Object.freeze({
+  card: { name: { tr: 'Cam kart', en: 'Glass card' }, description: { tr: 'Tek canlı cam kart; her şey bir bütün', en: 'One vivid glass card, everything together' } },
+  pill: { name: { tr: 'Hap', en: 'Pills' }, description: { tr: 'Her satır ayrı bir hap; oyunun üstünde hafif', en: 'Every row its own pill, light over the game' } },
+  hud: { name: { tr: 'HUD', en: 'HUD' }, description: { tr: 'Köşeli oyun arayüzü; sayılar öne çıkar', en: 'Angular game interface; the numbers stand out' } },
+  crystal: { name: { tr: 'Kristal', en: 'Crystal' }, description: { tr: 'Kristal kesim plakalar ve elmas ipuçları', en: 'Crystal-cut plates and diamond pips' } },
+});
 export const DISPLAY_MODULES = Object.freeze(['dps', 'pets', 'cube', 'events', 'odyle', 'team']);
 export const PET_PIN_LIMIT = 12;
 
@@ -75,7 +83,7 @@ export function visibleSettingsSections(sections, preferences = {}) {
     : name === 'hiddenCube' ? modules.cube : name === 'character' ? modules.dps || modules.pets || modules.odyle : true);
 }
 export const DEFAULTS = Object.freeze({
-  version: 1, appearanceRevision: 4, locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
+  version: 1, appearanceRevision: 4, meterStyle: 'card', locale: 'tr', theme: 'graphite', font: 'system', targetFont: 'system', targetFontSize: 15,
   textScale: 1, opacity: 0.96, sort: 'dps', mode: 'all', locked: false,
   customColors: THEMES.custom, background: '', events: [], activeEventId: 'builtin:rift', bossIds: [],
   equipment: [], manualCooldowns: [], odyle: { current: 0, max: 0, refill: 0, intervalMinutes: 0, anchor: '' },
@@ -124,6 +132,11 @@ export function normalizePreferences(input = {}) {
     reminderEnabled: event?.reminderEnabled !== false, reminderLeadMinutes: Math.round(bounded(event?.reminderLeadMinutes, 0, 60, bounded(p.alerts?.eventLeadMinutes, 0, 60, 5))),
   })).filter(event => event.anchor);
   const custom = p.customColors || {};
+  // Preferences saved before the looks existed have no style: everyone moves once to the Glass card, and a
+  // list that was sorted A-Z is sorted by DPS (the one who does the most on top). A style or classic layout
+  // chosen afterwards is saved with the key and kept.
+  const unstyled = p.meterStyle === undefined;
+  const meterStyle = unstyled ? 'card' : oneOf(p.meterStyle, ['', ...Object.keys(STYLES)], 'card');
   // Revision 3 moves everyone once to the roster-first Luma Clear layout; a layout chosen
   // afterwards is saved with revision 3 and kept.
   const revision = Number.isInteger(p.appearanceRevision) ? p.appearanceRevision : 0;
@@ -140,11 +153,11 @@ export function normalizePreferences(input = {}) {
     targetFont: oneOf(p.targetFont, Object.keys(FONTS), DEFAULTS.targetFont),
     targetFontSize: bounded(p.targetFontSize, 8, 28, DEFAULTS.targetFontSize),
     textScale: bounded(p.textScale, 0.85, 2, 1), opacity: bounded(p.opacity, 0, 1, 0.96),
-    sort: oneOf(p.sort, ['dps', 'damage', 'name'], 'dps'), mode: oneOf(p.mode, ['all', 'boss', 'both'], 'all'), locked: Boolean(p.locked),
+    sort: unstyled && p.sort === 'name' ? 'dps' : oneOf(p.sort, ['dps', 'damage', 'name'], 'dps'), meterStyle, mode: oneOf(p.mode, ['all', 'boss', 'both'], 'all'), locked: Boolean(p.locked),
     damageScope: oneOf(p.damageScope, ['personal', 'party', 'observed'], 'personal'), characterName: str(p.characterName, 64).trim(),
     rosterScope: oneOf(p.rosterScope, ['personal', 'party', 'observed'], 'observed'),
     rowColorMode: toClassColors ? 'class' : oneOf(p.rowColorMode, ['performance', 'class', 'accent'], 'class'),
-    layout: toClear ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: toClear && p.layout !== 'cupertino' ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
+    layout: meterStyle || toClear ? 'cupertino' : oneOf(p.layout, Object.keys(LAYOUTS), DEFAULTS.layout), density: toClear && p.layout !== 'cupertino' ? 'compact' : oneOf(p.density, ['comfortable', 'compact'], DEFAULTS.density),
     showClass: p.showClass !== false, showShares: p.showShares !== false, showTeamCooldowns: p.showTeamCooldowns !== false, rowMetric: oneOf(p.rowMetric, ['both', 'dps', 'damage'], 'both'),
     numberPrecision: Math.round(bounded(p.numberPrecision, 0, 3, 2)),
     summaryMetric: oneOf(p.summaryMetric, ['dps', 'damage', 'both'], 'both'), autoTargetRoster: p.autoTargetRoster !== false, recordNotifications: oneOf(p.recordNotifications, ['party', 'self', 'off'], 'party'),
@@ -203,12 +216,12 @@ export function importTheme(text) {
   if (!parsed || parsed.type !== 'luma-theme' || parsed.version !== 1 || !parsed.theme || typeof parsed.theme !== 'object') throw new Error('Invalid Luma theme');
   const p = normalizePreferences({ ...parsed.theme, appearanceRevision: 4 });
   if (parsed.theme.background && !p.background) throw new Error('Invalid raster background');
-  return Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
+  return Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'meterStyle', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]]));
 }
 
 export function exportTheme(prefs) {
   const p = normalizePreferences(prefs);
-  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
+  return JSON.stringify({ type: 'luma-theme', version: 1, theme: Object.fromEntries(['appearanceRevision', 'theme', 'font', 'targetFont', 'targetFontSize', 'textScale', 'opacity', 'customColors', 'background', 'layout', 'meterStyle', 'density', 'showClass', 'showShares', 'rowMetric', 'rowColorMode', 'summaryMetric', 'numberPrecision'].map(key => [key, p[key]])) }, null, 2);
 }
 
 export function recurringEvent(event, now = Date.now()) {

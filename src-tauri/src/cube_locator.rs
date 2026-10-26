@@ -32,6 +32,10 @@ pub struct NetworkCube {
     pub direction_deg: Option<i32>,
     /// Age of the player's last received position, in 5-second steps.
     pub fix_age_s: Option<u32>,
+    /// How long ago the direction of the player's last walk was set, in seconds.
+    pub heading_age_s: Option<u32>,
+    /// The position was carried forward from the last one at the speed the player was moving.
+    pub estimated: bool,
     pub opening: bool,
     /// "red" or "gold".
     pub look: Option<&'static str>,
@@ -56,6 +60,8 @@ impl NetworkCube {
             vertical_m: nearest.vertical_m,
             direction_deg: nearest.direction_deg,
             fix_age_s: radar.fix_age_ms.map(|age| (age / 5_000 * 5) as u32),
+            heading_age_s: radar.heading_age_ms.map(|age| (age / 1_000).min(60) as u32),
+            estimated: radar.estimated,
             opening: radar.cubes.iter().any(|cube| cube.opening),
             look: Some(nearest.look.name()),
             bearing_deg: nearest.bearing_deg,

@@ -161,3 +161,32 @@ fn a_target_named_like_a_player_is_not_an_effect() {
     hit(&mut engine, 1, 100, 1000);
     assert_eq!(rows(&engine), vec![(1, 100)]);
 }
+
+#[test]
+fn an_alias_from_another_server_joins_the_only_player_of_that_name() {
+    let mut engine = MeterEngine::default();
+    npc(&mut engine, 10);
+    identity(&mut engine, 1, "Lelie", CLERIC, false);
+    profile(&mut engine, 1, "Lelie", 1304);
+    hit(&mut engine, 1, 100, 1000);
+    // The effect reports another server than its caster did; nobody else is called Lelie.
+    profile(&mut engine, 5, "Lelie", 1999);
+    hit(&mut engine, 5, 40, 2000);
+    assert_eq!(rows(&engine), vec![(1, 140)]);
+}
+
+#[test]
+fn an_alias_that_could_not_be_matched_joins_its_caster_once_the_other_player_of_that_name_is_gone() {
+    let mut engine = MeterEngine::default();
+    npc(&mut engine, 10);
+    identity(&mut engine, 1, "Same", CLERIC, false);
+    identity(&mut engine, 2, "Same", CLERIC, false);
+    profile(&mut engine, 5, "Same", 1304);
+    hit(&mut engine, 1, 100, 1000);
+    hit(&mut engine, 5, 40, 2000);
+    // Two players share the name, so the effect cannot be told apart yet.
+    assert_eq!(rows(&engine), vec![(1, 100), (5, 40)]);
+    engine.ingest_event(Event::Removed { id: 2, death: false }, 3000);
+    engine.tick(5000);
+    assert_eq!(rows(&engine), vec![(1, 140)]);
+}

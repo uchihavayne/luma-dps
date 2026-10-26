@@ -197,6 +197,24 @@ test('direction words, height words and an old position are worded carefully', (
   assert.equal(unknown.near, true); assert.equal(unknown.side, null); assert.equal(unknown.distance, 'Menzilde'); assert.equal(unknown.detail, 'konumun bekleniyor'); assert.equal(unknown.angle, null);
 });
 
+test('the arrow follows the last walk while it is fresh and points on the map when it is not', () => {
+  const view = overrides => cubePresentation({ network: { cubes: 1, distance_m: 40, vertical_m: 0, direction_deg: 35, fix_age_s: 0, bearing_deg: 90, ...overrides } }, { now }).network;
+  // Fresh (or of unknown age): turned by the walk, with the words about the player's own side.
+  for (const age of [null, 0, 8]) { const fresh = view({ heading_age_s: age }); assert.equal(fresh.angle, 35, `${age}`); assert.equal(fresh.compass, false); assert.equal(fresh.side, 'sağında'); }
+  // Older: the player may have turned, so the arrow is the map direction, north up, and the words are the wind.
+  const stale = view({ heading_age_s: 9 });
+  assert.equal(stale.compass, true); assert.equal(stale.angle, 0); assert.equal(stale.side, null); assert.equal(stale.wind, 'kuzeyde');
+  assert.match(stale.summary, /kuzeyde/); assert.doesNotMatch(stale.summary, /sağında|önünde|solunda|arkanda/);
+  // North up: north is straight up, east to the right, west to the left, south behind.
+  for (const [bearing, up] of [[90, 0], [0, 90], [180, -90], [-90, -180], [45, 45], [-45, 135], [135, -45]]) assert.equal(view({ heading_age_s: 60, bearing_deg: bearing }).angle, up, `bearing ${bearing}`);
+  // No walk at all: the map direction too. Neither: no arrow.
+  assert.deepEqual([view({ direction_deg: null }).angle, view({ direction_deg: null }).compass], [0, true]);
+  assert.equal(view({ direction_deg: null, bearing_deg: null }).angle, null); assert.equal(view({ direction_deg: null, bearing_deg: null }).compass, false);
+  // A position carried forward from the last one is an estimate and is marked with the same tilde as an old one.
+  assert.equal(view({ estimated: true }).distance, '~40 m'); assert.equal(view({}).distance, '40 m'); assert.equal(view({ estimated: true }).estimated, true);
+  assert.equal(normalizeCubeNetwork({ cubes: 1, heading_age_s: 61, estimated: 'yes' }).heading_age_s, null); assert.equal(normalizeCubeNetwork({ cubes: 1, estimated: 'yes' }).estimated, false);
+});
+
 test('without a Cube announcement the notice says so, and malformed readings are rejected', () => {
   assert.equal(cubePresentation({}, { now }).network.near, false);
   assert.equal(cubePresentation({}, { now }).network.label, 'Oyun verisi: yaklaşık 100 m içinde Küp bildirimi yok');
@@ -205,7 +223,7 @@ test('without a Cube announcement the notice says so, and malformed readings are
   assert.equal(normalizeCubeNetwork({ cubes: 1, direction_deg: 181 }).direction_deg, null); assert.equal(normalizeCubeNetwork({ cubes: 1, vertical_m: -501 }).vertical_m, null);
   assert.equal(normalizeCubeNetwork({ cubes: 1, fix_age_s: 61 }).fix_age_s, null); assert.equal(normalizeCubeNetwork({ cubes: 1, opening: 1 }).opening, false);
   // Nothing about a Cube is kept when none is announced.
-  assert.deepEqual(normalizeCubeNetwork({ cubes: 0, distance_m: 5, vertical_m: 1, direction_deg: 2, fix_age_s: 3, opening: true }), { cubes: 0, distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null, opening: false, look: null, bearing_deg: null, live: false, age_s: null, taken: false });
+  assert.deepEqual(normalizeCubeNetwork({ cubes: 0, distance_m: 5, vertical_m: 1, direction_deg: 2, fix_age_s: 3, opening: true }), { cubes: 0, distance_m: null, vertical_m: null, direction_deg: null, fix_age_s: null, heading_age_s: null, estimated: false, opening: false, look: null, bearing_deg: null, live: false, age_s: null, taken: false });
   for (const value of [null, [], 'near', 7]) assert.equal(normalizeCubeNetwork(value).cubes, 0);
   assert.equal(normalizeCubeNetwork({ cubes: 500 }).cubes, 99);
 });

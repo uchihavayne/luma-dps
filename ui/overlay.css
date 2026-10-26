@@ -235,7 +235,9 @@ body.marker .panel-body { padding: 0; overflow: visible; }
 .marker-art { position: relative; display: grid; flex: none; width: 76px; height: 76px; place-items: center; }
 .marker-art .glow { position: absolute; inset: -8px; border-radius: 50%; background: radial-gradient(circle, var(--glow) 0%, transparent 68%); }
 .marker-art .game-icon { position: relative; width: 56px; height: 56px; border-radius: 0; filter: drop-shadow(0 2px 6px #000b); }
-.marker-art .pointer { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--tone); filter: drop-shadow(0 1px 3px #000d); transition: transform .25s ease; }
+.marker-art .pointer { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--tone); filter: drop-shadow(0 1px 3px #000d); transition: transform .3s cubic-bezier(.2, .8, .3, 1); }
+.marker-art .pointer[data-mode=compass] { opacity: .9; }
+.marker-art .north { position: absolute; top: -13px; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 800; line-height: 1; color: #fff; text-shadow: 0 1px 3px #000d; }
 .marker-text { display: grid; gap: 1px; min-width: 0; }
 .marker-text .kind { font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--tone); }
 .marker-text .dist { font-size: 28px; line-height: 1.05; font-variant-numeric: tabular-nums; }

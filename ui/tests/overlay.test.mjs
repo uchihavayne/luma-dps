@@ -89,10 +89,10 @@ test('unknown placeholders do not replace an actual received name or invent a ch
 });
 
 test('new default appearance upgrades once and explicit themes/layouts keep their choices', () => {
-  const upgraded = normalizePreferences({ theme: 'aurora', layout: 'studio' });
+  const upgraded = normalizePreferences({ theme: 'aurora', layout: 'studio', meterStyle: '' });
   assert.equal(upgraded.theme, 'graphite'); assert.equal(upgraded.layout, 'cupertino'); assert.equal(upgraded.density, 'compact');
   assert.equal(normalizePreferences({ ...upgraded, layout: 'studio', theme: 'aurora' }).layout, 'studio');
-  assert.equal(normalizePreferences({ theme: 'rose', layout: 'glass' }).theme, 'rose');
+  assert.equal(normalizePreferences({ theme: 'rose', layout: 'glass', meterStyle: '' }).theme, 'rose');
   const restored = importTheme(exportTheme({ appearanceRevision: 2, theme: 'pearl', layout: 'cupertino', opacity: 0 }));
   assert.equal(restored.theme, 'pearl'); assert.equal(restored.opacity, 0);
   assert.equal(Object.hasOwn(restored, 'fullscreenOverlay'), false);
@@ -100,7 +100,7 @@ test('new default appearance upgrades once and explicit themes/layouts keep thei
 
 test('appearance revision 3 moves every older layout to Luma Clear once and keeps later choices', () => {
   for (const layout of ['focus', 'glass', 'minimal', 'studio']) {
-    const migrated = normalizePreferences({ appearanceRevision: 2, layout, density: 'comfortable' });
+    const migrated = normalizePreferences({ appearanceRevision: 2, layout, density: 'comfortable', meterStyle: '' });
     assert.equal(migrated.layout, 'cupertino', layout);
     assert.equal(migrated.density, 'compact');
     assert.equal(migrated.appearanceRevision, 4);
@@ -108,7 +108,7 @@ test('appearance revision 3 moves every older layout to Luma Clear once and keep
   }
   assert.equal(normalizePreferences({}).layout, 'cupertino');
   assert.equal(normalizePreferences({ appearanceRevision: 2, layout: 'cupertino', density: 'comfortable' }).density, 'comfortable');
-  assert.equal(importTheme(exportTheme({ appearanceRevision: 4, layout: 'focus' })).layout, 'focus', 'an imported theme keeps its layout');
+  assert.equal(importTheme(exportTheme({ appearanceRevision: 4, layout: 'focus', meterStyle: '' })).layout, 'focus', 'an imported theme keeps its layout');
 });
 
 test('appearance revision 4 moves untouched bar colours to class colours once and keeps later choices', () => {
@@ -117,5 +117,5 @@ test('appearance revision 4 moves untouched bar colours to class colours once an
   assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'cupertino', rowColorMode: 'accent' }).rowColorMode, 'accent');
   assert.equal(normalizePreferences({ appearanceRevision: 4, layout: 'cupertino', rowColorMode: 'performance' }).rowColorMode, 'performance', 'chosen after the move');
   assert.equal(normalizePreferences({}).rowColorMode, 'class');
-  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'focus' }).layout, 'focus', 'a layout kept at revision 3 stays');
+  assert.equal(normalizePreferences({ appearanceRevision: 3, layout: 'focus', meterStyle: '' }).layout, 'focus', 'a layout kept at revision 3 stays');
 });

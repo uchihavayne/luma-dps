@@ -20,7 +20,7 @@ const invoke = (command, args) => tauri.core.invoke(command, args);
 const $ = selector => document.querySelector(selector);
 
 // The browser preview (?demo=1) shows fixtures; the app shows nothing until the game has said something.
-const DEMO_CUBE = { enabled: false, network: { cubes: 2, distance_m: 42, vertical_m: 3, direction_deg: 35, fix_age_s: 2, look: 'gold', bearing_deg: 90, live: true, age_s: 12 } };
+const DEMO_CUBE = { enabled: false, network: { cubes: 2, distance_m: 42, vertical_m: 3, direction_deg: 35, fix_age_s: 2, heading_age_s: params.get('stale') === '1' ? 20 : 2, look: 'gold', bearing_deg: 90, live: true, age_s: 12 } };
 let locale = params.get('lang') === 'en' ? 'en' : 'tr';
 let names = {}, caps = {}, ticketMemory = { known: {}, selected: '' }, events = [], shown = null, scale = 1, rateMs = 250, optionsSent = '', mapRange = 1000, locked = false, holding = false, controlsOpen = [], controlsOptions = {}, markerPrefs = { enabled: true, needKeys: false }, editing = false;
 const marker = ['cube', 'ping', 'flight'].includes(panel);
@@ -54,13 +54,26 @@ function render() {
   const content = $('#panel-content');
   // A slider that is being dragged is not redrawn under the hand.
   if (holding && panel === 'controls') return;
-  if (content._html !== html) { content.innerHTML = html; content._html = html; contentRevision += 1; }
+  if (content._html !== html) { content.innerHTML = html; content._html = html; contentRevision += 1; if (panel === 'cube') turnPointer(content); }
   // A marker with nothing to draw is hidden (and shown again when it has), and is never composed over the game for nothing.
   if (native && marker && panel !== 'ping') {
     const wanted = editing || html !== '';
     if (wanted !== markerShown) { markerShown = wanted; invoke('overlay_visible', { visible: wanted }).catch(() => { markerShown = null; }); }
   }
   requestAnimationFrame(scaleToFit);
+}
+
+// The Cube arrow turns from where it was to where it points the short way round: from 170 degrees to -170 is a
+// quarter of a turn, never a spin of 340 degrees the other way. The markup is redrawn on every change, so the
+// arrow is put back at its last angle first and then sent to the new one for the transition to run.
+function turnPointer(content) {
+  const pointer = content.querySelector('.pointer[data-angle]');
+  if (!pointer) { shownAngle = null; return; }
+  const target = Number(pointer.dataset.angle), from = shownAngle ?? target, to = from + (((target - from) % 360) + 540) % 360 - 180;
+  pointer.style.transition = 'none'; pointer.style.transform = `rotate(${from}deg)`;
+  void pointer.getBoundingClientRect();
+  pointer.style.transition = ''; pointer.style.transform = `rotate(${to}deg)`;
+  shownAngle = to > 540 ? to - 720 : to < -540 ? to + 720 : to;
 }
 
 // A window can be made any size by hand: its content is laid out at a width of its own and scaled to
@@ -70,7 +83,7 @@ const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map
 // A window whose content flows into columns can be laid out narrower than the design, so a narrow window
 // gets one column of tiles instead of a layout wider than itself.
 const NARROWEST = { tickets: 150 };
-let contentRevision = 0, fittedKey = '', grewAt = 0, markerShown = null;
+let contentRevision = 0, fittedKey = '', grewAt = 0, markerShown = null, shownAngle = null;
 // The content is laid out as wide as the window allows and scaled as large as still shows all of it:
 // a wide window gets more columns, a narrow one a smaller scale, and neither leaves an empty margin.
 function scaleToFit() {

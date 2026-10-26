@@ -53,7 +53,7 @@ test('the Cube marker is the game\'s own cube with its direction, distance and a
   assert.match(html, /class="marker" data-look="gold" data-taken="false"/);
   assert.match(html, /<img class="game-icon" src="assets\/icons\/cube_gold\.webp" width="56" height="56"/);
   assert.match(html, /<small class="kind">Altın Küp<\/small><b class="dist">42 m<\/b>/);
-  assert.match(html, /rotate\(35deg\)/);
+  assert.match(html, /data-angle="35" data-mode="walk"/); assert.doesNotMatch(html, /class="north"/);
   assert.match(html, /<span class="detail">sağında · 3 m yukarıda · kuzeyde · \+1<\/span>/);
   assert.match(html, /<span class="meta">12 sn önce doğdu · Anahtar 3<\/span>/);
   // A red cube is drawn red, an opened one is marked and shows no arrow.
@@ -68,9 +68,14 @@ test('the Cube marker is the game\'s own cube with its direction, distance and a
   assert.equal(renderPanel('cube', { cube: near, state: normalizeState({ cube_keys: 0 }), marker: { needKeys: true } }), '');
   assert.match(renderPanel('cube', { cube: near, state: normalizeState({}), marker: { needKeys: true } }), /class="marker"/);
   assert.match(renderPanel('cube', { cube: near, state: normalizeState({ cube_keys: 2 }), marker: { needKeys: true } }), /class="marker"/);
-  // No heading to turn by: no arrow, but the compass wind stays.
-  const noArrow = renderPanel('cube', { cube: cubePresentation({ network: { ...network, direction_deg: null } }, { now: NOW }), state });
-  assert.doesNotMatch(noArrow, /class="pointer"/); assert.match(noArrow, /kuzeyde/);
+  // No walk to turn by: the arrow points on the map (north up, with an N), and the compass wind stays.
+  const noWalk = renderPanel('cube', { cube: cubePresentation({ network: { ...network, direction_deg: null } }, { now: NOW }), state });
+  assert.match(noWalk, /data-angle="0" data-mode="compass"/); assert.match(noWalk, /<span class="north"[^>]*>K<\/span>/); assert.match(noWalk, /kuzeyde/); assert.match(noWalk, /ok yukarı = kuzey/);
+  // A walk that is old is not trusted either: the player may have turned since.
+  assert.match(renderPanel('cube', { cube: cubePresentation({ network: { ...network, heading_age_s: 20 } }, { now: NOW }), state }), /data-angle="0" data-mode="compass"/);
+  assert.match(renderPanel('cube', { cube: cubePresentation({ network: { ...network, heading_age_s: 3 } }, { now: NOW }), state }), /data-angle="35" data-mode="walk"/);
+  // Neither a walk nor a map direction: no arrow at all.
+  assert.doesNotMatch(renderPanel('cube', { cube: cubePresentation({ network: { ...network, direction_deg: null, bearing_deg: null } }, { now: NOW }), state }), /class="pointer"/);
   // While the player places it, a sample shows even with no cube near.
   assert.match(renderPanel('cube', { cube: cubePresentation({ network: { cubes: 0 } }, { now: NOW }), state, marker: { edit: true } }), /<b class="dist">42 m<\/b>/);
   assert.doesNotMatch(renderPanel('cube', { cube: near, state }), /<svg class="cube-icon"|class="top"/, 'the drawn cube is gone');
