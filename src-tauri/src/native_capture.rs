@@ -177,6 +177,7 @@ fn failed(shared: &crate::Shared, failure: CaptureFailure) {
 
 pub fn spawn(shared: Arc<crate::Shared>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
+        crate::perf::raise_this_thread();
         if std::env::var_os("LUMA_CAPTURE_DISABLED").is_some() {
             update(
                 &shared,

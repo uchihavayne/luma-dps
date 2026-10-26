@@ -83,6 +83,10 @@ const DESIGN_WIDTH = { tickets: 340, party: 380, damage: 340, controls: 340, map
 // A window whose content flows into columns can be laid out narrower than the design, so a narrow window
 // gets one column of tiles instead of a layout wider than itself.
 const NARROWEST = { tickets: 150 };
+// A window whose numbers change slowly does not need the update rate of a fight: tickets and currencies move
+// once in a long while, the tracker and the party now and then. Redrawing them every quarter of a second is
+// work for nothing, on top of the state every window parses.
+const SLOWEST = { tickets: 2000, currencies: 2000, tracker: 1000, party: 1000, timers: 1000, ping: 1000, pvp: 500, map: 500, rivals: 500 };
 let contentRevision = 0, fittedKey = '', grewAt = 0, markerShown = null, shownAngle = null;
 // The content is laid out as wide as the window allows and scaled as large as still shows all of it:
 // a wide window gets more columns, a narrow one a smaller scale, and neither leaves an empty margin.
@@ -232,4 +236,4 @@ if (native) {
   setInterval(pullPreferences, 10000);
 }
 render();
-(function tick() { render(); setTimeout(tick, rateMs); })();
+(function tick() { render(); setTimeout(tick, Math.max(rateMs, SLOWEST[panel] ?? 0)); })();

@@ -93,6 +93,8 @@ const recordNotifier = createRecordNotifier();
 let recordData = recordSnapshot(), recordsPending = false, recordsRetryAt = 0, recordMetric = 'all', recordQuery = '';
 let toastTimeout, lastEventCycle = '', lastGoalReached = false;
 let refreshPending = false;
+// The shell sends the state as it changes and as a heartbeat; asking for it as well is only for when nothing has come.
+let lastStateAt = 0;
 let receivedStateCount = 0;
 let cooldownFingerprint = '';
 let teamState = teamSnapshot(), roomIntent = false, teamClassFilter = '', teamBusy = false, teamPolling = false, teamConsent = false, teamInviteDraft = '', teamInviteCopy = '', teamRequestEpoch = 0;
@@ -2877,7 +2879,7 @@ $('#drawer-content').addEventListener('submit', async event => {
 });
 
 async function refreshState() {
-  if (!native || refreshPending) return;
+  if (!native || refreshPending || Date.now() - lastStateAt < 3000) return;
   const started = { revision: state.state_revision, receivedCount: receivedStateCount };
   refreshPending = true;
   try { receiveState(await invoke('get_state')); }
@@ -2890,6 +2892,7 @@ async function refreshState() {
 
 function receiveState(value) {
   if (!acceptsStateSnapshot(state, value)) return;
+  lastStateAt = Date.now();
   receivedStateCount++;
   const previous = state;
   state = normalizeState(value);

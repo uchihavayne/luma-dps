@@ -71,7 +71,7 @@
 #meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) > .encounter-header { padding-bottom: 10px; }
 
 /* ---------------------------------------------------------------- 1. Glass card: one vivid card */
-#meter[data-layout=cupertino][data-style=card][data-look=frame] { border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent); border-radius: 18px; background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 30%, transparent), transparent 52%), color-mix(in srgb, color-mix(in srgb, var(--accent) 11%, var(--bg)) calc(var(--opacity) * 100%), transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent), 0 10px 36px #0007; }
+#meter[data-layout=cupertino][data-style=card][data-look=frame] { border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent); border-radius: 18px; background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 30%, transparent), transparent 52%), color-mix(in srgb, color-mix(in srgb, var(--accent) 11%, var(--bg)) calc(var(--opacity) * 100%), transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent); }
 #meter[data-layout=cupertino][data-style=card] > .topbar { border-bottom: 0; background: none; }
 #meter[data-layout=cupertino][data-style=card] .target-vitals > i > b { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
 #meter[data-layout=cupertino][data-style=card] .segmented { border: 0; border-radius: 10px; background: color-mix(in srgb, var(--text) 8%, transparent); }
@@ -80,7 +80,7 @@
 #meter[data-layout=cupertino][data-style=card] .sort-label select { border-radius: 9px; border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 #meter[data-layout=cupertino][data-style=card] #players .player { border-radius: 13px; border-color: color-mix(in srgb, var(--class-color) 30%, transparent); background: color-mix(in srgb, var(--text) 7%, transparent); box-shadow: inset 3px 0 0 var(--class-color); }
 #meter[data-layout=cupertino][data-style=card] #players .player:hover { background: color-mix(in srgb, var(--class-color) 14%, transparent); }
-#meter[data-layout=cupertino][data-style=card] .player-bar { border-radius: 12px; opacity: .4; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=card] .player-bar { border-radius: 12px; opacity: .4; background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=card] #players .player.is-own { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 3px 0 0 var(--accent), 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
 #meter[data-layout=cupertino][data-style=card] .player-numbers > .player-dps { color: color-mix(in srgb, var(--bar-color, var(--class-color)) 55%, var(--text)); }
 #meter[data-layout=cupertino][data-style=card] .rank { color: color-mix(in srgb, var(--text) 62%, transparent); font-weight: 700; }
@@ -102,7 +102,7 @@
 #meter[data-layout=cupertino][data-style=pill] > .roster-stage { padding: 0 8px; }
 #meter[data-layout=cupertino][data-style=pill] #players .player { grid-template-columns: 24px minmax(0, 1fr) max-content !important; min-height: 38px; overflow: hidden; padding: 0 14px 0 7px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--bg) 92%, transparent); box-shadow: none; }
 #meter[data-layout=cupertino][data-style=pill] #players .player:hover { background: color-mix(in srgb, var(--class-color) 16%, var(--bg)); }
-#meter[data-layout=cupertino][data-style=pill] .player-bar { border-radius: 999px; opacity: .34; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=pill] .player-bar { border-radius: 999px; opacity: .34; background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=pill] .rank { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--class-color); color: #0b1015; font-size: 11px; font-weight: 700; text-shadow: none; }
 #meter[data-layout=cupertino][data-style=pill] #players .player.is-own { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); box-shadow: inset 0 0 0 1.5px var(--accent); }
 #meter[data-layout=cupertino][data-style=pill] .skill-board { margin: 2px 8px 6px; border: 0; border-radius: 22px; background: color-mix(in srgb, var(--bg) 92%, transparent); }
@@ -111,7 +111,7 @@
 #meter[data-layout=cupertino][data-style=pill][data-look=bare] > .encounter-header, #meter[data-layout=cupertino][data-style=pill][data-look=bare] .skill-board { background: color-mix(in srgb, var(--bg) 82%, transparent); }
 
 /* ---------------------------------------------------------------- 3. HUD: angular, numbers first */
-#meter[data-layout=cupertino][data-style=hud][data-look=frame] { border: 0; border-top: 2px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 84%, #000) calc(var(--opacity) * 100%), transparent); box-shadow: 0 8px 30px #0007; }
+#meter[data-layout=cupertino][data-style=hud][data-look=frame] { border: 0; border-top: 2px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 84%, #000) calc(var(--opacity) * 100%), transparent); }
 #meter[data-layout=cupertino][data-style=hud] > .topbar { border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent); background: none; }
 #meter[data-layout=cupertino][data-style=hud] .target-label { font-size: 10px; letter-spacing: .24em; }
 #meter[data-layout=cupertino][data-style=hud] .target-line h1 { font-size: max(16px, var(--target-size)); font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
@@ -123,7 +123,7 @@
 #meter[data-layout=cupertino][data-style=hud] .segmented button[aria-pressed=true] { background: none; color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 #meter[data-layout=cupertino][data-style=hud] .sort-label select { border-radius: 0; border-color: color-mix(in srgb, var(--text) 16%, transparent); background: none; color: var(--text); }
 #meter[data-layout=cupertino][data-style=hud] #players .player { min-height: 36px; padding-right: 20px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--text) 6%, transparent); clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%); box-shadow: none; }
-#meter[data-layout=cupertino][data-style=hud] .player-bar { border-radius: 0; opacity: .42; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=hud] .player-bar { border-radius: 0; opacity: .42; background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=hud] .rank { font-size: 17px; font-weight: 700; color: color-mix(in srgb, var(--text) 52%, transparent); text-shadow: none; }
 #meter[data-layout=cupertino][data-style=hud] #players .player.is-own { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
 #meter[data-layout=cupertino][data-style=hud] .player-numbers > .player-dps { color: var(--accent); }
@@ -133,7 +133,7 @@
 #meter[data-layout=cupertino][data-style=hud][data-look=bare] #players .player { border-radius: 0; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 84%, #000) 80%, transparent); }
 
 /* ---------------------------------------------------------------- 4. Crystal: cut plates, diamond pips */
-#meter[data-layout=cupertino][data-style=crystal][data-look=frame] { border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent); border-radius: 10px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 88%, #000) calc(var(--opacity) * 100%), transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent), 0 8px 30px #0007; }
+#meter[data-layout=cupertino][data-style=crystal][data-look=frame] { border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent); border-radius: 10px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 88%, #000) calc(var(--opacity) * 100%), transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent); }
 #meter[data-layout=cupertino][data-style=crystal] > .topbar { border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); background: none; }
 #meter[data-layout=cupertino][data-style=crystal] .target-line { justify-content: center; text-align: center; }
 #meter[data-layout=cupertino][data-style=crystal] .target-label { text-align: center; }
@@ -144,7 +144,7 @@
 #meter[data-layout=cupertino][data-style=crystal] .segmented button[aria-pressed=true] { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--accent); box-shadow: none; }
 #meter[data-layout=cupertino][data-style=crystal] .sort-label select { border-radius: 0; border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: none; color: var(--text); }
 #meter[data-layout=cupertino][data-style=crystal] #players .player { grid-template-columns: 26px minmax(0, 1fr) max-content !important; min-height: 38px; padding: 0 22px 0 14px; border: 0; border-radius: 0; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 78%, #000) 94%, transparent); clip-path: polygon(11px 0, calc(100% - 11px) 0, 100% 50%, calc(100% - 11px) 100%, 11px 100%, 0 50%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--class-color) 75%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--class-color) 75%, transparent); }
-#meter[data-layout=cupertino][data-style=crystal] .player-bar { border-radius: 0; opacity: .3; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=crystal] .player-bar { border-radius: 0; opacity: .3; background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=crystal] .rank { display: grid; place-items: center; width: 24px; height: 24px; background: var(--class-color); color: #0b1015; font-size: 11px; font-weight: 700; text-shadow: none; clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0 50%); }
 #meter[data-layout=cupertino][data-style=crystal] #players .player.is-own { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); background: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--bg) 78%, #000)); }
 #meter[data-layout=cupertino][data-style=crystal] .player-numbers > .player-dps { color: var(--accent); }
@@ -187,3 +187,10 @@
 .preview-style-hud > b { border-radius: 0; clip-path: polygon(0 0, 100% 0, calc(100% - 6px) 100%, 0 100%); }
 .preview-style-crystal { border-radius: 6px; border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent); }
 .preview-style-crystal > b { border-radius: 0; clip-path: polygon(5px 0, calc(100% - 5px) 0, 100% 50%, calc(100% - 5px) 100%, 5px 100%, 0 50%); }
+
+/* No blur behind anything: the settings backdrop darkens the meter without making the game's picture be re-blurred. */
+.drawer-backdrop { backdrop-filter: none; }
+
+/* The bars jump to their new length instead of sliding: a slide after every update keeps the window composing sixty
+   frames a second for the whole fight, and a meter gains nothing from it. */
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) :is(.player-bar, .player, #target-hp-track b) { transition: none !important; }

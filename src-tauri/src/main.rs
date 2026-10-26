@@ -15,6 +15,7 @@ mod obs_server;
 mod overlays;
 mod personal_bests;
 mod pet_cache;
+mod perf;
 mod pet_reference;
 mod team_sync;
 mod update_key;
@@ -1459,24 +1460,66 @@ fn state_period_ms(shared: &Shared) -> u64 {
         .unwrap_or(250)
 }
 
-/// The state without its running revision number, as a number, so an unchanged state can be told from
-/// a changed one without a window having to parse it.
-fn state_fingerprint(state: &mut Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let revision = state.as_object_mut().and_then(|object| object.remove("state_revision"));
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    if let Ok(text) = serde_json::to_string(state) {
-        text.hash(&mut hasher);
-    }
-    if let (Some(object), Some(revision)) = (state.as_object_mut(), revision) {
-        object.insert("state_revision".into(), revision);
-    }
-    hasher.finish()
-}
-
 /// A window that heard nothing for three seconds asks for the state itself, so an unchanged state is
 /// still sent now and then.
 const STATE_HEARTBEAT_MS: u64 = 2000;
+/// With no fight and nothing new from the game the state is looked at this seldom.
+const STATE_IDLE_LOOK_MS: u64 = 1000;
+/// The history file is rewritten at most this often (and once more when Luma closes): it holds a couple of
+/// hundred fights, and writing all of it after every fight is a burst of work in the middle of the action.
+const HISTORY_SAVE_GAP_MS: u64 = 20_000;
+
+/// What the windows are sent, built without ever turning the state into a value tree: the text of the state
+/// is written once, a fingerprint of it is taken, and it is sent as it is (with the few fields the shell adds)
+/// only when it differs from what was sent before or the heartbeat asks for it. The engine lock is held only
+/// while the state is copied out, never while it is written.
+struct WindowState {
+    payload: Option<Box<serde_json::value::RawValue>>,
+    fingerprint: u64,
+    fighting: bool,
+}
+
+fn state_for_windows(shared: &Shared, previous: u64, force: bool) -> Result<WindowState, String> {
+    use std::hash::{Hash, Hasher};
+    let record_status = shared.personal_bests.lock().map_err(|_| "Personal bests unavailable")?.status(now_ms());
+    let storage_error = shared.history_storage_error.lock().map_err(|_| "History status unavailable")?.clone();
+    let mut capture = shared.capture.lock().map_err(|_| "Capture state unavailable")?.clone();
+    let now = now_ms();
+    let (live, revision) = {
+        let mut engine = shared.engine.lock().map_err(|_| "Meter state unavailable")?;
+        if let Some(sample) = capture_latency_sample(&capture, now) {
+            engine.observe_latency(sample, now);
+        }
+        // Taken under the lock, so a state and its number stay in order.
+        (engine.live_state(now), STATE_REVISION.fetch_add(1, Ordering::Relaxed) + 1)
+    };
+    let fighting = live.encounter_active;
+    let state_text = serde_json::to_string(&live).map_err(|e| e.to_string())?;
+    let personal = record_status.to_string();
+    // The packet counter and the time of the last packet change with every packet; a window shows them well
+    // enough from the heartbeat, so they are not news.
+    let (packets, last_packet) = (capture.packets, capture.last_packet_at_ms);
+    capture.packets = 0;
+    capture.last_packet_at_ms = None;
+    let steady = serde_json::to_string(&capture).map_err(|e| e.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (&state_text, &personal, &storage_error, &steady).hash(&mut hasher);
+    let fingerprint = hasher.finish();
+    if !force && fingerprint == previous {
+        return Ok(WindowState { payload: None, fingerprint, fighting });
+    }
+    capture.packets = packets;
+    capture.last_packet_at_ms = last_packet;
+    let capture_text = serde_json::to_string(&capture).map_err(|e| e.to_string())?;
+    let error_text = serde_json::to_string(&storage_error).map_err(|e| e.to_string())?;
+    // The state is one object: its own fields, then the ones the shell adds.
+    let body = &state_text[..state_text.len() - 1];
+    let text = format!(
+        "{body},\"personal_bests\":{personal},\"history_storage_error\":{error_text},\"capture\":{capture_text},\"state_revision\":{revision}}}"
+    );
+    let payload = serde_json::value::RawValue::from_string(text).map_err(|e| e.to_string())?;
+    Ok(WindowState { payload: Some(payload), fingerprint, fighting })
+}
 
 fn snapshot(shared: &Shared) -> Result<Value, String> {
     // Read the disk-backed ledger before holding the live engine lock.
@@ -2056,6 +2099,37 @@ mod shell_tests {
             false
         );
         fs::remove_file(blocked_directory).unwrap();
+    }
+
+    #[test]
+    fn the_windows_are_sent_a_state_only_when_it_changed_and_packets_alone_are_no_change() {
+        let shared = fixture_shared(MeterEngine::default(), Preferences::default());
+        let first = state_for_windows(&shared, 0, false).unwrap();
+        let value: Value = serde_json::from_str(first.payload.as_ref().expect("the first look has something to send").get()).unwrap();
+        assert!(value["state_revision"].as_u64().unwrap() > 0);
+        assert!(value["capture"]["status"].is_string() && value.get("personal_bests").is_some() && value["history_storage_error"].is_string());
+        assert_eq!(value["encounter_active"], false);
+        assert!(!first.fighting);
+        // Looked at again at once: the same state, so nothing to send, unless the heartbeat asks for it.
+        let again = state_for_windows(&shared, first.fingerprint, false).unwrap();
+        assert!(again.payload.is_none() && again.fingerprint == first.fingerprint);
+        assert!(state_for_windows(&shared, first.fingerprint, true).unwrap().payload.is_some());
+        // Packets only move a counter and a time: not news, but the heartbeat still carries the counter.
+        {
+            let mut capture = shared.capture.lock().unwrap();
+            capture.packets += 500;
+            capture.last_packet_at_ms = Some(now_ms());
+        }
+        assert!(state_for_windows(&shared, first.fingerprint, false).unwrap().payload.is_none());
+        let beat: Value = serde_json::from_str(state_for_windows(&shared, first.fingerprint, true).unwrap().payload.unwrap().get()).unwrap();
+        assert_eq!(beat["capture"]["packets"], 500);
+        // A real change (the meter paused) is news, and the numbers keep rising so a window can order what it gets.
+        shared.engine.lock().unwrap().pause(true);
+        let changed = state_for_windows(&shared, first.fingerprint, false).unwrap();
+        assert!(changed.fingerprint != first.fingerprint);
+        let next: Value = serde_json::from_str(changed.payload.expect("a change is sent").get()).unwrap();
+        assert_eq!(next["paused"], true);
+        assert!(next["state_revision"].as_u64() > value["state_revision"].as_u64());
     }
 
     fn fixture_shared(engine: MeterEngine, preferences: Preferences) -> Shared {
@@ -3676,8 +3750,7 @@ mod roster_height_tests {
 
 #[cfg(test)]
 mod state_emission_tests {
-    use super::{should_close_with_game, state_fingerprint, GAME_GONE_GRACE_MS};
-    use serde_json::json;
+    use super::{should_close_with_game, GAME_GONE_GRACE_MS};
 
     #[test]
     fn luma_closes_only_after_the_game_was_seen_and_has_been_gone_a_while() {
@@ -3686,16 +3759,6 @@ mod state_emission_tests {
         assert!(!should_close_with_game(true, Some(GAME_GONE_GRACE_MS - 1), true), "a blink of the process list is not a close");
         assert!(should_close_with_game(true, Some(GAME_GONE_GRACE_MS), true));
         assert!(!should_close_with_game(true, Some(60_000), false), "switched off");
-    }
-
-    #[test]
-    fn an_unchanged_state_has_the_same_fingerprint_whatever_its_revision() {
-        let mut first = json!({ "players": [1, 2], "state_revision": 1 });
-        let mut later = json!({ "players": [1, 2], "state_revision": 99 });
-        let mut changed = json!({ "players": [1, 3], "state_revision": 1 });
-        assert_eq!(state_fingerprint(&mut first), state_fingerprint(&mut later));
-        assert_ne!(state_fingerprint(&mut first), state_fingerprint(&mut changed));
-        assert_eq!(first["state_revision"], 1, "the revision is put back for the window that gets it");
     }
 }
 
@@ -4139,6 +4202,7 @@ fn main() {
             return;
         }
     };
+    perf::lower_process_priority();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -4409,6 +4473,8 @@ fn main() {
                 let mut cube_revision = None;
                 let (mut last_emit_at, mut last_fingerprint) = (0u64, 0u64);
                 let (mut game_seen, mut game_gone_since): (bool, Option<u64>) = (false, None);
+                perf::lower_this_thread();
+                let (mut in_fight, mut cubes_near, mut last_revision, mut last_looked_at, mut history_saved_at) = (false, false, 0u64, 0u64, 0u64);
                 let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
                     if now_ms()>=z_order_checked_at {
@@ -4449,13 +4515,14 @@ fn main() {
                             }
                         }
                     }
-                    if let Ok(mut engine) = shared.engine.lock() {
+                    let cube_notice = shared.engine.lock().ok().map(|mut engine| {
                         engine.tick(now_ms());
-                    }
-                    let cube_notice = shared.engine.lock().ok().map(|engine| {
-                        (engine.cube_radar(now_ms()), engine.cube_templates())
+                        (engine.cube_radar(now_ms()), engine.cube_templates(), engine.revision())
                     });
-                    if let Some((radar, templates)) = cube_notice {
+                    let mut revision = last_revision;
+                    if let Some((radar, templates, current)) = cube_notice {
+                        revision = current;
+                        cubes_near = !radar.cubes.is_empty();
                         cube.set_network(cube_locator::NetworkCube::from_radar(&radar));
                         if templates != cube_templates_saved
                             && serde_json::to_vec(&templates)
@@ -4470,29 +4537,31 @@ fn main() {
                     if let Some(panels) = handle.try_state::<Arc<overlays::Store>>() {
                         panels.flush(false);
                     }
-                    if let Ok(mut state) = snapshot(&shared) {
-                        overlays::sync_combat(
-                            &handle,
-                            state.get("encounter_active").and_then(Value::as_bool) == Some(true),
-                        );
-                        let panel_open = shared.panel_open.load(Ordering::Relaxed);
-                        let (blocked, legacy) = shared.preferences.lock().ok().map_or((false, false), |preferences| {
-                            (
-                                panel_open || fullscreen_overlay_enabled(&preferences),
-                                cursor_pass_through(&preferences, panel_open, true).unwrap_or(false),
-                            )
-                        });
-                        overlays::sync_main_click_through(&handle, blocked, legacy);
-                        // Every window parses what is sent, so send a state only when it changed (and not
-                        // faster than the update rate), or as a heartbeat: nothing is sent to idle windows.
-                        let now = now_ms();
-                        let fingerprint = state_fingerprint(&mut state);
-                        if now >= last_emit_at + state_period_ms(&shared)
-                            && (fingerprint != last_fingerprint || now >= last_emit_at + STATE_HEARTBEAT_MS)
-                        {
-                            last_emit_at = now;
-                            last_fingerprint = fingerprint;
-                            let _ = handle.emit("luma-state", state);
+                    overlays::sync_combat(&handle, in_fight);
+                    let panel_open = shared.panel_open.load(Ordering::Relaxed);
+                    let (blocked, legacy) = shared.preferences.lock().ok().map_or((false, false), |preferences| {
+                        (
+                            panel_open || fullscreen_overlay_enabled(&preferences),
+                            cursor_pass_through(&preferences, panel_open, true).unwrap_or(false),
+                        )
+                    });
+                    overlays::sync_main_click_through(&handle, blocked, legacy);
+                    // Every window parses what is sent. A fight (or anything new from the game) is looked at as
+                    // often as the update rate says; a quiet meter once a second. Nothing is sent when the state
+                    // is the one the windows already have, except as a heartbeat.
+                    let now = now_ms();
+                    let changed = revision != last_revision;
+                    let busy = in_fight || changed;
+                    if now >= last_looked_at + if busy { state_period_ms(&shared) } else { STATE_IDLE_LOOK_MS } {
+                        last_looked_at = now;
+                        last_revision = revision;
+                        if let Ok(looked) = state_for_windows(&shared, last_fingerprint, now >= last_emit_at + STATE_HEARTBEAT_MS) {
+                            in_fight = looked.fighting;
+                            if let Some(payload) = looked.payload {
+                                last_emit_at = now;
+                                last_fingerprint = looked.fingerprint;
+                                let _ = handle.emit("luma-state", payload);
+                            }
                         }
                     }
                     let calendar_update = shared.calendar.lock().ok().and_then(|calendar| {
@@ -4521,17 +4590,21 @@ fn main() {
                         .ok()
                         .map(|engine| engine.history_revision());
                     if now_ms() >= history_retry_at
+                        && now_ms() >= history_saved_at + HISTORY_SAVE_GAP_MS
                         && history_revision.is_some_and(|revision| {
                             revision != shared.history_saved_revision.load(Ordering::Relaxed)
                         })
                     {
                         history_retry_at = if persist_history(&shared).is_ok() {
+                            history_saved_at = now_ms();
                             0
                         } else {
                             now_ms() + 5000
                         };
                     }
-                    std::thread::sleep(Duration::from_millis(150));
+                    // A quiet meter (no fight, nothing new, no Cube near) wakes less often.
+                    let calm = !in_fight && !cubes_near && revision == last_revision;
+                    std::thread::sleep(Duration::from_millis(if calm { 300 } else { 150 }));
                 }
             });
             Ok(())
@@ -4578,6 +4651,15 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let shared = handle.state::<Arc<Shared>>();
                 shared.stopping.store(true, Ordering::Relaxed);
+                // History is saved at most every few seconds while playing: the last fights are saved now.
+                let unsaved = shared
+                    .engine
+                    .lock()
+                    .ok()
+                    .is_some_and(|engine| engine.history_revision() != shared.history_saved_revision.load(Ordering::Relaxed));
+                if unsaved {
+                    let _ = persist_history(&shared);
+                }
                 if let Some(panels) = handle.try_state::<Arc<overlays::Store>>() {
                     panels.flush(true);
                 }

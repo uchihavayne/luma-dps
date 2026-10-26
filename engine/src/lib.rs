@@ -4503,6 +4503,11 @@ impl MeterEngine {
     pub fn history_revision(&self) -> u64 {
         self.history_revision
     }
+    /// Counts every change of what the meter shows (not the passing of time): a caller that sees the same
+    /// number as before, outside a fight, has nothing new to build.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
     /// Removes only imported reports after an explicit user action. Captured
     /// encounters and session identities are retained unchanged.
     pub fn clear_imported_history(&mut self) -> usize {
