@@ -36,6 +36,40 @@
 #meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .board-head > .board-total b { color: var(--accent); }
 #meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) > .footer { background: none; border-top: 0; }
 
+/* ---------------------------------------------------------------- shared polish: the same tidy rows and header in all four */
+/* The target: its name and time, a thin bar, and the figures under the bar (not written over it). */
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .target-line { align-items: baseline; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .target-line h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals { position: static; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "bar bar" "text percent"; align-items: center; gap: 5px 10px; height: auto; min-height: 0; margin: 7px 0 0; line-height: 1.3; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals[hidden] { display: none !important; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals > #target-hp-track { grid-area: bar; width: auto; height: 6px; border: 0; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals > #target-hp { grid-area: text; position: static; inset: auto; max-width: none; height: auto; font-size: 11px; line-height: 1.3; color: var(--muted); text-align: left; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals > .target-hp-percent { grid-area: percent; position: static; inset: auto; max-width: none; height: auto; font-size: 11px; font-weight: 650; line-height: 1.3; color: var(--accent); text-align: right; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals[data-maximum-known=false] #target-hp-track b { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #target-vitals[data-status=dead] #target-hp-track b { background: color-mix(in srgb, var(--text) 30%, transparent); }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal])[data-look=bare] > .roster-controls { display: none; }
+/* Rows: a rank, the class picture, the name that takes what is left (and is cut with … rather than hidden
+   under something), and the figures at the end. The fit rules of the classic layouts squeeze every one of
+   these to a few pixels; here they keep their size. */
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .players { padding: 0 0 2px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #players .player { grid-template-columns: 20px minmax(0, 1fr) max-content !important; gap: 8px !important; height: auto !important; min-height: 40px; margin: 0 0 5px; padding: 6px 12px 6px 8px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) #players .player:last-child { margin-bottom: 0; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .rank { justify-self: center; font-size: 12px; font-weight: 700; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-main { min-width: 0; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-name-line { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 1.3; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-class-icon { flex: 0 0 22px !important; width: 22px !important; height: 22px !important; border-radius: 50%; overflow: hidden; background: color-mix(in srgb, var(--class-color) 16%, transparent); }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-class-icon > svg, #meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-class-icon > img { width: 100% !important; height: 100% !important; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px !important; line-height: 1.3 !important; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-stats { display: flex !important; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 10px; white-space: nowrap; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-stats > .player-numbers { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: center; flex: 0 0 auto; gap: 10px; width: auto; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-numbers > .player-dps { order: 0; width: auto; min-width: 62px; text-align: right; font-size: 13px !important; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-numbers > .player-damage { order: 1; width: auto; min-width: 46px; text-align: right; font-size: 12px !important; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-stats > .player-share { flex: 0 0 40px; text-align: right; font-size: 11px; }
+/* A narrow window drops the share (the bar already shows it) before it squeezes the name. */
+@container meter-size (max-width: 379px) { #meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .player-stats > .player-share { display: none !important; } }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .skill-board { margin-top: 6px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) > .encounter-header { padding-bottom: 10px; }
+
 /* ---------------------------------------------------------------- 1. Glass card: one vivid card */
 #meter[data-layout=cupertino][data-style=card][data-look=frame] { border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent); border-radius: 18px; background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 30%, transparent), transparent 52%), color-mix(in srgb, color-mix(in srgb, var(--accent) 11%, var(--bg)) calc(var(--opacity) * 100%), transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent), 0 10px 36px #0007; }
 #meter[data-layout=cupertino][data-style=card] > .topbar { border-bottom: 0; background: none; }
@@ -46,12 +80,12 @@
 #meter[data-layout=cupertino][data-style=card] .sort-label select { border-radius: 9px; border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 #meter[data-layout=cupertino][data-style=card] #players .player { border-radius: 13px; border-color: color-mix(in srgb, var(--class-color) 30%, transparent); background: color-mix(in srgb, var(--text) 7%, transparent); box-shadow: inset 3px 0 0 var(--class-color); }
 #meter[data-layout=cupertino][data-style=card] #players .player:hover { background: color-mix(in srgb, var(--class-color) 14%, transparent); }
-#meter[data-layout=cupertino][data-style=card] .player-bar { border-radius: 12px; opacity: .55; filter: saturate(1.7) brightness(1.08); background: linear-gradient(90deg, color-mix(in srgb, var(--bar-color, var(--class-color)) 45%, transparent), var(--bar-color, var(--class-color))); }
+#meter[data-layout=cupertino][data-style=card] .player-bar { border-radius: 12px; opacity: .4; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=card] #players .player.is-own { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 3px 0 0 var(--accent), 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
-#meter[data-layout=cupertino][data-style=card] .player-numbers > .player-dps { color: color-mix(in srgb, var(--bar-color, var(--class-color)) 62%, #fff); }
+#meter[data-layout=cupertino][data-style=card] .player-numbers > .player-dps { color: color-mix(in srgb, var(--bar-color, var(--class-color)) 55%, var(--text)); }
 #meter[data-layout=cupertino][data-style=card] .rank { color: color-mix(in srgb, var(--text) 62%, transparent); font-weight: 700; }
 #meter[data-layout=cupertino][data-style=card] .skill-board { border-radius: 14px; border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-#meter[data-layout=cupertino][data-style=card][data-look=bare] > .encounter-header { margin: 0 8px 6px; border-radius: 16px; background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 24%, transparent), transparent 60%), color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, var(--bg)) 82%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent); }
+#meter[data-layout=cupertino][data-style=card][data-look=bare] > .encounter-header { margin: 0 8px 8px; border-radius: 16px; background: linear-gradient(155deg, color-mix(in srgb, var(--accent) 24%, transparent), transparent 60%), color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, var(--bg)) 82%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent); }
 #meter[data-layout=cupertino][data-style=card][data-look=bare] #players .player, #meter[data-layout=cupertino][data-style=card][data-look=bare] .skill-board { background-color: color-mix(in srgb, color-mix(in srgb, var(--accent) 10%, var(--bg)) 80%, transparent); border-radius: 13px; }
 
 /* ---------------------------------------------------------------- 2. Pills: every row its own pill */
@@ -68,7 +102,7 @@
 #meter[data-layout=cupertino][data-style=pill] > .roster-stage { padding: 0 8px; }
 #meter[data-layout=cupertino][data-style=pill] #players .player { grid-template-columns: 24px minmax(0, 1fr) max-content !important; min-height: 38px; overflow: hidden; padding: 0 14px 0 7px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--bg) 92%, transparent); box-shadow: none; }
 #meter[data-layout=cupertino][data-style=pill] #players .player:hover { background: color-mix(in srgb, var(--class-color) 16%, var(--bg)); }
-#meter[data-layout=cupertino][data-style=pill] .player-bar { border-radius: 999px; opacity: .36; filter: saturate(1.6); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=pill] .player-bar { border-radius: 999px; opacity: .34; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=pill] .rank { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--class-color); color: #0b1015; font-size: 11px; font-weight: 700; text-shadow: none; }
 #meter[data-layout=cupertino][data-style=pill] #players .player.is-own { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); box-shadow: inset 0 0 0 1.5px var(--accent); }
 #meter[data-layout=cupertino][data-style=pill] .skill-board { margin: 2px 8px 6px; border: 0; border-radius: 22px; background: color-mix(in srgb, var(--bg) 92%, transparent); }
@@ -89,7 +123,7 @@
 #meter[data-layout=cupertino][data-style=hud] .segmented button[aria-pressed=true] { background: none; color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 #meter[data-layout=cupertino][data-style=hud] .sort-label select { border-radius: 0; border-color: color-mix(in srgb, var(--text) 16%, transparent); background: none; color: var(--text); }
 #meter[data-layout=cupertino][data-style=hud] #players .player { min-height: 36px; padding-right: 20px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--text) 6%, transparent); clip-path: polygon(0 0, 100% 0, calc(100% - 12px) 100%, 0 100%); box-shadow: none; }
-#meter[data-layout=cupertino][data-style=hud] .player-bar { border-radius: 0; opacity: .46; filter: saturate(1.5); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=hud] .player-bar { border-radius: 0; opacity: .42; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=hud] .rank { font-size: 17px; font-weight: 700; color: color-mix(in srgb, var(--text) 52%, transparent); text-shadow: none; }
 #meter[data-layout=cupertino][data-style=hud] #players .player.is-own { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
 #meter[data-layout=cupertino][data-style=hud] .player-numbers > .player-dps { color: var(--accent); }
@@ -110,13 +144,26 @@
 #meter[data-layout=cupertino][data-style=crystal] .segmented button[aria-pressed=true] { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--accent); box-shadow: none; }
 #meter[data-layout=cupertino][data-style=crystal] .sort-label select { border-radius: 0; border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: none; color: var(--text); }
 #meter[data-layout=cupertino][data-style=crystal] #players .player { grid-template-columns: 26px minmax(0, 1fr) max-content !important; min-height: 38px; padding: 0 22px 0 14px; border: 0; border-radius: 0; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 78%, #000) 94%, transparent); clip-path: polygon(11px 0, calc(100% - 11px) 0, 100% 50%, calc(100% - 11px) 100%, 11px 100%, 0 50%); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--class-color) 75%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--class-color) 75%, transparent); }
-#meter[data-layout=cupertino][data-style=crystal] .player-bar { border-radius: 0; opacity: .3; filter: saturate(1.5); background: var(--bar-color, var(--class-color)); }
+#meter[data-layout=cupertino][data-style=crystal] .player-bar { border-radius: 0; opacity: .3; filter: saturate(1.2); background: var(--bar-color, var(--class-color)); }
 #meter[data-layout=cupertino][data-style=crystal] .rank { display: grid; place-items: center; width: 24px; height: 24px; background: var(--class-color); color: #0b1015; font-size: 11px; font-weight: 700; text-shadow: none; clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0 50%); }
 #meter[data-layout=cupertino][data-style=crystal] #players .player.is-own { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); background: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--bg) 78%, #000)); }
 #meter[data-layout=cupertino][data-style=crystal] .player-numbers > .player-dps { color: var(--accent); }
 #meter[data-layout=cupertino][data-style=crystal] .skill-board { margin: 2px 14px 6px; padding-inline: 20px; border: 0; border-radius: 0; background: color-mix(in srgb, var(--accent) 12%, color-mix(in srgb, var(--bg) 80%, #000)); clip-path: polygon(11px 0, calc(100% - 11px) 0, 100% 50%, calc(100% - 11px) 100%, 11px 100%, 0 50%); }
-#meter[data-layout=cupertino][data-style=crystal][data-look=bare] > .encounter-header { margin: 0 8px 6px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 88%, #000) 82%, transparent); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+#meter[data-layout=cupertino][data-style=crystal][data-look=bare] > .encounter-header { margin: 0 8px 8px; background: color-mix(in srgb, color-mix(in srgb, var(--bg) 88%, #000) 82%, transparent); box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
 #meter[data-layout=cupertino][data-style=crystal][data-look=bare] #players .player { background: color-mix(in srgb, color-mix(in srgb, var(--bg) 78%, #000) 82%, transparent); }
+
+/* The controls fit one line at 320 px, and when they do not they grow the row instead of spilling over the list. */
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) > .roster-controls { height: auto; padding: 3px 12px 6px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal])[data-look=frame] > .roster-controls .segmented { flex: 1 1 104px; min-width: 100px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .segmented button { padding: 2px 6px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .sort-label select { min-width: 64px; padding: 2px 6px; }
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal]) .scope-label select { max-width: 104px; }
+
+/* The header has a plate of its own in every look, so it needs no shadow to be read over the game. */
+#meter[data-layout=cupertino]:is([data-style=card], [data-style=pill], [data-style=hud], [data-style=crystal])[data-look=bare] > .encounter-header { text-shadow: none; }
+
+/* Crystal's pips are ten pixels tall; the shared bar is thinner. */
+#meter[data-layout=cupertino][data-style=crystal] #target-vitals > #target-hp-track { height: 10px; }
 
 /* ---------------------------------------------------------------- the picker in Settings */
 .style-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 6px; }

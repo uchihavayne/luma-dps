@@ -40,3 +40,23 @@ test('whoever does the most damage per second is at the top, then the next, and 
   assert.deepEqual(sortedPlayers(rows).map(row => row.name), ['Top', 'Mid', 'Tie', 'Low'], 'DPS is the default');
   assert.deepEqual(sortedPlayers([{ name: 'B', dps: NaN }, { name: 'A', dps: 3 }, { name: 'C' }]).map(row => row.name), ['A', 'B', 'C'], 'an unknown rate sits last');
 });
+
+test('every look keeps its rows tidy: the classic fit rules cannot squeeze the picture, the name or the figures', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../looks.css', import.meta.url), 'utf8');
+  // The picture keeps its size and the name is cut with an ellipsis instead of going under it.
+  assert.match(css, /\.player-class-icon \{ flex: 0 0 22px !important; width: 22px !important; height: 22px !important;/);
+  assert.match(css, /\.player-name \{ flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;/);
+  assert.match(css, /grid-template-columns: 20px minmax\(0, 1fr\) max-content !important; gap: 8px !important; height: auto !important;/);
+  // The figures stay on one line, and a narrow window drops the share before the name is squeezed.
+  assert.match(css, /\.player-stats > \.player-numbers \{ display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;/);
+  assert.match(css, /@container meter-size \(max-width: 379px\)[^}]*\.player-share \{ display: none !important; \}/);
+  // Locked, the empty controls row takes no room; unlocked, a controls row that wraps grows instead of covering the list.
+  assert.match(css, /\[data-look=bare\] > \.roster-controls \{ display: none; \}/);
+  assert.match(css, /> \.roster-controls \{ height: auto; padding: 3px 12px 6px; \}/);
+  // The target's figures sit under its bar, not on it.
+  assert.match(css, /#target-vitals \{ position: static; display: grid;[^}]*grid-template-areas: "bar bar" "text percent";/);
+  // Each look is drawn both locked (bare) and unlocked (frame), and the number colour comes from the theme's text.
+  for (const style of ['card', 'pill', 'hud', 'crystal']) assert.match(css, new RegExp(String.raw`\[data-style=${style}\]\[data-look=(frame|bare)\]`), style);
+  assert.doesNotMatch(css, /player-dps \{ color: color-mix\([^}]*#fff/, 'a number mixed with white cannot be read on a light theme');
+});
