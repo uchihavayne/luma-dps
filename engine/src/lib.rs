@@ -635,6 +635,8 @@ pub struct MeterEngine {
     cubes: cube::Tracker,
     idle_ms: u64,
     party: BTreeMap<u32, (packets::PartyVital, u64)>,
+    /// The character the party list and the room were received for; another character does not inherit them.
+    party_owner: Option<u64>,
     room: Option<(lobby::Room, u64)>,
     stacks: HashMap<u64, (u32, u64)>,
     stacks_known: bool,
@@ -738,6 +740,7 @@ impl Default for MeterEngine {
             cubes: cube::Tracker::default(),
             idle_ms: IDLE_MS,
             party: BTreeMap::new(),
+            party_owner: None,
             room: None,
             stacks: HashMap::new(),
             stacks_known: false,
@@ -1444,6 +1447,11 @@ impl MeterEngine {
                     {
                         self.cancel_training();
                     }
+                    if self.party_owner.is_some_and(|owner| owner != id) {
+                        self.party.clear();
+                        self.room = None;
+                    }
+                    self.party_owner = Some(id);
                     self.own_id = Some(id);
                     self.cooldowns.bind_self(Some(id));
                     self.resources.bind_self(id, &name, now);
@@ -2350,6 +2358,7 @@ impl MeterEngine {
         self.server_offset = None;
         self.incoming_max.clear();
         self.party.clear();
+        self.party_owner = None;
         self.room = None;
         self.stacks.clear();
         self.stacks_known = false;
@@ -2701,7 +2710,13 @@ impl MeterEngine {
         for change in items::changes(payload) {
             self.remember_stack(change.key, change.item, change.count, change.loot, change.pvp, change.reason, now);
         }
-        for member in packets::party_vitals(payload) {
+        let listed = packets::party_vitals(payload);
+        if !listed.is_empty() && payload.get(..2) == Some(&[0x00, 0x92]) {
+            // The party list names every member, so anyone it does not name has left (or belonged to the
+            // character you played before); one added later arrives as a single record below.
+            self.party.clear();
+        }
+        for member in listed {
             if self.party.len() >= 24 && !self.party.contains_key(&member.key) {
                 continue;
             }

@@ -43,6 +43,27 @@ test('own, party and nearby totals remain distinct while roster filtering change
   assert.equal(waiting.summaries.party.damage, null); assert.equal(waiting.roster.players.length, 2);
 });
 
+test('the game\u2019s own party list widens the party roster to everyone it names, when it lists you', () => {
+  const base = {
+    total_damage: 9000, dps: 900, elapsed_ms: 10000, local_player_id: 2, local_identity_source: 'server',
+    players: [{ id: 1, name: 'Ghost', damage: 4000, dps: 400 }, { id: 2, name: 'Me', damage: 2000, dps: 200 }, { id: 3, name: 'Mate', damage: 1000, dps: 100 }, { id: 4, name: 'Stranger', damage: 2000, dps: 200 }],
+    party_member_ids: [2, 3], party_membership_source: 'server', party_total_damage: 3000, party_dps: 300,
+  };
+  const frame = (id, name, self = false) => ({ id, name, hp: 5, hp_max: 5, is_self: self });
+  const wide = scopedEncounter(normalizeState({ ...base, party: [frame(1, 'Ghost'), frame(2, 'Me', true), frame(3, 'Mate')] }), 'party');
+  assert.deepEqual(wide.players.map(player => player.name).sort(), ['Ghost', 'Mate', 'Me']);
+  assert.equal(wide.damage, 7000); assert.equal(wide.dps, 700);
+  // A list that does not list you is another character's party: it names nobody here.
+  const foreign = scopedEncounter(normalizeState({ ...base, party: [frame(1, 'Ghost'), frame(4, 'Stranger')] }), 'party');
+  assert.deepEqual(foreign.players.map(player => player.name).sort(), ['Mate', 'Me']);
+  assert.equal(foreign.damage, 3000);
+  // With no party list the engine's party stands as it did.
+  assert.deepEqual(scopedEncounter(normalizeState(base), 'party').players.map(player => player.name).sort(), ['Mate', 'Me']);
+  // The list alone names the party when the engine has none yet.
+  const alone = scopedEncounter(normalizeState({ ...base, party_member_ids: [], party_membership_source: 'unresolved', party_total_damage: null, party_dps: null, party: [frame(1, 'Ghost'), frame(2, 'Me', true)] }), 'party');
+  assert.deepEqual(alone.players.map(player => player.name).sort(), ['Ghost', 'Me']); assert.equal(alone.known, true);
+});
+
 test('performance color follows relative DPS and class or theme choices remain independent', () => {
   const player = { dps: 800, class_name: 'Ranger' };
   assert.match(playerBarColor(player, 1000), /^#[0-9a-f]{6}$/);

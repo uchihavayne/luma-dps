@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Every window wears the chosen theme, font and opacity, and Luma closes when the game closes.
+- The Party window and the party finder room belong to the character that received them: switching to another character no longer keeps the old party, and a new party list replaces the previous one instead of adding to it.
+- The Party player list also names the players the game's own party list shows, when that list includes you, so party members in a dungeon appear with their damage instead of only the members the party roster message named.
+
 ## 0.26.0 · 25 October 2026
 
 - The skill table sits inside the main window with the game's own skill icons, and the meter is not a window while Luma is locked: no header, footer, card or frame, only the target, the player rows and your skills over the game, with every click passing through to it. Alt+E opens Overlay controls, which unlock the windows for moving, set scale, opacity, update rate, grid snapping and combat detection, and refresh a stuck window.

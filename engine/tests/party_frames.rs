@@ -199,6 +199,36 @@ fn party_frames_follow_the_game_and_assists_need_the_local_character_in_the_list
 }
 
 #[test]
+fn a_new_party_list_replaces_the_old_one_and_another_character_does_not_inherit_it() {
+    let names = |engine: &MeterEngine, now| {
+        let mut names: Vec<String> = engine.live_state(now).party.into_iter().map(|row| row.name).collect();
+        names.sort();
+        names
+    };
+    let mut engine = MeterEngine::default();
+    engine.ingest_event(Event::Identity { id: 11939, name: "Mira".into(), class: Some(18), own: true }, 0);
+    engine.observe_game_frame(&party_info(&[member(11939, 2315, "Mira", 100, 100), member(30011, 2315, "Aster", 90, 90), member(30012, 2315, "Nox", 50, 100)]), 1000);
+    assert_eq!(names(&engine, 1100), ["Aster", "Mira", "Nox"]);
+    // A later list is the whole party now: who it does not name is gone.
+    engine.observe_game_frame(&party_info(&[member(11939, 2315, "Mira", 100, 100), member(30011, 2315, "Aster", 90, 90)]), 2000);
+    assert_eq!(names(&engine, 2100), ["Aster", "Mira"]);
+    // One added later joins it.
+    let mut added = vec![0x0d, 0x92];
+    added.extend(member(40001, 2316, "Sol", 50, 100));
+    engine.observe_game_frame(&added, 2500);
+    assert_eq!(names(&engine, 2600), ["Aster", "Mira", "Sol"]);
+    // The same character coming back into view keeps its party.
+    engine.ingest_event(Event::Identity { id: 11939, name: "Mira".into(), class: Some(18), own: true }, 2800);
+    assert_eq!(names(&engine, 2900).len(), 3);
+    // Another character of the same player logs in: the previous party is not shown any more...
+    engine.ingest_event(Event::Identity { id: 5, name: "Other".into(), class: Some(14), own: true }, 3000);
+    assert!(engine.live_state(3100).party.is_empty());
+    // ...and the party it is in comes with its own list.
+    engine.observe_game_frame(&party_info(&[member(5, 2315, "Other", 10, 10), member(30011, 2315, "Aster", 90, 90)]), 3200);
+    assert_eq!(names(&engine, 3300), ["Aster", "Other"]);
+}
+
+#[test]
 fn the_tracker_counts_monsters_you_hit_that_died_and_what_you_gathered() {
     let mut engine = MeterEngine::default();
     engine.ingest_event(Event::Identity { id: 1, name: "Local".into(), class: Some(14), own: true }, 0);

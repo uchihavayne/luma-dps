@@ -20,18 +20,25 @@ export function scopedEncounter(state, scope = 'personal') {
     return { scope, known: true, players, targets: state?.targets || [], damage, dps: nonnegative(state?.dps) ?? scopedRate(damage, elapsed), elapsed };
   }
   if (scope === 'party') {
-    const memberIds = new Set((state?.party_member_ids || []).map(String));
-    const membershipKnown = ['server', 'manual'].includes(state?.party_membership_source);
+    const engineIds = new Set((state?.party_member_ids || []).map(String));
+    // The game's own party list names the party too, but only when it lists you: a list without you is
+    // someone else's (the character you played before).
+    const listed = Array.isArray(state?.party) && state.party.some(row => row?.is_self === true) ? state.party.map(row => String(row.id)) : [];
+    const memberIds = new Set([...engineIds, ...listed]);
+    const membershipKnown = ['server', 'manual'].includes(state?.party_membership_source) || listed.length > 0;
     const elapsed = elapsedFor(state, 'party_elapsed_ms');
     const filtered = membershipKnown ? players.filter(player => player.in_party === true || memberIds.has(String(player.id))).map(player => ({ ...player, dps: scopedRate(nonnegative(player.damage), elapsed) })) : [];
     const received = filtered.filter(player => nonnegative(player.damage) !== null);
     const receivedIds = new Set(received.map(player => String(player.id)));
     const completeRows = memberIds.size > 0 && [...memberIds].every(id => receivedIds.has(id)) && received.length === filtered.length;
     const explicitEmpty = state?.party_membership_source === 'manual' && Array.isArray(state.party_member_ids) && !memberIds.size && !filtered.length;
-    const fallbackDamage = completeRows || explicitEmpty ? received.reduce((sum, player) => sum + player.damage, 0) : null;
-    const damage = membershipKnown ? nonnegative(state?.party_total_damage) ?? fallbackDamage : null;
+    // The game's list added players the engine's party does not hold: its totals are short of them, so
+    // the rows are summed instead.
+    const widened = filtered.some(player => player.in_party !== true && !engineIds.has(String(player.id)));
+    const fallbackDamage = completeRows || explicitEmpty || widened ? received.reduce((sum, player) => sum + player.damage, 0) : null;
+    const damage = membershipKnown ? (widened ? fallbackDamage : nonnegative(state?.party_total_damage) ?? fallbackDamage) : null;
     const known = membershipKnown && damage !== null;
-    return { scope, known, membershipKnown, players: filtered, targets: membershipKnown ? state?.party_targets || [] : [], damage, dps: known ? nonnegative(state?.party_dps) ?? scopedRate(damage, elapsed) : null, elapsed };
+    return { scope, known, membershipKnown, players: filtered, targets: membershipKnown ? state?.party_targets || [] : [], damage, dps: known ? (widened ? scopedRate(damage, elapsed) : nonnegative(state?.party_dps) ?? scopedRate(damage, elapsed)) : null, elapsed };
   }
   const elapsed = elapsedFor(state, 'personal_elapsed_ms');
   const filtered = players.filter(player => sameId(player.id, localId)).map(player => ({ ...player, dps: nonnegative(state?.personal_dps) ?? scopedRate(nonnegative(player.damage), elapsed) }));
