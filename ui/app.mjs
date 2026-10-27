@@ -13,7 +13,7 @@ import { bossLog } from './boss-log.mjs';
 import { spatialFrame, renderRadar } from './spatial.mjs';
 import { classIcon } from './class-icons.mjs';
 import { GAME_REFERENCE_NOTICE } from './reference-notices.mjs';
-import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, capRoster, rosterFit, unnamedSourcesNotice } from './hud.mjs';
+import { HUD_PANELS, hudPanelVisible, hudPanelChange, previewFrame, mainRoster, capRoster, rosterFit, followHeight, unnamedSourcesNotice } from './hud.mjs';
 import { replayTimeline, replayFrame, replayClock, renderReplayFrame } from './replay.mjs';
 import { THEMES, FONTS, LAYOUTS, STYLES, displayPlayerName, displayTargetName, rosterEligible, liveServerActorId, normalizePreferences, withSystemLocale, normalizeState, normalizeEncounter, sortedPlayers, playerShare, compactNumber, formatRate, playerMetricLabel, clockTime, recurringEvent, manualOdyle, exportTheme, importTheme, classColor, cooldownStatus, resizeStep, compactHeaderHeight, connectionStatus, numericPreferenceEdit, acceptsCalendarSnapshot, acceptsStateSnapshot } from './model.mjs';
 import { scopedEncounter, meterScopes, ownPlayer, skillSummary, sortedSkills } from './scope.mjs';
@@ -83,7 +83,7 @@ let toolsOpen = false, toolsLocale = '', toolsExpanded = false;
 // Luma starts locked: the meter is drawn bare, with no window around it. Alt+E unlocks it for editing.
 let mainInteractive = null;
 let overlayLocked = window.__TAURI__?.core?.invoke ? true : new URLSearchParams(location.search).get('bare') === '1';
-let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, fitRequested = 0, rosterContext = '';
+let rosterFitFrame = 0, rosterFitSignature = '', rosterMinimum = null, fitMemory = { height: 0, at: 0, since: 0, smaller: 0 }, rosterContext = '';
 let skillsFromTargetBoard = false;
 let renderedTargetBoard = null, selectedBoardPlayerDetail = null;
 let deferredRosterRefresh = false;
@@ -1018,7 +1018,7 @@ function scheduleRosterFit() {
       if (fit.enabled) for (const [key, value] of Object.entries({ height: fit.rowHeight, gap: fit.gap, font: fit.font, icon: fit.icon, rate: fit.rateWidth, damage: fit.damageWidth })) meter.style.setProperty(`--fit-${key}`, `${value}px`);
     }
     if (fit.enabled && fit.fits) list.scrollTop = 0;
-    if (drawer || prefs.fullscreenOverlay || prefs.compactStrip) { rosterMinimum = null; fitRequested = 0; return; }
+    if (drawer || prefs.fullscreenOverlay || prefs.compactStrip) { rosterMinimum = null; fitMemory.height = 0; return; }
     const minimum = fit.enabled ? Math.max(200, Math.min(800, Math.ceil(meter.getBoundingClientRect().height - available + fit.minimum + 1))) : 200;
     if (demo && sampleFrame) meter.style.minHeight = `${minimum}px`;
     if (native && minimum !== rosterMinimum) {
@@ -1028,7 +1028,8 @@ function scheduleRosterFit() {
     // The card is as tall as what it holds, so no invisible window is left over the game.
     if (native && active) {
       const natural = Math.ceil(meter.getBoundingClientRect().height - list.clientHeight + otherHeight + players.offsetHeight + 6);
-      if (Math.abs(natural - fitRequested) > 6) { fitRequested = natural; invoke('fit_main_height', { height: natural }).catch(() => { fitRequested = 0; }); }
+      const height = followHeight(fitMemory, natural, Date.now());
+      if (height) invoke('fit_main_height', { height }).catch(() => { fitMemory.height = 0; });
     }
     scheduleOverlayRegions();
   });

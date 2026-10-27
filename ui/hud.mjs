@@ -112,3 +112,20 @@ export function rosterFit({ count = 0, height = 0, width = 320, scale = 1, densi
     rateWidth: Math.ceil(font * 7.2), damageWidth: both ? Math.ceil(font * 5.2) : 0,
     details: details && rowHeight >= 48 };
 }
+
+/**
+ * When the main window should follow the height of its content. A window floating over the game is
+ * resized as rarely as possible: it grows at once (a cut-off roster is worse than a resize, but not more than
+ * twice a second), and shrinks only after the smaller height has held for three seconds and is more than a
+ * row smaller, so a player coming and going during a fight does not resize it. Returns the height to ask
+ * for, or null; `memory` is `{ height, at, since, smaller }`, kept by the caller (height 0 = nothing asked yet).
+ */
+export function followHeight(memory, natural, now) {
+  const ask = height => { memory.height = height; memory.at = now; memory.since = 0; return height; };
+  if (!memory.height) return ask(natural);
+  if (natural > memory.height + 6) return now - memory.at >= 500 ? ask(natural) : null;
+  if (natural >= memory.height - 40) { memory.since = 0; return null; }
+  if (!memory.since) { memory.since = now; memory.smaller = natural; }
+  memory.smaller = Math.max(memory.smaller, natural);
+  return now - memory.since >= 3000 ? ask(memory.smaller) : null;
+}

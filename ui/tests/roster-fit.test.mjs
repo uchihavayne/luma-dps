@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mainRoster, rosterFit } from '../hud.mjs';
+import { mainRoster, rosterFit, followHeight } from '../hud.mjs';
 
 const players = Array.from({ length: 5 }, (_, i) => ({ id: String(i + 1), name: `Player${i + 1}`, class_name: ['Ranger', 'Chanter', 'Cleric', 'Gladiator', 'Sorcerer'][i], identity_confirmed: true, damage: (5 - i) * 600_000, dps: (5 - i) * 10_000 }));
 
@@ -60,4 +60,27 @@ test('larger rosters request enough height instead of unreadable type and a narr
   const narrow = rosterFit({ count: 5, height: 150, width: 190, both: true });
   assert.equal(narrow.suppressDamage, true); assert.equal(narrow.damageWidth, 0); assert.ok(narrow.font >= 11);
   for (const count of [0, 13, NaN, Infinity]) assert.equal(rosterFit({ count }).enabled, false);
+});
+
+test('the main window grows at once but shrinks only after the smaller height has held', () => {
+  const memory = { height: 0, at: 0, since: 0, smaller: 0 };
+  assert.equal(followHeight(memory, 300, 1000), 300, 'the first height is asked for at once');
+  assert.equal(followHeight(memory, 304, 1100), null, 'a few pixels are not worth a resize');
+  assert.equal(followHeight(memory, 360, 1200), null, 'growing waits half a second after the last resize');
+  assert.equal(followHeight(memory, 360, 1600), 360, 'then grows');
+  // A player leaves: nothing happens for three seconds, and a player returning cancels it.
+  assert.equal(followHeight(memory, 300, 2000), null);
+  assert.equal(followHeight(memory, 300, 4900), null);
+  assert.equal(followHeight(memory, 360, 5000), null);
+  assert.equal(followHeight(memory, 300, 5100), null);
+  assert.equal(followHeight(memory, 300, 8000), null, 'the three seconds start over after the return');
+  assert.equal(followHeight(memory, 300, 8200), 300);
+  // Slightly smaller than before is never worth a resize.
+  assert.equal(followHeight(memory, 270, 20000), null);
+  assert.equal(followHeight(memory, 270, 30000), null);
+  // The shrink goes to the tallest content seen while waiting, so it never cuts anything off.
+  assert.equal(followHeight(memory, 200, 40000), null);
+  assert.equal(followHeight(memory, 240, 41000), null);
+  assert.equal(followHeight(memory, 200, 42900), null);
+  assert.equal(followHeight(memory, 200, 43100), 240);
 });

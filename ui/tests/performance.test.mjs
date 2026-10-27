@@ -26,3 +26,12 @@ test('the bars jump instead of sliding, and the meter asks for the state only wh
   assert.match(app, /if \(!native \|\| refreshPending \|\| Date\.now\(\) - lastStateAt < 3000\) return;/);
   assert.match(app, /lastStateAt = Date\.now\(\);\s+receivedStateCount\+\+;/);
 });
+
+test('the main window is not resized for every player who comes and goes, and history is not written during a fight', async () => {
+  const app = await read('app.mjs'), shell = await readFile(new URL('../../src-tauri/src/main.rs', import.meta.url), 'utf8');
+  assert.match(app, /followHeight\(fitMemory, natural, Date\.now\(\)\)/);
+  assert.doesNotMatch(app, /fitRequested/);
+  assert.match(shell, /fn history_save_due\(/);
+  assert.match(shell, /perf::background_this_thread\(\);\s+let started/);
+  assert.doesNotMatch(shell, /history_saved_at/);
+});

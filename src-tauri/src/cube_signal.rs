@@ -950,16 +950,13 @@ impl CubeDetector {
         let ratio = LONG_FFT_SIZE / FFT_SIZE;
         let mut powers = [Vec::new(), Vec::new()];
         let mut phases = [Vec::new(), Vec::new()];
+        let hann = hann_window(&LONG_WINDOW, LONG_FFT_SIZE);
         for (channel, power) in powers.iter_mut().enumerate() {
             let mut real: Vec<_> = self
                 .long_window
                 .iter()
                 .enumerate()
-                .map(|(i, value)| {
-                    value[channel]
-                        * (0.5
-                            - 0.5 * (std::f32::consts::TAU * i as f32 / LONG_FFT_SIZE as f32).cos())
-                })
+                .map(|(i, value)| value[channel] * hann[i])
                 .collect();
             let mut imaginary = vec![0.0; LONG_FFT_SIZE];
             fft(&mut real, &mut imaginary);
@@ -1275,14 +1272,23 @@ fn band_for_bin(bin: usize) -> usize {
         .clamp(0.0, (BAND_COUNT - 1) as f32) as usize
 }
 
+static SHORT_WINDOW: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+static LONG_WINDOW: std::sync::OnceLock<Vec<f32>> = std::sync::OnceLock::new();
+
+/// The Hann window of that size, worked out once instead of a cosine per sample on every analysis.
+fn hann_window(table: &'static std::sync::OnceLock<Vec<f32>>, size: usize) -> &'static [f32] {
+    table.get_or_init(|| (0..size).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / size as f32).cos()).collect())
+}
+
 fn spectrum(samples: &[[f32; 2]]) -> Spectrum {
     let mut left_re = vec![0.0; FFT_SIZE];
     let mut right_re = vec![0.0; FFT_SIZE];
     let mut left_im = vec![0.0; FFT_SIZE];
     let mut right_im = vec![0.0; FFT_SIZE];
     let mut square_sum = 0.0;
+    let hann = hann_window(&SHORT_WINDOW, FFT_SIZE);
     for (index, sample) in samples.iter().enumerate() {
-        let window = 0.5 - 0.5 * (std::f32::consts::TAU * index as f32 / FFT_SIZE as f32).cos();
+        let window = hann[index];
         left_re[index] = sample[0] * window;
         right_re[index] = sample[1] * window;
         square_sum += (sample[0] * sample[0] + sample[1] * sample[1]) * 0.5;

@@ -1304,7 +1304,9 @@ mod windows {
     }
 
     fn deliver_packet(shared: &crate::Shared, packet: Packet, applied_epoch: &mut u64) {
+        let waiting = Instant::now();
         if let Ok(mut engine) = shared.engine.lock() {
+            crate::perf::worst(&crate::perf::LOCK_WAIT_US, waiting.elapsed().as_micros() as u64);
             if packet.loss_epoch != *applied_epoch {
                 engine.capture_loss();
                 *applied_epoch = packet.loss_epoch;
@@ -1393,6 +1395,9 @@ mod windows {
                     }
                 }
                 if refresh.elapsed() >= Duration::from_secs(1) {
+                    // The once-a-second look at the connection table and the process list can wait behind the
+                    // game; only reading packets is urgent.
+                    crate::perf::lower_this_thread();
                     let refreshed = connections()?;
                     let session_changed =
                         !endpoints.is_empty() && endpoints.is_disjoint(&refreshed.endpoints);
@@ -1494,6 +1499,7 @@ mod windows {
                             capture.detail.push_str(&detail);
                         }
                     }
+                    crate::perf::raise_this_thread();
                 }
                 if let Some(stream) = active.as_mut() {
                     if let Ok(packet) = stream.receiver.recv_timeout(Duration::from_millis(100)) {

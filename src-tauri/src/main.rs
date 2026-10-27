@@ -1465,9 +1465,41 @@ fn state_period_ms(shared: &Shared) -> u64 {
 const STATE_HEARTBEAT_MS: u64 = 2000;
 /// With no fight and nothing new from the game the state is looked at this seldom.
 const STATE_IDLE_LOOK_MS: u64 = 1000;
-/// The history file is rewritten at most this often (and once more when Luma closes): it holds a couple of
-/// hundred fights, and writing all of it after every fight is a burst of work in the middle of the action.
-const HISTORY_SAVE_GAP_MS: u64 = 20_000;
+/// The history file holds a couple of hundred fights (tens of megabytes), and writing all of it is a burst of
+/// work that does not belong in the middle of the action. So it is written at most this often (and once more
+/// when Luma closes), only after the fighting has been over for `HISTORY_QUIET_MS`, and on a thread of its own at
+/// the lowest priority. A fight that never stops is written anyway after `HISTORY_SAVE_LIMIT_MS`.
+const HISTORY_SAVE_GAP_MS: u64 = 120_000;
+const HISTORY_QUIET_MS: u64 = 10_000;
+const HISTORY_SAVE_LIMIT_MS: u64 = 600_000;
+static HISTORY_SAVING: AtomicBool = AtomicBool::new(false);
+static HISTORY_SAVED_AT: AtomicU64 = AtomicU64::new(0);
+static HISTORY_RETRY_AT: AtomicU64 = AtomicU64::new(0);
+
+fn history_save_due(now: u64, saved_at: u64, retry_at: u64, last_fight_at: u64, unsaved: bool) -> bool {
+    unsaved
+        && now >= retry_at
+        && now >= saved_at + HISTORY_SAVE_GAP_MS
+        && (now >= last_fight_at + HISTORY_QUIET_MS || now >= saved_at + HISTORY_SAVE_LIMIT_MS)
+}
+
+fn save_history_in_background(shared: &Arc<Shared>) {
+    if HISTORY_SAVING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let shared = shared.clone();
+    std::thread::spawn(move || {
+        perf::background_this_thread();
+        let started = std::time::Instant::now();
+        match persist_history(&shared) {
+            Ok(()) => HISTORY_SAVED_AT.store(now_ms(), Ordering::Relaxed),
+            Err(_) => HISTORY_RETRY_AT.store(now_ms() + 5000, Ordering::Relaxed),
+        }
+        perf::add(&perf::SAVES, 1);
+        perf::worst(&perf::SAVE_MS, started.elapsed().as_millis() as u64);
+        HISTORY_SAVING.store(false, Ordering::Release);
+    });
+}
 
 /// What the windows are sent, built without ever turning the state into a value tree: the text of the state
 /// is written once, a fingerprint of it is taken, and it is sent as it is (with the few fields the shell adds)
@@ -2099,6 +2131,24 @@ mod shell_tests {
             false
         );
         fs::remove_file(blocked_directory).unwrap();
+    }
+
+    #[test]
+    fn history_is_written_in_a_quiet_moment_not_in_the_middle_of_a_fight() {
+        let (start, minute) = (1_000_000u64, 60_000u64);
+        // Nothing new to write: never.
+        assert!(!history_save_due(start + 30 * minute, start, 0, 0, false));
+        // Just written two minutes ago is too soon; written long ago and quiet: now.
+        assert!(!history_save_due(start + minute, start, 0, 0, true));
+        assert!(history_save_due(start + 3 * minute, start, 0, start + 2 * minute, true));
+        // A fight was going a few seconds ago: wait for it to be over.
+        assert!(!history_save_due(start + 3 * minute, start, 0, start + 3 * minute - 5_000, true));
+        assert!(history_save_due(start + 3 * minute + 5_000, start, 0, start + 3 * minute - 5_000, true));
+        // A fight that never stops is written anyway after ten minutes.
+        assert!(!history_save_due(start + 9 * minute, start, 0, start + 9 * minute, true));
+        assert!(history_save_due(start + 10 * minute, start, 0, start + 10 * minute, true));
+        // A failed write is tried again only after its pause.
+        assert!(!history_save_due(start + 3 * minute, start, start + 4 * minute, 0, true));
     }
 
     #[test]
@@ -3793,6 +3843,7 @@ fn fit_main_height(
     if (size.height as f64 / factor - target).abs() < 3.0 {
         return Ok(());
     }
+    perf::add(&perf::RESIZES, 1);
     window
         .set_size(tauri::LogicalSize::new(size.width as f64 / factor, target))
         .map_err(|error| error.to_string())
@@ -4466,17 +4517,19 @@ fn main() {
                 .map_err(|_| "Capture worker unavailable")? =
                 Some(native_capture::spawn(shared.clone()));
             overlays::restore(app.handle());
+            perf::watch(shared.data_dir.join("performance.log"));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let mut history_retry_at = 0;
                 let mut calendar_revision = None;
                 let mut cube_revision = None;
                 let (mut last_emit_at, mut last_fingerprint) = (0u64, 0u64);
                 let (mut game_seen, mut game_gone_since): (bool, Option<u64>) = (false, None);
                 perf::lower_this_thread();
-                let (mut in_fight, mut cubes_near, mut last_revision, mut last_looked_at, mut history_saved_at) = (false, false, 0u64, 0u64, 0u64);
+                let (mut in_fight, mut cubes_near, mut last_revision, mut last_looked_at, mut last_fight_at) = (false, false, 0u64, 0u64, 0u64);
+                HISTORY_SAVED_AT.store(now_ms(), Ordering::Relaxed);
                 let mut z_order_checked_at=0;let mut last_topmost=None;
                 while !shared.stopping.load(Ordering::Relaxed) {
+                    let pass_started = std::time::Instant::now();
                     if now_ms()>=z_order_checked_at {
                         z_order_checked_at=now_ms()+500;
                         let only_game=shared.preferences.lock().ok().is_some_and(|preferences|preferences.extra.get("onlyAboveGame").and_then(Value::as_bool)==Some(true));
@@ -4517,11 +4570,13 @@ fn main() {
                     }
                     let cube_notice = shared.engine.lock().ok().map(|mut engine| {
                         engine.tick(now_ms());
-                        (engine.cube_radar(now_ms()), engine.cube_templates(), engine.revision())
+                        (engine.cube_radar(now_ms()), engine.cube_templates(), engine.revision(), engine.history_revision())
                     });
                     let mut revision = last_revision;
-                    if let Some((radar, templates, current)) = cube_notice {
+                    let mut history_revision = None;
+                    if let Some((radar, templates, current, history)) = cube_notice {
                         revision = current;
+                        history_revision = Some(history);
                         cubes_near = !radar.cubes.is_empty();
                         cube.set_network(cube_locator::NetworkCube::from_radar(&radar));
                         if templates != cube_templates_saved
@@ -4555,14 +4610,21 @@ fn main() {
                     if now >= last_looked_at + if busy { state_period_ms(&shared) } else { STATE_IDLE_LOOK_MS } {
                         last_looked_at = now;
                         last_revision = revision;
+                        let building = std::time::Instant::now();
                         if let Ok(looked) = state_for_windows(&shared, last_fingerprint, now >= last_emit_at + STATE_HEARTBEAT_MS) {
+                            perf::worst(&perf::STATE_US, building.elapsed().as_micros() as u64);
                             in_fight = looked.fighting;
                             if let Some(payload) = looked.payload {
                                 last_emit_at = now;
                                 last_fingerprint = looked.fingerprint;
+                                perf::add(&perf::SENT, 1);
+                                perf::add(&perf::SENT_BYTES, payload.get().len() as u64);
                                 let _ = handle.emit("luma-state", payload);
                             }
                         }
+                    }
+                    if in_fight {
+                        last_fight_at = now_ms();
                     }
                     let calendar_update = shared.calendar.lock().ok().and_then(|calendar| {
                         calendar.as_ref().and_then(|calendar| {
@@ -4584,26 +4646,13 @@ fn main() {
                             let _ = handle.emit("luma-cube-state", status);
                         }
                     }
-                    let history_revision = shared
-                        .engine
-                        .lock()
-                        .ok()
-                        .map(|engine| engine.history_revision());
-                    if now_ms() >= history_retry_at
-                        && now_ms() >= history_saved_at + HISTORY_SAVE_GAP_MS
-                        && history_revision.is_some_and(|revision| {
-                            revision != shared.history_saved_revision.load(Ordering::Relaxed)
-                        })
-                    {
-                        history_retry_at = if persist_history(&shared).is_ok() {
-                            history_saved_at = now_ms();
-                            0
-                        } else {
-                            now_ms() + 5000
-                        };
+                    let unsaved = history_revision.is_some_and(|revision| revision != shared.history_saved_revision.load(Ordering::Relaxed));
+                    if history_save_due(now_ms(), HISTORY_SAVED_AT.load(Ordering::Relaxed), HISTORY_RETRY_AT.load(Ordering::Relaxed), last_fight_at, unsaved) {
+                        save_history_in_background(&shared);
                     }
                     // A quiet meter (no fight, nothing new, no Cube near) wakes less often.
                     let calm = !in_fight && !cubes_near && revision == last_revision;
+                    perf::worst(&perf::WORKER_US, pass_started.elapsed().as_micros() as u64);
                     std::thread::sleep(Duration::from_millis(if calm { 300 } else { 150 }));
                 }
             });
